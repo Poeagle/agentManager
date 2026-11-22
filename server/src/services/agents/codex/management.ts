@@ -497,6 +497,19 @@ async function updateNativeConnection(input:AgentProviderInput):Promise<{restart
   saveProviderApiKey('native',input.apiKey);
   if(catalog)await updateNativeProviderCatalog({...next});
   else await updateInferredNativeCatalog({...next});
+
+  // 保存扩展字段（倍率等）到数据库
+  const stored = readAgentManagement('codex');
+  let nativeRecord = stored.providers.find(item => item.id === 'native');
+  if (!nativeRecord) {
+    nativeRecord = { id: 'native', name: nativeProviderName(), kind: 'native', enabled: true, fields: {} };
+    stored.providers.push(nativeRecord);
+  }
+  const priorFields = nativeRecord.fields;
+  nativeRecord.fields = { ...priorFields, ...(input.fields || {}) };
+  saveModelRates(nativeRecord.fields, priorFields);
+  writeAgentManagement('codex', stored);
+
   return {restartRequired:connectionChanged};
 }
 
@@ -506,6 +519,9 @@ function nativeProviders(): AgentProviderState[] {
   const launchConfig = nativeEngineConfig();
   const launch = nativeEngineLaunchDescription();
   const nativeSettings=nativeCodexConnectionConfig();
+  const stored = readAgentManagement('codex');
+  const nativeRecord = stored.providers.find(item => item.id === 'native');
+  const nativeFields = nativeRecord?.fields || {};
   return [{
     id: 'native',
     name: nativeProviderName(),
@@ -562,6 +578,7 @@ function nativeProviders(): AgentProviderState[] {
         required: true,
         description: '每行一个模型 ID；模型目录与 Codex 配置同步更新。',
       },
+      ...providerRateFields(nativeSettings.baseUrl, nativeFields),
       {
         key: 'defaultModel',
         label: '默认模型',
