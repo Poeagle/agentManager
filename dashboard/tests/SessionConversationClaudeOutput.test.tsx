@@ -68,7 +68,7 @@ it.each(['claude','codex'] as const)('leaves live Progress when %s publishes a s
   const timestamp=new Date().toISOString();
   const messages=[
     {id:'user',role:'user',text:'Inspect',timestamp},
-    {id:'round',role:'assistant',turn_id:'turn',phase:'commentary',text:'Reading the repository.',timestamp},
+    {id:'round',role:'assistant',turn_id:'turn',phase:'commentary',text:'Reading the repository.',timestamp,streaming:true},
   ];
   const activity={id:'read',label:'读取文件 · README.md',input_preview:'README.md',status:'running',started_at:timestamp,
     completed_at:null,duration_ms:null,turn_id:'turn',after_message_id:'round'};
@@ -78,12 +78,23 @@ it.each(['claude','codex'] as const)('leaves live Progress when %s publishes a s
   expect(screen.getByRole('button',{name:'停止当前执行'})).toBeInTheDocument();
   act(()=>Socket.latest.emit({type:'snapshot',busy:false,turn_id:'turn',stage:'idle',
     started_at:timestamp,completed_at:timestamp,activities:[{...activity,status:'completed',completed_at:timestamp}],
-    messages:[...messages,{id:'final',role:'assistant',turn_id:'turn',phase:'final',text:'The repository is ready.',timestamp}]}));
+    messages:[...messages.map(message=>({...message,streaming:false})),{id:'final',role:'assistant',turn_id:'turn',phase:'final',text:'The repository is ready.',timestamp}]}));
   expect(await screen.findByText('The repository is ready.')).toBeVisible();
   expect(screen.queryByRole('status',{name:'正在执行的进展 2'})).not.toBeInTheDocument();
   expect(screen.queryByRole('button',{name:'停止当前执行'})).not.toBeInTheDocument();
   expect(screen.getByTestId('conversation-activity-line')).toHaveTextContent('Ready for your next message');
   client.clear();
+});
+it('shows a live Claude tool whose tool-only assistant message is omitted from the snapshot',async()=>{
+  const timestamp=new Date().toISOString();
+  const messages=[{id:'input',role:'user',turn_id:'live-turn',text:'Inspect',timestamp}] as ConvMessage[];
+  const view=await renderSnapshot(session,messages);
+  const activity={id:'read',label:'读取文件 · README.md',input_preview:'README.md',status:'running',started_at:timestamp,
+    completed_at:null,duration_ms:null,turn_id:'live-turn',after_message_id:'hidden-tool-only-message'};
+  act(()=>Socket.latest.emit({type:'snapshot',busy:true,turn_id:'live-turn',started_at:timestamp,stage:'tools',messages,activities:[activity]}));
+  const pending=screen.getByRole('status',{name:'正在执行的进展 1'});
+  expect(within(pending).getByText('README.md')).toBeVisible();
+  view.unmount();
 });
 it('renders identical tool and thinking structure for Claude and Codex',async()=>{
   const messages=[

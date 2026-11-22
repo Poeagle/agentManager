@@ -44,6 +44,7 @@ describe('native Codex conversation streaming',()=>{
     send('turn/started',{threadId:'thread',turn:{id:'turn'}});
     send('item/completed',{threadId:'thread',turnId:'turn',item:{id:'fourth',type:'agentMessage',phase:'commentary',text:'Fourth update'}});
     send('item/started',{threadId:'thread',turnId:'turn',item:{id:'tool',type:'commandExecution',command:'npm test'}});
+    await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({activities:[{id:'tool',status:'running',after_message_id:conversationMessageId('turn','assistant','fourth')}]}));
     send('item/commandExecution/outputDelta',{threadId:'thread',turnId:'turn',itemId:'tool',delta:'Compiling… token=private-'});
     send('item/commandExecution/outputDelta',{threadId:'thread',turnId:'turn',itemId:'tool',delta:'secret'});
     await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({activities:[{after_message_id:conversationMessageId('turn','assistant','fourth'),turn_id:'turn',result_preview:'Compiling… token=[隐藏]'}]}));

@@ -2081,7 +2081,8 @@ export function SessionConversation({
   const tailMessage=tail?.kind==='progress'?tail.messages.at(-1):tail?.message;
   const liveTurn=liveProgress.turn_id;
   const canShowLiveProgress=busy&&!ended&&!waiting&&!activeError&&!compaction.state&&!!liveTurn&&
-    liveProgress.stage!=='finishing'&&!(tailMessage?.role==='assistant'&&(!tailMessage.turn_id||tailMessage.turn_id===liveTurn)&&(tailMessage.phase==='final'||tailMessage.streaming))&&
+    liveProgress.stage!=='finishing'&&!(tailMessage?.role==='assistant'&&(!tailMessage.turn_id||tailMessage.turn_id===liveTurn)&&
+      (tailMessage.phase==='final'||tailMessage.streaming&&liveProgress.stage!=='tools'))&&
     !(tailMessage?.role==='assistant'&&tailMessage.turn_id&&tailMessage.turn_id!==liveTurn&&liveProgress.stage==='answering');
   const activityRunning=busy&&!reconnectable&&!ended&&!waiting&&!activeError;
   const currentActivities=liveState==='connected'&&!reconnectable&&liveProgress.stage==='tools'?liveProgress.activities||[]:[];
@@ -2093,6 +2094,8 @@ export function SessionConversation({
   const latestActivities=Array.from(
     progressActivities.reduce((items,item)=>items.set(item.id,item),new Map<string,ConversationActivity>()).values(),
   );
+  const inputTime=latestUser?.timestamp&&(!latestUser.turn_id||latestUser.turn_id===liveTurn)
+    ?Date.parse(latestUser.timestamp):NaN;
   const slotMessage=tailMessage&&isThinkingOnly(tailMessage)
     ? displayed.slice(0,displayed.indexOf(tailMessage)).reverse().find(message=>!isThinkingOnly(message)&&!isWaitingConversationInput(message))
     : tailMessage;
@@ -2101,12 +2104,22 @@ export function SessionConversation({
     .filter(message=>isEmptyProgress(message)&&message.turn_id===liveTurn).map(message=>message.id));
   const slotActivities=latestActivities.filter(item=>{
     if(item.turn_id&&item.turn_id!==liveTurn)return false;
-    if(Object.hasOwn(item,'after_message_id'))return item.after_message_id===slotBoundary||
-      !!item.after_message_id&&hiddenBoundaries.has(item.after_message_id)||item.after_message_id===null&&slotMessage?.role==='user'&&
-      !!item.started_at&&!!slotMessage.timestamp&&Date.parse(item.started_at)>=Date.parse(slotMessage.timestamp);
+    const startedAt=item.started_at?Date.parse(item.started_at):NaN;
+    if(Object.hasOwn(item,'after_message_id')){
+      const anchor=item.after_message_id;
+      if(anchor&&(anchor===slotBoundary||hiddenBoundaries.has(anchor)||
+        anchor===tailMessage?.id&&tailMessage.turn_id===liveTurn))return true;
+      // Tool-only assistant messages can be removed from snapshots while their activity keeps that message ID.
+      const anchorMissing=!anchor||!messages.some(message=>message.id===anchor);
+      if(anchorMissing&&item.turn_id&&item.turn_id===liveTurn){
+        return !Number.isFinite(startedAt)||!Number.isFinite(inputTime)||startedAt>=inputTime;
+      }
+      return anchor===null&&(slotBoundary===null||slotMessage?.role==='user'&&!!slotMessage.timestamp&&
+        startedAt>=Date.parse(slotMessage.timestamp));
+    }
     // Older adapters can supply real timing instead of an explicit boundary.
     if(!tailMessage)return true;
-    return !!item.started_at&&!!tailMessage.timestamp&&Date.parse(item.started_at)>Date.parse(tailMessage.timestamp);
+    return !!tailMessage.timestamp&&startedAt>Date.parse(tailMessage.timestamp);
   });
   const latestSlotActivity=[...slotActivities].reverse().find(item=>item.status==='running')||slotActivities.at(-1);
   const showLiveProgress=canShowLiveProgress&&slotActivities.length>0;

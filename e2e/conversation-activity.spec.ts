@@ -18,7 +18,7 @@ test('live progress owns tool updates and result previews while public history s
   const require=createRequire(import.meta.url),Database=require('../server/node_modules/better-sqlite3'),db=new Database(join(root,'agentmanager.db'));
   try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',native,session.id);}finally{db.close();}
   let push:((value:unknown)=>void)|undefined;
-  const activity=(id:string,label:string)=>({id,label,status:'running',started_at:stamp(-5000),completed_at:null,duration_ms:null});
+  const activity=(id:string,label:string)=>({id,label,status:'running',started_at:stamp(-5000),completed_at:null,duration_ms:null,turn_id:'turn',after_message_id:'tool-only-message'});
   const frame=(activities:unknown[],busy=true)=>({type:'snapshot',messages:[],activities,busy,stage:busy?'tools':'idle',turn_id:'turn',started_at:stamp(-180000)});
   await page.routeWebSocket('**/conversation/stream*',socket=>{push=value=>socket.send(JSON.stringify(value));});
   await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});

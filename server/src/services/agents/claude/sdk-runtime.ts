@@ -600,20 +600,17 @@ class ClaudeRuntime {
     const previous = [...envelope.blocks.values()].find(
       (block) => block.type === "tool_use" && block.id === id,
     );
+    const mergedInput = {
+      ...(previous?.type === "tool_use" && previous.input && typeof previous.input === "object" ? previous.input : {}),
+      ...(input && typeof input === "object" ? input : {}),
+    };
     envelope.blocks.set(index, {
       ...(previous?.type === "tool_use" ? previous : {}),
       type: "tool_use",
       index,
       id,
       name,
-      input: {
-        ...(previous?.type === "tool_use" &&
-        previous.input &&
-        typeof previous.input === "object"
-          ? previous.input
-          : {}),
-        ...(input && typeof input === "object" ? input : {}),
-      },
+      input: mergedInput,
       status:
         previous?.type === "tool_use" ? previous.status : ("running" as const),
     });
@@ -626,7 +623,7 @@ class ClaudeRuntime {
       ),
     });
     this.stage = "tools";
-    this.publishActivity(envelope, id, name, input, false);
+    this.publishActivity(envelope, id, name, mergedInput);
   }
 
   private publishActivity(
@@ -634,12 +631,8 @@ class ClaudeRuntime {
     id: string,
     name: string,
     input: unknown,
-    completed: boolean,
-    result?: unknown,
   ) {
     const previous = this.liveActivities.get(id);
-    const started = previous?.started_at ?? new Date().toISOString();
-    const ended = completed ? new Date().toISOString() : null;
     const value = input && typeof input === "object"
       ? (input as Record<string, unknown>)
       : {};
@@ -648,23 +641,19 @@ class ClaudeRuntime {
       value.file_path ?? value.path ?? value.pattern ?? value.query ?? value.description;
     this.liveActivities.set(id, {
       id,
-      label: toolLabel(name, input),
-      status: completed ? "completed" : "running",
-      started_at: started,
-      completed_at: ended,
-      duration_ms: ended ? Math.max(0, Date.parse(ended) - Date.parse(started)) : null,
-      ...(typeof detail === "string" && detail.trim()
-        ? { input_preview: activityResultPreview(detail.trim()) }
-        : {}),
-      ...(result !== undefined
-        ? { result_preview: activityResultPreview(
-            typeof result === "string" ? result : textContent(result),
-          ) }
-        : {}),
+      status: "running",
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      duration_ms: null,
       turn_id: this.turnId,
       after_message_id: this.progressBoundary ??= this.assistant(
         this.textBlock(envelope, Math.max(0, envelope.blocks.size - 1)),
       ).id,
+      ...previous,
+      label: toolLabel(name, input),
+      ...(typeof detail === "string" && detail.trim()
+        ? { input_preview: activityResultPreview(detail.trim()) }
+        : {}),
     });
   }
 
@@ -910,15 +899,11 @@ class ClaudeRuntime {
           try {
             const value = JSON.parse(partial);
             if (value && typeof value === "object" && !Array.isArray(value)) {
-              envelope.blocks.set(event.index, {
-                ...tool,
-                input: {
-                  ...(tool.input && typeof tool.input === "object"
-                    ? tool.input
-                    : {}),
-                  ...value,
-                },
-              });
+              const input = {
+                ...(tool.input && typeof tool.input === "object" ? tool.input : {}),
+                ...value,
+              };
+              envelope.blocks.set(event.index, { ...tool, input });
               const target = this.assistant(
                 this.textBlock(envelope, event.index),
               );
@@ -928,6 +913,7 @@ class ClaudeRuntime {
                   (a, b) => a.index - b.index,
                 ),
               });
+              this.publishActivity(envelope, tool.id, tool.name, input);
             }
           } catch {
             /* Claudian keeps the last valid tool snapshot until JSON is complete. */

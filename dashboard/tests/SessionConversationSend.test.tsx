@@ -409,6 +409,27 @@ describe('conversation send transaction', () => {
     act(()=>Socket.latest.onclose?.());
     expect(screen.queryByText('Current step')).not.toBeInTheDocument();expect(screen.queryByRole('status',{name:'正在执行的进展 1'})).not.toBeInTheDocument();
   });
+  it('renders a current-turn tool start immediately when the native event has no message anchor',async()=>{
+    await mount();
+    const inputAt=new Date(Date.now()-10000).toISOString();
+    const prior={id:'prior-progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'Previous progress',timestamp:inputAt};
+    const followup={id:'followup-pending',role:'user',turn_id:'turn',text:'Continue',timestamp:inputAt,queued:true};
+    const tool={id:'current-tool',label:'Run command · npm test',status:'running',started_at:new Date().toISOString(),completed_at:null,duration_ms:null,turn_id:'turn',after_message_id:null};
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[prior,followup],activities:[tool],busy:true,stage:'tools',turn_id:'turn',started_at:inputAt}));
+    const pending=screen.getByRole('status',{name:'正在执行的进展 2'});
+    expect(pending.querySelector('.session-chat-live-tool>summary')).toHaveTextContent('npm test');
+    expect(screen.getByText('Event stream connected')).toBeVisible();
+  });
+  it('does not carry an earlier unanchored activity past a newer accepted input',async()=>{
+    await mount();
+    const previousToolAt=new Date(Date.now()-20000).toISOString();
+    const inputAt=new Date(Date.now()-10000).toISOString();
+    const inputMessage={id:'current-input',role:'user',turn_id:'turn',text:'Continue',timestamp:inputAt};
+    const previousTool={id:'previous-tool',label:'Run command · old task',status:'completed',started_at:previousToolAt,completed_at:inputAt,duration_ms:10000,turn_id:'turn',after_message_id:null};
+    act(()=>Socket.latest.emit({type:'snapshot',messages:[inputMessage],activities:[previousTool],busy:true,stage:'tools',turn_id:'turn',started_at:inputAt}));
+    expect(screen.queryByRole('status',{name:/正在执行的进展/})).not.toBeInTheDocument();
+    expect(screen.queryByText('old task')).not.toBeInTheDocument();
+  });
   it('leaves consecutive inserted inputs adjacent until a native reply or tool is observed',async()=>{
     await mount();const prior={id:'before-followup',role:'assistant',turn_id:'turn',phase:'commentary',text:'Prior work',timestamp:new Date(Date.now()-20000).toISOString()};const followup={id:'followup',role:'user',turn_id:'turn',text:'Continue please',timestamp:new Date(Date.now()-10000).toISOString()};
     const second={...followup,id:'second',text:'Another insertion',timestamp:new Date(Date.now()-9000).toISOString()};

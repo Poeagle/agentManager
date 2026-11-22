@@ -626,8 +626,8 @@ describe('Claude Agent SDK runtime',()=>{
       stream({type:'content_block_start',index:1,content_block:{type:'tool_use',id:'tool-late',name:'Bash',input:{}}}),
       stream({type:'content_block_delta',index:1,delta:{type:'input_json_delta',partial_json:'{"command":"pwd"}'}}),
       stream({type:'message_stop'}),
-      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'late-native-message',content:[{type:'text',text:'检查中'},{type:'tool_use',id:'tool-late',name:'Bash',input:{command:'pwd'}}]}},
       {type:'user',uuid:'019ff001-1212-7212-8212-121212121214',session_id:session,parent_tool_use_id:'tool-late',message:{content:[{type:'tool_result',tool_use_id:'tool-late',content:'/tmp/demo'}]}},
+      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'late-native-message',content:[{type:'text',text:'检查中'},{type:'tool_use',id:'tool-late',name:'Bash',input:{command:'pwd'}}]}},
       {type:'result',subtype:'success',uuid:'019ff001-1212-7212-8212-121212121215',session_id:session},
     ];
     const runtime=ensureClaudeRuntime(session,'/tmp');
@@ -637,7 +637,10 @@ describe('Claude Agent SDK runtime',()=>{
     stop();
     const assistants=frames.at(-1).messages.filter((message:any)=>message.role==='assistant');
     expect(assistants).toHaveLength(1);
-    expect(frames.some(frame=>frame.activities.some((activity:any)=>activity.id==='tool-late'&&activity.status==='running'&&activity.input_preview==='pwd'))).toBe(true);
+    const firstResult=frames.findIndex(frame=>frame.activities.some((activity:any)=>activity.id==='tool-late'&&activity.status==='completed'));
+    expect(firstResult).toBeGreaterThan(0);
+    expect(frames.slice(0,firstResult).some(frame=>frame.activities.some((activity:any)=>activity.id==='tool-late'&&activity.status==='running'&&activity.input_preview==='pwd'))).toBe(true);
+    expect(frames.slice(firstResult).every(frame=>frame.activities.find((activity:any)=>activity.id==='tool-late')?.status==='completed')).toBe(true);
     expect(assistants[0]).toMatchObject({
       id:conversationMessageId('','assistant','late-native-message'),
       text:'检查中',
@@ -662,11 +665,16 @@ describe('Claude Agent SDK runtime',()=>{
       {type:'result',subtype:'success',uuid:'019ff001-1212-7212-8212-121212121215',session_id:session},
     ];
     const runtime=ensureClaudeRuntime(session,'/tmp');
+    const frames:any[]=[];const stop=runtime.observe(frame=>frames.push(frame));
     await runtime.submit('Inspect');
     await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    stop();
     const activities=runtime.snapshot().activities;
     expect(activities).toHaveLength(2);
     expect(new Set(activities.map(activity=>activity.after_message_id)).size).toBe(1);
+    const started=frames.find(frame=>frame.activities.some((activity:any)=>activity.id==='first'&&activity.status==='running'));
+    expect(started).toBeDefined();
+    expect(started.messages.some((message:any)=>message.id===started.activities[0].after_message_id)).toBe(false);
     expect(runtime.snapshot().messages.filter(message=>message.role==='assistant'&&message.content_blocks?.some(block=>block.type==='tool_use'))).toEqual([]);
   });
   it('uses the completed assistant event when no partial text was emitted',async()=>{
