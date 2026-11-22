@@ -70,6 +70,19 @@ it('keeps a native Codex account in the account details instead of the API form'
  expect(within(dialog).queryByRole('button',{name:'保存连接配置并重启 Engine'})).not.toBeInTheDocument();
  expect(within(dialog).queryByRole('textbox',{name:'Responses API 地址'})).not.toBeInTheDocument();
 });
+it('replaces a native API provider model list with its detected upstream catalog',async()=>{
+ mount();fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});
+ provider={...provider,id:'native',name:'Fixture API',kind:'native',models:['stale-model'],defaultModel:'stale-model',fields:[
+  {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1'},
+  {key:'envKey',label:'API Key',type:'password',value:'',configured:true},
+  {key:'models',label:'模型',type:'string-list',value:['stale-model']},
+  {key:'defaultModel',label:'默认模型',type:'text',value:'stale-model'},
+ ]};
+ vi.mocked(api.agentManagement.detectModels).mockResolvedValueOnce({models:[{model:'gpt-current',name:'GPT Current',description:'',efforts:[],defaultEffort:''}]});
+ fireEvent.click(screen.getByRole('button',{name:'探测模型'}));
+ await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','fixture',expect.objectContaining({fields:expect.objectContaining({models:['gpt-current'],defaultModel:'gpt-current'})})));
+ expect(within(table).queryByRole('checkbox',{name:'启用 stale-model'})).toBeNull();
+});
 it('edits native Codex connection settings without exposing the stored API key',async()=>{
  provider={...createFixture().provider,id:'native',name:'Native API',kind:'native',models:['model-a'],defaultModel:'model-a',codexHome:'/fixture/.codex',fields:[
   {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},

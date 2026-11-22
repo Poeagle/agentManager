@@ -267,6 +267,54 @@ describe('Codex provider display names', () => {
 });
 
 describe('native Codex Provider connection editing', () => {
+ it('probes a native API provider against its configured endpoint and key', async () => {
+  const database=createTestDatabase();
+  const home=join(database.dir,'native-probe');
+  mkdirSync(home,{recursive:true});
+  writeFileSync(join(home,'config.toml'),[
+   'model_provider = "wanzhao"',
+   'model = "gpt-current"',
+   '',
+   '[model_providers.wanzhao]',
+   'name = "Wanzhao"',
+   'base_url = "https://xindu.xyz/v1"',
+   'env_key = "AGENTMANAGER_CODEX_API_KEY"',
+   '',
+  ].join('\n'));
+  vi.stubEnv('CODEX_HOME',home);
+  getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(
+   'agent_management_codex_provider_secret:native',
+   sealAgentSecret('sk-native-probe','codex-provider:native'),
+  );
+  const fetchMock=vi.fn().mockResolvedValue(new Response(JSON.stringify({data:[
+   {id:'gpt-current',name:'GPT Current'},
+   {id:'gpt-other',name:'GPT Other'},
+  ]}),{status:200,headers:{'content-type':'application/json'}}));
+  vi.stubGlobal('fetch',fetchMock);
+  try{
+   const management=codexManagement({id:'codex',label:'Codex'} as any);
+   const models=await management.detectModels?.({providerId:'native'});
+   expect(models?.map(model=>model.model)).toEqual(['gpt-current','gpt-other']);
+   expect(fetchMock).toHaveBeenCalledWith('https://xindu.xyz/v1/models',expect.objectContaining({
+    headers:expect.objectContaining({Authorization:'Bearer sk-native-probe'}),
+   }));
+  }finally{
+   database.cleanup();
+  }
+ });
+ it('rejects native model probing before API or account initialization', async () => {
+  const database=createTestDatabase();
+  const home=join(database.dir,'native-uninitialized');
+  mkdirSync(home,{recursive:true});
+  writeFileSync(join(home,'config.toml'),'model = "gpt-current"\n');
+  vi.stubEnv('CODEX_HOME',home);
+  try{
+   const management=codexManagement({id:'codex',label:'Codex'} as any);
+   await expect(management.detectModels?.({providerId:'native'})).rejects.toThrow('尚未初始化');
+  }finally{
+   database.cleanup();
+  }
+ });
  it('writes connection settings through the Provider form and keeps the key encrypted', async () => {
   const database=createTestDatabase();
   const home=join(database.dir,'native-codex');

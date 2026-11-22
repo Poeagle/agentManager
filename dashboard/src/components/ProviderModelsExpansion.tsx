@@ -39,7 +39,7 @@ export function ProviderModelsExpansion({agentId,provider,readOnly,onChanged}:{a
   const result=await api.agentManagement.detectModels(agentId,{providerId:provider.id});
   if(!result.models.length)throw Error('Provider 未返回可用模型');
   const models=result.models.map(item=>item.model),overlap=provider.models.filter(model=>models.includes(model));
-  const nextSelected=overlap.length?overlap:models;
+  const nextSelected=provider.id==='native'?models:overlap.length?overlap:models;
   const nextDefault=provider.defaultModel&&models.includes(provider.defaultModel)?provider.defaultModel:nextSelected[0]??'';
   const saved=await api.agentManagement.updateProvider(agentId,provider.id,{fields:{models:nextSelected,defaultModel:nextDefault,...modelCapabilitiesPayload(result.models)}});
   setDetected(result.models);setSelected(nextSelected);setDefaultModel(nextDefault);updateState(saved.state);

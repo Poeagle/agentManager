@@ -1273,6 +1273,15 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         if (!apiKey) throw Object.assign(Error('请先输入 API Key'), { statusCode: 400 });
         return probeProviderModels(endpoint.toString(), apiKey);
       }
+      if(input?.providerId==='native'){
+        const native=nativeCodexConnectionConfig();
+        if(native.apiMode){
+          const apiKey=providerApiKey('native')||(native.envKey?process.env[native.envKey]||'':'');
+          if(!apiKey)throw Object.assign(Error('API Key 尚未配置，请先完成 Provider 初始化'),{statusCode:409});
+          return probeProviderModels(native.baseUrl,apiKey);
+        }
+        if(!native.apiKeyConfigured)throw Object.assign(Error('原生 Codex 尚未初始化，请选择账号登录或配置 API Key'),{statusCode:409});
+      }
       const { readEngineModelsForProvider } = await import('./controls.js');
       return readEngineModelsForProvider(input?.providerId, true);
     },

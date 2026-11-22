@@ -740,7 +740,7 @@ function ProviderEditor({
       if(provider.id!=='native'&&!discovery.models.length)throw Error('Provider 未返回可用模型，当前配置未保存');
       const discoveredModels=discovery.models.map(model=>model.model);
       const retained=selectedModels.filter(model=>discoveredModels.includes(model));
-      const nextModels=provider.id==='native'?availableModels:retained.length?retained:discoveredModels;
+      const nextModels=provider.id==='native'?(discoveredModels.length?discoveredModels:availableModels):retained.length?retained:discoveredModels;
       const configuredDefault=fields.defaultModel||provider.defaultModel||'';
       const nextDefault=nextModels.includes(configuredDefault)?configuredDefault:nextModels[0]||'';
       const edited=new Map(patches?.map(patch=>[patch.model,patch]));
