@@ -13,13 +13,13 @@ afterEach(()=>vi.clearAllMocks());
 
 it('shows the vendor, release, context, and separated official token rates in one table',async()=>{
  vi.mocked(api.agentManagement.modelCatalog).mockResolvedValue({models:[{
-  vendor:'DeepSeek',model:'deepseek-v4.1-flash',providers:['DeepSeek API'],release_date:'2026-10-17',context_window:1_000_000,
+  vendor:'DeepSeek',model:'deepseek-flash',providers:['DeepSeek API'],release_date:'2026-10-17',context_window:1_000_000,
   api_pricing:{currency:'CNY',source:'official',peak:{input:2,cached:0.04,output:8},off_peak:{input:1,cached:0.02,output:4},timezone:'Asia/Shanghai'},
  }]});
  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
  render(<QueryClientProvider client={client}><AgentModelInformation/></QueryClientProvider>);
- const table=await screen.findByRole('table',{name:'模型资料'});await within(table).findByText('deepseek-v4.1-flash');const row=within(table).getByRole('row',{name:/DeepSeek/});
- expect(row).toHaveTextContent('deepseek-v4.1-flash');expect(row).toHaveTextContent('2026-10-17');expect(row).toHaveTextContent('1,000,000');
+ const table=await screen.findByRole('table',{name:'模型资料'});await within(table).findByText('deepseek-flash');const row=within(table).getByRole('row',{name:/DeepSeek/});
+ expect(row).toHaveTextContent('deepseek-flash');expect(row).not.toHaveTextContent('deepseek-v4.1-flash');expect(row).toHaveTextContent('2026-10-17');expect(row).toHaveTextContent('1,000,000');
  expect(row).toHaveTextContent('高峰 CNY 2.00 · 空闲 CNY 1.00');
  expect(row).toHaveTextContent('高峰 CNY 8.00 · 空闲 CNY 4.00');
  expect(row).toHaveTextContent('高峰 CNY 0.04 · 空闲 CNY 0.02');

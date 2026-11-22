@@ -19,11 +19,21 @@ it('aggregates verified official models, de-duplicates same vendor/model, and om
   {agent:'codex',providers:[provider('deepseek-b','DeepSeek B',['deepseek-v4.1-flash','custom-model'],'https://gateway.example/v1')]},
  ]);
  expect(models).toHaveLength(1);
- expect(models.find(row=>row.model==='deepseek-v4.1-flash')).toMatchObject({
+ expect(models[0]).toMatchObject({
   vendor:'DeepSeek',providers:['DeepSeek A','DeepSeek B'],release_date:'2026-10-17',context_window:1_000_000,
   api_pricing:{currency:'CNY',reference_only:false},
  });
+ expect(models[0].model).toBe('deepseek-flash');
  expect(models.find(row=>row.model==='custom-model')).toBeUndefined();
+});
+
+it('uses the official canonical ID when a legacy alias and its current ID are both configured',()=>{
+ const models=buildAgentModelCatalog([
+  {agent:'claude',providers:[provider('deepseek','DeepSeek',['deepseek-v4.1-flash'],'https://api.deepseek.com/v1')]},
+  {agent:'codex',providers:[provider('deepseek','DeepSeek',['deepseek-flash'],'https://api.deepseek.com/v1')]},
+ ]);
+ expect(models).toHaveLength(1);
+ expect(models[0]).toMatchObject({model:'deepseek-flash',providers:['DeepSeek'],release_date:'2026-10-17'});
 });
 
 it('keeps official reference metadata from a gateway but excludes unregistered vendor IDs',()=>{

@@ -338,9 +338,9 @@ Agent API 契约版本为 `3.22.0`，上传响应 `path` 为不透明绝对路�
 
 会话统计的 `cost.breakdown` 可按 `cost.unit` 返回未命中输入、缓存命中、输出和推理的预估耗费，支持 Credits 和官方 API 币种。推理费用是输出费用的子集，未单独记录推理用量时为 `null`。
 
-会话悬停和 Engine 模型表共用模型资料。`release_date` 和 `official_context_window` 来自已确认的官方模型资料，Engine 运行窗口可单独返回。`api_pricing.reference_only` 标识第三方连接上的官方参考价，`provider_pricing` 表示已读取的第三方目录费率。目录与节假日规则每小时同步一次，保留已校验的版本。
+会话悬停和 Engine 模型表共用模型资料。`release_date` 和 `official_context_window` 来自已确认的官方模型资料，Engine 运行窗口可单独返回。`canonical_model` 表示官方目录确认的当前模型 ID； Provider 配置中的旧别名可继续用于请求和计费，但模型资料按该 ID 合并并展示当前名称。`api_pricing.reference_only` 标识第三方连接上的官方参考价，`provider_pricing` 表示已读取的第三方目录费率。目录与节假日规则每小时同步一次，保留已校验的版本。
 
-Agent 配置分为 Provider 和模型资料两个页面。模型资料从当前 Agent Provider 的已配置模型汇总，并用最新官方目录补充厂商、发布时间、上下文窗口和按百万 Token 划分的未缓存输入、输出、缓存命中输入费率。不同 Provider 上的同名模型在资料页合并，Provider 页面保留各自倍率或上游费率；用量估算仍按请求对应 Provider、模型、时间和历史费率版本分别计算。DeepSeek 价格文档中的旧模型别名沿用其官方映射与峰谷价。
+Agent 配置分为 Provider 和模型资料两个页面。模型资料从当前 Agent Provider 的已配置模型汇总，并用最新官方目录补充厂商、发布时间、上下文窗口和按百万 Token 划分的未缓存输入、输出、缓存命中输入费率。不同 Provider 上的同名模型在资料页合并，Provider 页面保留各自倍率或上游费率；用量估算仍按请求对应 Provider、模型、时间和历史费率版本分别计算。DeepSeek 价格文档中的旧模型别名沿用其官方映射与峰谷价，并在模型资料中归并到当前官方 ID（如 `deepseek-v4.1-flash` 展示为 `deepseek-flash`）。
 
 探测模型时优先采用 Provider 明确声明的上下文窗口和输入类型，缺失字段由已确认的官方目录补齐。无法确认的能力保持未知，不将缺失数据写成“不支持”。保存时仅写入已选模型的能力，切换地址后重新探测。Codex 将能力写入模型目录，Claude 按所选模型自动设置上下文窗口，已有的 Provider 级窗口设置优先。Claude 官方文字模型目录中的图片输入能力由已核验的模型族资料补齐，并覆盖历史配置中只有价格、没有模态字段的旧记录。
 

@@ -27,6 +27,15 @@ it.each([
  expect(estimateDeepseekCost(model,epoch(at),tokens)).toBe(expected);
 });
 
+it('identifies the current official ID for a documented DeepSeek legacy model alias',()=>{
+ expect(deepseekModelPricing('https://api.deepseek.com','deepseek-v4.1-flash')).toMatchObject({
+  canonical_model:'deepseek-flash',release_date:'2026-10-17',
+ });
+ expect(deepseekModelPricing('https://api.deepseek.com','deepseek-flash')).toMatchObject({
+  canonical_model:'deepseek-flash',release_date:'2026-10-17',
+ });
+});
+
 it('recognizes only confirmed Claude text-generation families as image-capable',()=>{
  expect(confirmedClaudeInputModalities('claude-fable-5')).toEqual(['text','image']);
  expect(confirmedClaudeInputModalities('claude-opus-4-5-20251101')).toEqual(['text','image']);

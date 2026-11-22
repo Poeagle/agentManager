@@ -15,6 +15,10 @@ export function hasOfficialModelMetadata(model:AgentModelMetadata):boolean {
  return model.api_pricing!=null||model.reference_credits!=null;
 }
 
+function canonicalModelName(model:string,metadata:AgentModelMetadata):string {
+ return metadata.canonical_model??model;
+}
+
 function modelVendor(model:string):string{
  const id=model.toLowerCase().split('/').at(-1)??model.toLowerCase();
  if(id.startsWith('gpt-'))return 'OpenAI';
@@ -38,6 +42,7 @@ function mergeMetadata(current:AgentModelMetadata|undefined,next:AgentModelMetad
  const merged:AgentModelMetadata={
   ...current,
   ...next,
+  canonical_model:current.canonical_model??next.canonical_model,
   release_date:current.release_date??next.release_date,
   official_context_window:current.official_context_window??next.official_context_window,
   context_window:next.official_context_window!=null?next.context_window
@@ -63,7 +68,6 @@ export function buildAgentModelCatalog(sources:Array<{agent:string;providers:Age
   const configs=(source.modelConfigs??[]).filter(matchesProvider);
   const modelIds=[...new Set([...provider.models,...configs.map(item=>item.model)])];
   for(const model of modelIds){
-   const vendor=modelVendor(model),key=`${vendor}\u0000${model}`;
    const config=configs.find(item=>item.model===model);
    const providerMetadata=providerModelMetadata(model,baseUrl,fields);
    const confirmedInputs=confirmedClaudeInputModalities(model);
@@ -73,11 +77,12 @@ export function buildAgentModelCatalog(sources:Array<{agent:string;providers:Age
    if(confirmedWindow&&!providerMetadata.context_window)providerMetadata.context_window=confirmedWindow;
    const metadata=mergeMetadata(config,providerMetadata);
    if(!hasOfficialModelMetadata(metadata)&&!confirmedClaudeInputModalities(model))continue;
+   const canonical=canonicalModelName(model,metadata),vendor=modelVendor(canonical),key=`${vendor}\u0000${canonical}`;
    const current=entries.get(key);
    if(current){
     Object.assign(current,mergeMetadata(current,metadata));
     if(!current.providers.includes(provider.name))current.providers.push(provider.name);
-   }else entries.set(key,{vendor,model,providers:[provider.name],...metadata});
+   }else entries.set(key,{...metadata,vendor,model:canonical,providers:[provider.name]});
   }
  }
  return [...entries.values()].sort((a,b)=>a.vendor.localeCompare(b.vendor)||a.model.localeCompare(b.model));
