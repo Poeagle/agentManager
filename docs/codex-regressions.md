@@ -64,6 +64,8 @@ npm run test:regression:accounts
 | 跨用户批量关闭标签页 | 确认后停止并删除所选标签页，历史记录保留；全部关闭后才能删 Provider | [ProviderUsageTable.test.tsx](../dashboard/tests/ProviderUsageTable.test.tsx)；[codex-environment-usage.test.ts](../server/tests/codex-environment-usage.test.ts)；[codex-environments.spec.ts](../e2e/codex-environments.spec.ts) |
 | 批量操作部分失败 | 显示失败项、保留失败标签页，不误删其他 Provider 的会话 | [ProviderUsageTable.test.tsx](../dashboard/tests/ProviderUsageTable.test.tsx) 的 partial failure；[codex-environment-usage.test.ts](../server/tests/codex-environment-usage.test.ts) 的 partial success |
 | 普通成员的薄终端客户端启动 | 仅绑定授权项目、独立 HOME 和连接通道；缺失的隔离路径不导致启动失败 | [terminal-worker-controls.test.ts](../server/tests/terminal-worker-controls.test.ts) 的 member namespace 用例 |
+| Codex Credits 金额换算及未知模型费率 | 以 25 Credits = 1 USD 换算各项模型用量，显示统一金额；未知模型不套用相似费率；金额固定两位小数，低于一分钱显示小于一分钱 | [estimated-token-cost.test.ts](../dashboard/tests/estimated-token-cost.test.ts)、[CodexAccountInsights.test.tsx](../dashboard/tests/CodexAccountInsights.test.tsx)、[model-pricing.test.ts](../server/tests/model-pricing.test.ts) |
+| 进行中的 Progress 分项金额实时更新 | 每笔原生 Token 回执到达时，按模型与速度重新计算 USD 总额和输入、缓存、推理、输出分项；待完成 Item 按边界取差，刷新后保持一致 | [conversation-live-cost.test.ts](../server/tests/conversation-live-cost.test.ts)、[ConversationStatisticsLabel.test.tsx](../dashboard/tests/ConversationStatisticsLabel.test.tsx)、[SessionConversationSend.test.tsx](../dashboard/tests/SessionConversationSend.test.tsx)、[session-metadata.spec.ts](../e2e/session-metadata.spec.ts) |
 
 真实双账号测试另外验证目标系统用户、项目路径、上下文回忆、原生历史双向复制和浏览器
 展示。真实 SSH 密钥路径、登录凭据及会话内容不进入测试仓库；实际 SSH 密码认证仍需在

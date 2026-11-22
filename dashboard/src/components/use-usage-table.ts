@@ -4,8 +4,8 @@ import {useMemo,useState} from 'react';
 import {useTableModel,type TableColumn,type TableModel} from './table/use-table-model';
 import {groupUsage,type Dimension,type Metrics,type UsageGroup,type UsageRow} from './codex-usage-groups';
 
-export const usageFieldDescriptions:Record<string,string>={'label':'按所选维度分组；日期使用平台本地时区，项目按工作目录区分。','cwd':'可解析的软链接别名按真实工作目录合并；显示平台登记目录或真实目录，原始路径仍保留在日志和 CSV 中。','input':'各请求的输入 Token 累加，包含缓存输入和重复上下文。','cached':'输入 Token 中命中缓存的部分。','uncached':'输入减去缓存输入；缺失或数值异常时显示未知。','hit':'缓存输入除以输入；汇总时先相加再计算。','output':'输出 Token 累加；推理 Token 包含在输出中。','total':'原生日志中记录的总 Token 累加。','actual':'周额度已用百分比的采样变化，按所选周期订阅参考值分配；只覆盖可采集且可分配的区间；数据不完整时按已有记录分配，可能存在偏差。读数未变时为零，但不能证明没有耗用。数值单位为百分点。','credits':'以标准 Credits 费率为基准估算订阅额度相对用量；Fast 按 2.5 倍，未记录档位按标准估算，不是实际账单。','share':'该项预估积分占实际统计范围内同周期全部项目和模型预估积分的比例；搜索和字段筛选不改变分母。'};
-usageFieldDescriptions.cost=`${usageFieldDescriptions.credits} ${usageFieldDescriptions.actual} 括号内为耗用积分除以额度，即每 1 额度对应的积分；额度为零或字段缺失时不计算。此列按耗用积分排序和筛选。`;
+export const usageFieldDescriptions:Record<string,string>={'label':'按所选维度分组；日期使用平台本地时区，项目按工作目录区分。','cwd':'可解析的软链接别名按真实工作目录合并；显示平台登记目录或真实目录，原始路径仍保留在日志和 CSV 中。','input':'各请求的输入 Token 累加，包含缓存输入和重复上下文。','cached':'输入 Token 中命中缓存的部分。','uncached':'输入减去缓存输入；缺失或数值异常时显示未知。','hit':'缓存输入除以输入；汇总时先相加再计算。','output':'输出 Token 累加；推理 Token 包含在输出中。','total':'原生日志中记录的总 Token 累加。','actual':'周额度已用百分比的采样变化，按所选周期订阅参考值分配；只覆盖可采集且可分配的区间；数据不完整时按已有记录分配，可能存在偏差。读数未变时为零，但不能证明没有耗用。数值单位为百分点。','cost':'将 Codex Credits 按 25 Credits = 1 USD 换算为 API 等值金额，不代表订阅账单；只覆盖已知模型费率。','share':'该项预估金额占实际统计范围内同周期全部项目和模型预估金额的比例；搜索和字段筛选不改变分母。'};
+usageFieldDescriptions.cost+=` ${usageFieldDescriptions.actual} 括号内为预估金额除以采样额度；额度为零或字段缺失时不计算。此列按预估金额排序和筛选。`;
 usageFieldDescriptions.reasoning='推理 Token 和对应的预估耗费已计入输出。';
 type Leaf=UsageRow&{modelName:string|null;missing:boolean};
 const number=(m:Metrics,key:string)=>m.tokens[key]??null;
@@ -15,7 +15,7 @@ const periodKey=(row:UsageRow,dimension:Dimension)=>usagePeriod(row.date,row.hou
 const collator=new Intl.Collator('zh-CN',{numeric:true,sensitivity:'base'});
 function value(group:UsageGroup,key:string):string|number|null{
  const m=group.metrics;
- switch(key){case 'label':return group.label;case 'cwd':return group.detail||null;case 'input':return number(m,'input_tokens');case 'cached':return number(m,'cached_input_tokens');case 'uncached':return uncached(m);case 'hit':return hit(m);case 'reasoning':return number(m,'reasoning_output_tokens');case 'output':return number(m,'output_tokens');case 'total':return number(m,'total_tokens');case 'credits':case 'share':return m.estimated_credits??null;default:return null;}
+ switch(key){case 'label':return group.label;case 'cwd':return group.detail||null;case 'input':return number(m,'input_tokens');case 'cached':return number(m,'cached_input_tokens');case 'uncached':return uncached(m);case 'hit':return hit(m);case 'reasoning':return number(m,'reasoning_output_tokens');case 'output':return number(m,'output_tokens');case 'total':return number(m,'total_tokens');case 'cost':case 'share':return m.estimated_usd??null;default:return null;}
 }
 function sortGroups(groups:UsageGroup[],sort:{key:string;direction:'asc'|'desc'}|null):UsageGroup[]{
  const result=groups.map(group=>({...group,children:sortGroups(group.children,sort)}));if(!sort)return result;
@@ -35,21 +35,21 @@ export function useUsageTable(rows:UsageRow[],dimension:Dimension,referenceRows:
   {key:'reasoning',description:usageFieldDescriptions.reasoning,title:'推理',kind:'number',filterMode:'range',value:r=>number(r,'reasoning_output_tokens')},
   {key:'output',description:usageFieldDescriptions.output,title:'输出',kind:'number',filterMode:'range',value:r=>number(r,'output_tokens')},
   {key:'total',description:usageFieldDescriptions.total,title:'总量',kind:'number',filterMode:'range',value:r=>number(r,'total_tokens')},
-  {key:'credits',description:usageFieldDescriptions.cost,title:'耗用积分 | 额度',kind:'number',filterMode:'range',value:r=>r.estimated_credits??null},
+  {key:'cost',description:usageFieldDescriptions.cost,title:'预估金额 | 额度',kind:'number',filterMode:'range',value:r=>r.estimated_usd??null},
  ],[dimension]);
  const base=useTableModel(leaves,columns);
  const denominators=useMemo(()=>{
   const totals=new Map<string,number|null>();
-  for(const row of referenceRows){const key=periodKey(row,dimension);if(!totals.has(key))totals.set(key,null);for(const model of row.models?.length?row.models:[row])if(model.estimated_credits!=null)totals.set(key,(totals.get(key)??0)+model.estimated_credits);}
+  for(const row of referenceRows){const key=periodKey(row,dimension);if(!totals.has(key))totals.set(key,null);for(const model of row.models?.length?row.models:[row])if(model.estimated_usd!=null)totals.set(key,(totals.get(key)??0)+model.estimated_usd);}
   return totals;
  },[referenceRows,dimension]);
- const shareColumns=useMemo<TableColumn<Leaf>[]>(()=>[{key:'share',description:usageFieldDescriptions.share,title:'占比',kind:'number',filterMode:'range',value:r=>{const denominator=denominators.get(periodKey(r,dimension));return denominator&&r.estimated_credits!=null?100*r.estimated_credits/denominator:null;}}],[denominators,dimension]);
+ const shareColumns=useMemo<TableColumn<Leaf>[]>(()=>[{key:'share',description:usageFieldDescriptions.share,title:'占比',kind:'number',filterMode:'range',value:r=>{const denominator=denominators.get(periodKey(r,dimension));return denominator&&r.estimated_usd!=null?100*r.estimated_usd/denominator:null;}}],[denominators,dimension]);
  const share=useTableModel(base.rows,shareColumns);
  const selected=useMemo<UsageRow[]>(()=>share.rows.map(({modelName:_,missing:__,...row})=>row),[share.rows]);
  const groups=useMemo(()=>sortGroups(groupUsage(selected,dimension,groupRange),sort),[selected,dimension,groupRange,sort]);
  const table:TableModel<Leaf>={...base,columns:[...columns,...shareColumns],sort,filters:{...base.filters,...share.filters},active:base.active||share.active||!!sort,
   toggleSort(key){setSort(current=>current?.key!==key?{key,direction:'asc'}:current.direction==='asc'?{key,direction:'desc'}:null);},
   setFilter(key,filter){(key==='share'?share:base).setFilter(key,filter);},options(key){return (key==='share'?share:base).options(key);},reset(){base.reset();share.reset();setSort(null);},rows:share.rows};
- const creditTotals=useMemo(()=>new Map(groupUsage(referenceRows,dimension,groupRange).map(group=>[group.key,group.metrics.estimated_credits??null])),[referenceRows,dimension,groupRange]);
- return {rows:selected,groups,table,creditTotals};
+ const amountTotals=useMemo(()=>new Map(groupUsage(referenceRows,dimension,groupRange).map(group=>[group.key,group.metrics.estimated_usd??null])),[referenceRows,dimension,groupRange]);
+ return {rows:selected,groups,table,amountTotals};
 }

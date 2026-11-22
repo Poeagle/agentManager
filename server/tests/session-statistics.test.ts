@@ -329,13 +329,13 @@ describe('persisted session statistics',()=>{
     const standard=readSessionMetadata(codex)!;
     expect(standard.latest?.dimensions.speed).toBe('default');
     expect(standard.totals?.cost).toMatchObject({complete:true});
-    expect(standard.totals?.cost?.amount).toBeCloseTo(0.0164205,10);
+    expect(standard.totals?.cost?.amount).toBeCloseTo(0.00065682,10);
 
     await appendFile(file,speed(6,'priority')+round(7,'fast'));
     await updateSessionFacts(codex,file);
     const fast=readSessionMetadata(codex)!;
     expect(fast.latest).toMatchObject({dimensions:{speed:'priority'},cost:{complete:true}});
-    expect(fast.latest?.cost?.amount).toBeCloseTo(0.04105125,10);
+    expect(fast.latest?.cost?.amount).toBeCloseTo(0.00131364,10);
 
     closeDb();initDb();
     await appendFile(file,speed(13,null)+round(14,'ordinary'));
@@ -348,7 +348,7 @@ describe('persisted session statistics',()=>{
     ]));
     const costs=readSessionUsageIntervals(codex)!.rows.map(row=>row.usage?.cost);
     expect(costs.every(cost=>cost?.complete)).toBe(true);
-    expect(costs[2]?.amount).toBeCloseTo(0.0164205,10);
+    expect(costs[2]?.amount).toBeCloseTo(0.00065682,10);
   });
 
   it('detects a native model and speed change in a single input, and breaks comparisons across missing receipts',async()=>{
@@ -541,7 +541,7 @@ describe('persisted session statistics',()=>{
     const active=readSessionProgress(codex)?.segment;
     expect(active).toMatchObject({requests:3,tokens:{total_tokens:6060},
       unassigned:{requests:2,tool_calls:1,tokens:{total_tokens:5040}}});
-    expect(active!.unassigned!.cost!.amount).toBeCloseTo(0.0415);
+    expect(active!.unassigned!.cost!.amount).toBeCloseTo(0.00166);
     expectUsageSum({...active!,shared_messages:1},[readChangedSessionStatistics(codex,0)[0].interval!,active!.unassigned!]);
     expect(readSessionProgress(codex)?.step).toMatchObject({after_message_id:nativeItemId('assistant','visible'),
       requests:2,tokens:{total_tokens:5040}});

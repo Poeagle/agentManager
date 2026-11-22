@@ -1,8 +1,8 @@
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
-import {initModelPricing,parseHolidayNotice,pricingSnapshot,pricingSources,refreshModelPricing,estimatePublicApiCost} from '../src/services/agents/model-pricing.js';
+import {initModelPricing,parseHolidayNotice,pricingSnapshot,pricingSources,refreshModelPricing,estimatePublicApiCost,publicApiPricing} from '../src/services/agents/model-pricing.js';
 import {deepseekModelPricing,estimateDeepseekCost} from '../src/services/agents/codex/deepseek-pricing.js';
-import {estimateUsageCredits} from '../src/services/agents/codex/usage-credits.js';
+import {estimateUsageCredits,estimateUsageUsd} from '../src/services/agents/codex/usage-credits.js';
 
 let fixture:ReturnType<typeof createTestDatabase>;
 beforeEach(()=>{fixture=createTestDatabase();initModelPricing();});
@@ -44,7 +44,7 @@ it('persists validated versions, preserves the previous tariff on bad documents 
  const codex=`## Speed multipliers
 | GPT-6.2 Sol | 2x | 2x |
 ## Credits
-<table>Credits per 1M tokens<tr><td>GPT-6.2 Sol</td><td>50 credits</td><td>2.5 credits</td><td>250 credits</td></tr></table>`;
+<table>Credits per 1M tokens<tr><td>GPT-6.2 Sol</td><td>50 credits</td><td>2.5 credits</td><td>250 credits</td></tr><tr><td>GPT-6.2 Astra</td><td>200 credits</td><td>10 credits</td><td>1,000 credits</td></tr></table>`;
  const claude=`| Model | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |
 | Claude Sonnet 5.5 | $2 / MTok | $2.50 / MTok | $4 / MTok | $0.10 / MTok<sup>2</sup> | $10 / MTok |`;
  const openai='### Standard pricing data\n| gpt-6.2-sol | $2 | $10 | $0.10 |';
@@ -53,10 +53,16 @@ it('persists validated versions, preserves the previous tariff on bad documents 
  const first=epoch('2026-11-23T01:00:00Z'),second=first+3600000;
  await refreshModelPricing(fetcher,undefined,first);
  expect(estimateUsageCredits('gpt-6.2-sol','fast',tokens)).toBe(102.5);
+ expect(estimateUsageUsd('gpt-6.2-sol','standard',tokens)).toBe(2.05);
+ expect(estimateUsageUsd('gpt-6.2-sol','fast',tokens)).toBe(4.1);
+ expect(estimateUsageUsd('gpt-6.2-astra','standard',tokens)).toBe(8.2);
+ expect(estimateUsageUsd('unpriced-model','standard',tokens)).toBeNull();
  expect(estimatePublicApiCost('openai','gpt-6.2-sol',new Date(first).toISOString(),tokens)).toMatchObject({amount:2.05,breakdown:{input:1,cache:0.05,output:1,reasoning:null}});
  const claudeCost=estimatePublicApiCost('claude','claude-sonnet-5-5',new Date(first).toISOString(),tokens,[100_000,100_000]);
  expect(claudeCost?.amount).toBeCloseTo(2.3);
  expect(claudeCost?.breakdown).toMatchObject({input:1.25,cache:0.05,output:1,reasoning:null});
+ expect(publicApiPricing('claude','gateway-custom-alias')).toBeUndefined();
+ expect(estimatePublicApiCost('claude','gateway-custom-alias',new Date(first).toISOString(),tokens)).toBeNull();
  documents[pricingSources.deepseek]=deepseek(4);
  await refreshModelPricing(fetcher,undefined,second);
  documents[pricingSources.deepseek]='upstream error';

@@ -1,9 +1,9 @@
-import {pricingSnapshot,tokenPrice} from '../model-pricing.js';
+import {pricingSnapshot,tokenPrice,tokenPriceBreakdown} from '../model-pricing.js';
 
 /** Current-rate equivalent, not an invoice or historical price reconstruction.
- * Source: https://learn.chatgpt.com/docs/pricing (verified 2026-11-18).
+ * Source: https://learn.chatgpt.com/docs/pricing (verified 2026-11-22).
  * Values are credits per million uncached input / cached input / output. */
-export const CREDIT_RATE_DATE='2026-11-18';
+export const CREDIT_RATE_DATE='2026-11-22';
 export const CREDIT_RATES:Record<string,readonly [number,number,number]>={
  'gpt-6.2-astra':[200,10,1000],
  'gpt-6.2-sol':[50,2.5,250],
@@ -16,6 +16,8 @@ export const CREDIT_RATES:Record<string,readonly [number,number,number]>={
  'gpt-5.6-terra':[50,5,300],
  'gpt-5.6-luna':[5,0.5,30],
 };
+/** Codex USD usage is priced at 25 credits per dollar. */
+export const CREDITS_PER_USD=25;
 export type UsageEstimateBasis='credits'|'subscription';
 export function creditRate(model:string){
  const snapshot=pricingSnapshot('codex');
@@ -59,4 +61,14 @@ export function estimateUsageBreakdown(model:string|null,tier:string|null,tokens
  const {rates:rate}=creditRate(model)!, multiplier=speedMultiplier(model,tier,basis)!/1e6;
  const reasoning=tokens.reasoning_output_tokens;
  return {input:(tokens.input_tokens!-tokens.cached_input_tokens!)*rate.input*multiplier,cache:tokens.cached_input_tokens!*(rate.cached??0)*multiplier,output:tokens.output_tokens!*rate.output*multiplier,reasoning:typeof reasoning==='number'&&Number.isFinite(reasoning)&&reasoning>=0&&reasoning<=tokens.output_tokens!?reasoning*rate.output*multiplier:null};
+}
+
+export function usdReferenceRateDate(){return creditRateDate();}
+export function estimateUsageUsd(model:string|null,tier:string|null,tokens:Record<string,number|null>):number|null{
+ const credits=estimateUsageCredits(model,tier,tokens,'credits');
+ return credits===null?null:credits/CREDITS_PER_USD;
+}
+export function estimateUsageUsdBreakdown(model:string|null,tier:string|null,tokens:Record<string,number|null>){
+ const breakdown=estimateUsageBreakdown(model,tier,tokens,'credits');
+ return breakdown?{input:breakdown.input/CREDITS_PER_USD,cache:breakdown.cache/CREDITS_PER_USD,output:breakdown.output/CREDITS_PER_USD,reasoning:breakdown.reasoning===null?null:breakdown.reasoning/CREDITS_PER_USD}:null;
 }

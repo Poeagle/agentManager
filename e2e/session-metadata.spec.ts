@@ -99,6 +99,27 @@ test('restores split Claude thinking after reload and uses secondary text colors
   await expect(answer).not.toHaveCSS('color','rgb(173, 178, 184)');
 });
 
+test('streams per-part USD-equivalent estimates as Codex token usage grows',async({page})=>{
+  const session=await setup(page,'codex','detached');
+  const usage=(seconds:number,total:number)=>event(seconds,'token_count',{turn_id:'priced-live',info:{
+    total_token_usage:{total_tokens:total,input_tokens:total*10/11,cached_input_tokens:total*9/11,output_tokens:total/11,reasoning_output_tokens:total/110},
+    last_token_usage:{total_tokens:1100000,input_tokens:1000000,cached_input_tokens:900000,output_tokens:100000,reasoning_output_tokens:10000},
+  }});
+  writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+event(1,'task_started',{turn_id:'priced-live'})+
+    record(2,'turn_context',{turn_id:'priced-live',model:'gpt-6.2-sol',service_tier:'default'})+
+    message(3,'priced-progress','assistant','正在执行模型请求','commentary'));
+  await page.routeWebSocket('**/conversation/stream*',route=>route.connectToServer());
+  await page.goto('/');
+  await expect(session.chat.getByText('正在执行模型请求',{exact:true})).toBeVisible();
+  appendFileSync(session.log,usage(4,1100000));
+  const live=session.chat.locator('.session-chat-progress summary .session-chat-message-statistics');
+  await expect(live).toContainText('1.1M ($1.29)｜100K ($0.20)｜900K ($0.09 | 90%)｜10K ($0.10)｜100K ($1.00)');
+  appendFileSync(session.log,usage(5,2200000));
+  await expect(live).toContainText('2.2M ($2.58)｜200K ($0.40)｜1.8M ($0.18 | 90%)｜20K ($0.20)｜200K ($2.00)');
+  appendFileSync(session.log,message(6,'priced-final','assistant','计费统计完成','final_answer')+event(7,'task_complete',{turn_id:'priced-live'}));
+  await expect(session.chat.getByText('计费统计完成',{exact:true})).toBeVisible();
+});
+
 test('shows the same persisted Codex estimates, request intervals and dated cache incident after live append and reconnect',async({page},testInfo)=>{
   const session=await setup(page,'codex','detached');
   const prefix=record(0,'session_meta',{id:session.nativeId,cwd:join(root,session.id)})+
@@ -128,9 +149,9 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   await expect(incident).toContainText('11K / 10K (90.91%)');
   await expect(incident).toContainText('10K / 0 (0.0%)');
   await expect(incident).toContainText('2026-11-20');
-  const credits=session.chat.locator('.conversation-total-credits');
-  await expect(credits).toHaveText(/^Est\. Cr [\d,]+\.\d$/);
-  await expect(credits).toHaveCSS('color','rgb(126, 34, 206)');
+  const estimatedAmount=session.chat.locator('.conversation-total-credits');
+  await expect(estimatedAmount).toHaveText(/^Est\. \$[\d,]+\.\d\d(?:\*)?$/);
+  await expect(estimatedAmount).toHaveCSS('color','rgb(126, 34, 206)');
   const final=session.chat.locator('[data-phase=final]').filter({hasText:'第二问答复'});
   await expect(final.locator('.session-chat-message-statistics')).toContainText('1 round | 0 calls');
   await expect(incident.locator('button')).toHaveCount(0);
@@ -150,7 +171,7 @@ test('shows the same persisted Codex estimates, request intervals and dated cach
   await expect(details.getByRole('table',{name:'按模型用量'})).toContainText('gpt-6.1-terra');
   await expect(details.getByRole('table',{name:'按模型用量'})).toContainText('priority');
   const usage=details.getByRole('table',{name:'逐区间用量'});
-  await expect(usage.getByRole('columnheader')).toHaveText(['时间','总输入','缓存输入','未缓存输入','缓存率','输出','总量','Round','Call','预估积分']);
+  await expect(usage.getByRole('columnheader')).toHaveText(['时间','总输入','缓存输入','未缓存输入','缓存率','输出','总量','Round','Call','预估金额']);
   const firstRound=usage.locator('[data-interval-kind="final"]').filter({hasText:'21,040'});
   await expect(firstRound.getByRole('cell',{name:'2',exact:true})).toHaveCount(2);
   await firstRound.getByRole('button',{name:'展开轮次用量'}).click();
@@ -465,15 +486,15 @@ test('shows complete estimates with default speed and uses native Fast settings 
 
   writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+round(1,'standard','默认速度答复'));
   await page.goto('/');
-  const finalCredits=(text:string)=>session.chat.locator('[data-phase="final"]').filter({hasText:text})
+  const finalAmount=(text:string)=>session.chat.locator('[data-phase="final"]').filter({hasText:text})
     .locator('.session-chat-message-statistics .session-chat-estimated-cost').first();
-  await expect(finalCredits('默认速度答复')).toHaveText('0.016');
+  await expect(finalAmount('默认速度答复')).toHaveText('<$0.01');
   appendFileSync(session.log,event(7,'thread_settings_applied',{thread_settings:{model:'gpt-6-luna',service_tier:'priority'}})+
     round(8,'fast','Fast 速度答复'));
-  await expect(finalCredits('Fast 速度答复')).toHaveText('0.041');
+  await expect(finalAmount('Fast 速度答复')).toHaveText('<$0.01');
   await page.reload();
-  await expect(finalCredits('默认速度答复')).toHaveText('0.016');
-  await expect(finalCredits('Fast 速度答复')).toHaveText('0.041');
+  await expect(finalAmount('默认速度答复')).toHaveText('<$0.01');
+  await expect(finalAmount('Fast 速度答复')).toHaveText('<$0.01');
   const {metadata}=await read(page,session.api+'/conversation/metadata');
   expect(metadata.models).toEqual(expect.arrayContaining([
     expect.objectContaining({speed:'default',requests:1,cost:expect.objectContaining({complete:true})}),

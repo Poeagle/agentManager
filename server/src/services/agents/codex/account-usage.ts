@@ -15,7 +15,7 @@ import {localHome} from './account-files.js';
 import {accountCommandInput,localCommandInput} from './account-transport.js';
 import {USAGE_EVENT_LIMIT,USAGE_SCAN} from './usage-scanner.js';
 import {tokenFields} from '../../conversation-usage.js';
-import {creditRateDate,estimateUsageCredits,estimateUsageBreakdown} from './usage-credits.js';
+import {creditRateDate,usdReferenceRateDate,estimateUsageCredits,estimateUsageBreakdown,estimateUsageUsd,estimateUsageUsdBreakdown} from './usage-credits.js';
 import {createHash} from 'node:crypto';
 import {deepseekDay,deepseekOrigin,estimateDeepseekBreakdown} from './deepseek-pricing.js';
 import type {TokenCostBreakdown} from '../types.js';
@@ -239,7 +239,7 @@ function quotaByModel(allocation:Map<string,number>,day:string,cwd:string,model:
 function addBreakdown(a:TokenCostBreakdown|undefined,b:TokenCostBreakdown):TokenCostBreakdown{
  return a?{input:a.input+b.input,cache:a.cache+b.cache,output:a.output+b.output,reasoning:a.reasoning===null||b.reasoning===null?null:a.reasoning+b.reasoning}:{...b};
 }
-type ModelUsage={model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number};cost_breakdown?:TokenCostBreakdown;api_cost?:ApiCost};
+type ModelUsage={model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number};estimated_usd:number|null;usd_coverage:{covered:number;total:number};usd_breakdown?:TokenCostBreakdown;cost_breakdown?:TokenCostBreakdown;api_cost?:ApiCost};
 export function cachedAccountUsage(id:string){
  const db=getDb(),timezone=usageStoredTimezone(id),timezone_pending=timezone!==usageTimezone()?usageTimezone():null;
  const environment=getCodexEnvironment(id),basis=environment.kind==='provider'?'credits':'subscription',unassigned=unassignedUsage(id,basis);
@@ -254,14 +254,15 @@ export function cachedAccountUsage(id:string){
  const breakdown=(fileBreakdown??usageAggregates(id).map(row=>{const tokens=JSON.parse(row.tokens);return {...row,...tokens,requests:tokens.requests??1};})).map(row=>({...row,cwd:directoryFor(row.cwd).cwd}));
  const groups=new Map<string,Record<string,any>>();for(const row of breakdown){const key=JSON.stringify([row.day,row.cwd]);let group=groups.get(key);if(!group){group={day:row.day,cwd:row.cwd,...Object.fromEntries(tokenFields.map(k=>[k,row[k]??null]))};groups.set(key,group);}else for(const k of tokenFields)group[k]=group[k]==null||row[k]==null?null:group[k]+row[k];}
  const rows=[...groups.values()].sort((a,b)=>b.day.localeCompare(a.day)||a.cwd.localeCompare(b.cwd)).slice(0,5001);
- const estimates=new Map<string,{value:number;covered:number;requests:number}>();
+ const estimates=new Map<string,{value:number;covered:number;requests:number;usd:number;usdCovered:number}>();
  const models=new Map<string,Map<string,ModelUsage>>();
  for(const row of breakdown){
-  const key=JSON.stringify([row.day,row.cwd]),group=estimates.get(key)||{value:0,covered:0,requests:0};const value=estimateUsageCredits(row.model,row.tier,row,basis);group.requests+=row.requests;if(value!==null){group.value+=value;group.covered+=row.requests;}estimates.set(key,group);
+  const key=JSON.stringify([row.day,row.cwd]),group=estimates.get(key)||{value:0,covered:0,requests:0,usd:0,usdCovered:0};const value=estimateUsageCredits(row.model,row.tier,row,basis),usd=estimateUsageUsd(row.model,row.tier,row);group.requests+=row.requests;if(value!==null){group.value+=value;group.covered+=row.requests;}if(usd!==null){group.usd+=usd;group.usdCovered+=row.requests;}estimates.set(key,group);
   const byModel=models.get(key)||new Map<string,ModelUsage>(),modelKey=JSON.stringify(row.model);
-  const model:ModelUsage=byModel.get(modelKey)||{model:row.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0}};
+  const model:ModelUsage=byModel.get(modelKey)||{model:row.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0},estimated_usd:null,usd_coverage:{covered:0,total:0}};
   for(const field of tokenFields)model.tokens[field]=model.tokens[field]===null||row[field]===null?null:model.tokens[field]!+row[field];
   model.credit_coverage.total+=row.requests;if(value!==null){model.estimated_credits=(model.estimated_credits??0)+value;model.credit_coverage.covered+=row.requests;const cost=estimateUsageBreakdown(row.model,row.tier,row,basis);if(cost)model.cost_breakdown=addBreakdown(model.cost_breakdown,cost);}
+  model.usd_coverage.total+=row.requests;if(usd!==null){model.estimated_usd=(model.estimated_usd??0)+usd;model.usd_coverage.covered+=row.requests;const cost=estimateUsageUsdBreakdown(row.model,row.tier,row);if(cost)model.usd_breakdown=addBreakdown(model.usd_breakdown,cost);}
   byModel.set(modelKey,model);models.set(key,byModel);
  }
  const quota_range:{start:string|null;end:string|null}={start:null,end:null},quota_hours:Array<{hour:string;quota:number}>=[],allocation=allocatedQuota(id,quota_range,quota_hours,timezone);
@@ -270,10 +271,11 @@ export function cachedAccountUsage(id:string){
 
  const progress=db.prepare('SELECT data FROM codex_usage_progress WHERE account=?').get(id) as {data:string}|undefined;
  const initialized=!!db.prepare('SELECT account FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
- return {storage:fileBreakdown!==null?csvStorage(id):databaseStorage(),initialized,checked_at:status?.checked_at??null,quota_range,quota_hours,error:ruleWarning??status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:!!ruleWarning||status?.partial!==0||rows.length>5000||!!timezone_pending||!!unassigned,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:creditRateDate(),rows:rows.slice(0,5000).map(row=>{
+ return {storage:fileBreakdown!==null?csvStorage(id):databaseStorage(),initialized,checked_at:status?.checked_at??null,quota_range,quota_hours,error:ruleWarning??status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:!!ruleWarning||status?.partial!==0||rows.length>5000||!!timezone_pending||!!unassigned,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:creditRateDate(),usd_rate_date:usdReferenceRateDate(),rows:rows.slice(0,5000).map(row=>{
 
   const estimate=estimates.get(JSON.stringify([row.day,row.cwd]));
-  return {date:row.day,...directoryFor(row.cwd),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null,models:[...(models.get(JSON.stringify([row.day,row.cwd]))?.values()||[])].map(model=>({...model,actual_quota:quotaByModel(allocation,row.day,row.cwd,model.model)})).sort((a,b)=>(b.tokens.total_tokens??0)-(a.tokens.total_tokens??0))};
+  const modelRows=[...(models.get(JSON.stringify([row.day,row.cwd]))?.values()||[])];
+  return {date:row.day,...directoryFor(row.cwd),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null,estimated_usd:estimate?.usdCovered?estimate.usd:null,usd_coverage:estimate?{covered:estimate.usdCovered,total:estimate.requests}:null,models:modelRows.map(model=>({...model,actual_quota:quotaByModel(allocation,row.day,row.cwd,model.model)})).sort((a,b)=>(b.tokens.total_tokens??0)-(a.tokens.total_tokens??0))};
  })};
 }
 /** Populate timestamps only for previously recorded event identities. Existing
@@ -369,8 +371,8 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   if(recovered&&JSON.stringify({...recovered,day:'',hour:null,at:null})===JSON.stringify({...event,day:'',hour:null,at:null}))continue;
   partial=true;if(!unassignedEvents.has(resolved))unassignedEvents.set(resolved,event);else if(JSON.stringify(unassignedEvents.get(resolved))!==JSON.stringify(event))unassignedEvents.set(resolved,null);
  }
- const retained={tokens:Object.fromEntries(tokenFields.map(k=>[k,0])) as Record<string,number|null>,requests:0,estimated_credits:null as number|null};
- for(const event of unassignedEvents.values())if(event){const counters=JSON.parse(event.tokens);retained.requests++;for(const k of tokenFields)retained.tokens[k]=retained.tokens[k]===null||counters[k]===null?null:retained.tokens[k]!+counters[k];const amount=estimateUsageCredits(event.model,event.tier,counters,basis);if(amount!==null)retained.estimated_credits=(retained.estimated_credits??0)+amount;}
+ const retained={tokens:Object.fromEntries(tokenFields.map(k=>[k,0])) as Record<string,number|null>,requests:0,estimated_credits:null as number|null,estimated_usd:null as number|null};
+ for(const event of unassignedEvents.values())if(event){const counters=JSON.parse(event.tokens);retained.requests++;for(const k of tokenFields)retained.tokens[k]=retained.tokens[k]===null||counters[k]===null?null:retained.tokens[k]!+counters[k];const amount=estimateUsageCredits(event.model,event.tier,counters,basis),usd=estimateUsageUsd(event.model,event.tier,counters);if(amount!==null)retained.estimated_credits=(retained.estimated_credits??0)+amount;if(usd!==null)retained.estimated_usd=(retained.estimated_usd??0)+usd;}
  const directoryFor=usageDirectoryPresenter();
  const grouped=new Map<string,{date:string;hour?:string|null;cwd:string;tokens:Record<string,number|null>;requests:number;models:Map<string,ModelUsage>;api_cost?:ApiCost}>();
  let unknownTodayTime=false;
@@ -379,8 +381,8 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   if(!row){row={date:event.day,...granularity==='hour'?{hour}:{},cwd,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),requests:0,models:new Map()};grouped.set(key,row);}
   const tokens=JSON.parse(event.tokens);const requests=tokens.requests??1;row.requests+=requests;
   const modelKey=JSON.stringify(event.model);let model=row.models.get(modelKey);
-  if(!model){model={model:event.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0}};row.models.set(modelKey,model);}
-  model.credit_coverage.total+=requests;const estimate=estimateUsageCredits(event.model,event.tier,tokens,basis);if(estimate!==null){model.estimated_credits=(model.estimated_credits??0)+estimate;model.credit_coverage.covered+=requests;const cost=estimateUsageBreakdown(event.model,event.tier,tokens,basis);if(cost)model.cost_breakdown=addBreakdown(model.cost_breakdown,cost);}
+  if(!model){model={model:event.model,tokens:Object.fromEntries(tokenFields.map(k=>[k,0])),estimated_credits:null,credit_coverage:{covered:0,total:0},estimated_usd:null,usd_coverage:{covered:0,total:0}};row.models.set(modelKey,model);}
+  model.credit_coverage.total+=requests;const estimate=estimateUsageCredits(event.model,event.tier,tokens,basis),usd=estimateUsageUsd(event.model,event.tier,tokens);if(estimate!==null){model.estimated_credits=(model.estimated_credits??0)+estimate;model.credit_coverage.covered+=requests;const cost=estimateUsageBreakdown(event.model,event.tier,tokens,basis);if(cost)model.cost_breakdown=addBreakdown(model.cost_breakdown,cost);}model.usd_coverage.total+=requests;if(usd!==null){model.estimated_usd=(model.estimated_usd??0)+usd;model.usd_coverage.covered+=requests;const cost=estimateUsageUsdBreakdown(event.model,event.tier,tokens);if(cost)model.usd_breakdown=addBreakdown(model.usd_breakdown,cost);}
   if(official){
    const at=Date.parse(event.at??''),timeKnown=Number.isFinite(at)&&!ambiguousTimes.has(requestId);
    const breakdown=requests===1&&timeKnown?estimateDeepseekBreakdown(event.model,at,tokens):null;
@@ -408,7 +410,7 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
  if(single&&granularity==='hour'){allocation.clear();for(const r of grouped.values()){const total=r.hour?hourTotals.get(r.hour):undefined,denominator=r.hour?hourCredits.get(r.hour):undefined;if(total!==undefined&&denominator)for(const m of r.models.values())if(m.estimated_credits!==null)allocation.set(JSON.stringify([r.date,r.hour,r.cwd,m.model]),total*m.estimated_credits/denominator);}}
 
  const api_pricing=official?{currency:'CNY',today:{...today,date:todayDate,partial:partial||unknownTodayTime||today.coverage.covered<today.coverage.total}}:undefined;
- return {storage,initialized:checked.length>0,checked_at:checked.sort()[0]??null,quota_range,quota_hours,timezone,unassigned:single?unassignedUsage(ids[0],basis):retained.requests?retained:null,credit_rate_date:creditRateDate(),partial,...api_pricing?{api_pricing}:{},error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()].map(model=>({...model,actual_quota:quotaByModel(allocation,row.date,row.cwd,model.model,row.hour)})),known=entries.filter(m=>m.estimated_credits!==null);return {...row,...directoryFor(row.cwd),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)}};})};
+ return {storage,initialized:checked.length>0,checked_at:checked.sort()[0]??null,quota_range,quota_hours,timezone,unassigned:single?unassignedUsage(ids[0],basis):retained.requests?retained:null,credit_rate_date:creditRateDate(),usd_rate_date:usdReferenceRateDate(),partial,...api_pricing?{api_pricing}:{},error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()].map(model=>({...model,actual_quota:quotaByModel(allocation,row.date,row.cwd,model.model,row.hour)})),known=entries.filter(m=>m.estimated_credits!==null),money=entries.filter(m=>m.estimated_usd!==null);return {...row,...directoryFor(row.cwd),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)},estimated_usd:money.length?money.reduce((s,m)=>s+m.estimated_usd!,0):null,usd_coverage:{covered:entries.reduce((s,m)=>s+m.usd_coverage.covered,0),total:entries.reduce((s,m)=>s+m.usd_coverage.total,0)}};})};
 }
 /** Re-read with the current rule version, replacing only a proven superset of
  * the existing cache. A failed check retains all old data and retries later. */

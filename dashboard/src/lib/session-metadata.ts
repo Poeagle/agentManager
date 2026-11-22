@@ -129,9 +129,13 @@ export const coverageReason: Record<StatisticsReason, string> = {
 };
 
 export function creditsLabel(cost: ConversationCostEstimate | null | undefined) {
-  return cost?.amount == null ? '未提供' : new Intl.NumberFormat('en', {
-    minimumFractionDigits: 1, maximumFractionDigits: 1,
-  }).format(cost.amount) + (cost.complete ? '' : '*');
+  if (cost?.amount == null) return '未提供';
+  if (cost.unit !== 'credits' && cost.amount > 0 && cost.amount < 0.01)
+    return `<${cost.unit==='CNY'?'¥':'$'}0.01${cost.complete?'':'*'}`;
+  const formatted = new Intl.NumberFormat('en', cost.unit === 'credits'
+    ? {minimumFractionDigits:1,maximumFractionDigits:1}
+    : {style:'currency',currency:cost.unit==='CNY'?'CNY':'USD',minimumFractionDigits:2,maximumFractionDigits:2}).format(cost.amount);
+  return formatted + (cost.complete ? '' : '*');
 }
 
 export function uncachedInputTokens(tokens: Record<string, number | null> | null | undefined): number | null {

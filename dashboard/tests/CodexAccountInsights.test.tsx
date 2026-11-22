@@ -4,11 +4,11 @@ import {it,expect,vi} from 'vitest';
 import {CodexAccountInsights} from '../src/components/CodexAccountInsights';
 import {fetchJSON} from '../src/lib/api';
 vi.mock('../src/lib/api',()=>({fetchJSON:vi.fn()}));
-it.each([{mode:'account',unit:'Credits',prefix:''},{mode:'api',unit:'CNY',prefix:'¥'}])('shows itemized $unit on date, project and model rows',async({mode,unit,prefix})=>{
+it.each([{mode:'account',unit:'USD',prefix:'$'},{mode:'api',unit:'CNY',prefix:'¥'}])('shows itemized $unit on date, project and model rows',async({mode,unit,prefix})=>{
  const tokens={input_tokens:100,cached_input_tokens:60,reasoning_output_tokens:5,output_tokens:20,total_tokens:120};
  const breakdown={input:0.01,cache:0.002,reasoning:0.001,output:0.018};
  const api_cost={amount:0.03,breakdown,coverage:{covered:1,total:1}};
- const metrics=mode==='api'?{api_cost}:{cost_breakdown:breakdown,estimated_credits:0.03};
+ const metrics=mode==='api'?{api_cost}:{usd_breakdown:breakdown,estimated_usd:0.03,usd_coverage:{covered:1,total:1}};
  const pricing=mode==='api'?{api_pricing:{currency:'CNY',today:{...api_cost,date:'2026-11-22',partial:false}}}:{};
  vi.mocked(fetchJSON).mockImplementation(async url=>url.includes('/insights')?{usage:{...pricing,rows:[{date:'2026-11-22',cwd:'/itemized',tokens,models:[{model:'fixture-model',tokens,...metrics}]}]}}:{account:{},resets:null} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="itemized" name="Itemized" groupId={mode==='api'?'group':undefined} onClose={()=>{}}/></QueryClientProvider>);
@@ -16,7 +16,8 @@ it.each([{mode:'account',unit:'Credits',prefix:''},{mode:'api',unit:'CNY',prefix
  fireEvent.click(screen.getByRole('button',{name:'展开本页'}));
  for(const label of ['2026-11-22','/itemized','fixture-model']){
   const row=screen.getByText(label,{exact:true}).closest('tr')!;
-  expect(within(row).getAllByTitle(`预估耗费 (${unit})`).map(element=>element.textContent?.trim())).toEqual(['0.012','0.002','0.01','0.001','0.018','0.03'].map(amount=>`(${prefix}${amount})`));
+  const amounts=mode==='api'?['¥0.01','<¥0.01','¥0.01','<¥0.01','¥0.02','¥0.03']:['$0.01','<$0.01','$0.01','<$0.01','$0.02','$0.03'];
+  expect(within(row).getAllByTitle(`预估耗费 (${unit})`).map(element=>element.textContent?.trim())).toEqual(amounts.map(amount=>`(${amount})`));
  }
 });
 it('loads and groups precise UTC hourly records without changing daily statistics',async()=>{
@@ -31,18 +32,18 @@ it('shows local-day usage, formats collection time in the same zone and explicit
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="local" name="Local" onClose={()=>{}}/></QueryClientProvider>);
  expect(await screen.findByText('/local')).toBeVisible();expect(screen.getByText(/最新采集：/)).toHaveTextContent('2026/11/12 00:34:39');expect(screen.getByText('数据不完整').closest('.ci-observation')).toHaveAttribute('title',expect.stringContaining('Asia/Taipei'));expect(screen.getByText('2026-11-12')).toBeVisible();expect(screen.queryByText(/已保留 100 Token/)).toBeNull();expect(screen.getByText(/周从本地周一开始/)).toBeVisible();
 });
-it('orders estimated Credits before spend share and uses Credits rather than Token ratios at each level',async()=>{
- const item=(cwd:string,model:string,n:number,credit:number)=>({date:'2026-11-11',cwd,project_name:cwd.slice(1),estimated_credits:credit,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n},models:[{model,estimated_credits:credit,actual_quota:0.25,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n}}]});
+it('orders dollar estimates before spend share and uses amounts rather than Token ratios at each level',async()=>{
+ const item=(cwd:string,model:string,n:number,amount:number)=>({date:'2026-11-11',cwd,project_name:cwd.slice(1),estimated_usd:amount,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n},models:[{model,estimated_usd:amount,usd_coverage:{covered:1,total:1},actual_quota:0.25,tokens:{input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n}}]});
  vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,partial:false,timezone:'UTC',rows:[item('/Alpha','cheap',900,1),item('/Beta','expensive',100,9),item('/Zero','free',0,0)]}}:{account:{},resets:null} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="credit-share" name="Credits" onClose={()=>{}}/></QueryClientProvider>);
- await screen.findByText('/Alpha');const headers=screen.getAllByRole('columnheader').map(h=>h.textContent);expect(headers.slice(-2)).toEqual(['耗用积分 | 额度','占比']);for(const header of screen.getAllByRole('columnheader'))expect(header).toHaveAttribute('title',expect.any(String));expect(screen.getByRole('columnheader',{name:'耗用积分 | 额度'})).toHaveAttribute('title',expect.stringContaining('百分点'));const inputCell=within(screen.getByText('/Alpha').closest('tr')!).getAllByRole('cell')[2];fireEvent.mouseOver(inputCell);expect(inputCell).toHaveAttribute('title',expect.stringContaining('输入 Token'));
- expect(within(screen.getByText('/Alpha').closest('tr')!).getByText('1 | 0.25 (4)')).toBeVisible();expect(screen.getByText('/Alpha').closest('tr')!.lastElementChild).toHaveTextContent('10.0%');expect(screen.getByText('/Beta').closest('tr')!.lastElementChild).toHaveTextContent('90.0%');expect(screen.getByText('/Zero').closest('tr')!.lastElementChild).toHaveTextContent('0.0%');
+ await screen.findByText('/Alpha');const headers=screen.getAllByRole('columnheader').map(h=>h.textContent);expect(headers.slice(-2)).toEqual(['预估金额 | 额度','占比']);for(const header of screen.getAllByRole('columnheader'))expect(header).toHaveAttribute('title',expect.any(String));expect(screen.getByRole('columnheader',{name:'预估金额 | 额度'})).toHaveAttribute('title',expect.stringContaining('百分点'));const inputCell=within(screen.getByText('/Alpha').closest('tr')!).getAllByRole('cell')[2];fireEvent.mouseOver(inputCell);expect(inputCell).toHaveAttribute('title',expect.stringContaining('输入 Token'));
+ expect(within(screen.getByText('/Alpha').closest('tr')!).getByText('$1.00 | 0.25 (4)')).toBeVisible();expect(screen.getByText('/Alpha').closest('tr')!.lastElementChild).toHaveTextContent('10.0%');expect(screen.getByText('/Beta').closest('tr')!.lastElementChild).toHaveTextContent('90.0%');expect(screen.getByText('/Zero').closest('tr')!.lastElementChild).toHaveTextContent('0.0%');
  fireEvent.click(screen.getByRole('button',{name:'展开 Alpha 模型'}));expect(screen.getByText('cheap').closest('tr')!.lastElementChild).toHaveTextContent('10.0%');
  fireEvent.change(screen.getByRole('combobox',{name:'统计维度'}),{target:{value:'model'}});expect(screen.getByText('expensive').closest('tr')!.lastElementChild).toHaveTextContent('90.0%');
  fireEvent.change(screen.getByLabelText('搜索项目或目录'),{target:{value:'Zero'}});expect(screen.getByText('free').closest('tr')!.lastElementChild).toHaveTextContent('0.0%');
 });
 it('opens a centered dialog, exposes reset expiry and expands dates into project usage',async()=>{
- vi.mocked(fetchJSON).mockImplementation(async(path)=>path.endsWith('insights')?{usage:{checked_at:null,error:null,partial:true,timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/project',estimated_credits:1,tokens:{input_tokens:10,cached_input_tokens:null,output_tokens:0,total_tokens:10}}]}}:{account:{email:'fixture@example.invalid',plan:'pro'},resets:{availableCount:2,credits:[{status:'available',expiresAt:1800000000,grantedAt:1700000000}]}} as any);
+ vi.mocked(fetchJSON).mockImplementation(async(path)=>path.endsWith('insights')?{usage:{checked_at:null,error:null,partial:true,timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/project',estimated_usd:1,tokens:{input_tokens:10,cached_input_tokens:null,output_tokens:0,total_tokens:10}}]}}:{account:{email:'fixture@example.invalid',plan:'pro'},resets:{availableCount:2,credits:[{status:'available',expiresAt:1800000000,grantedAt:1700000000}]}} as any);
  const close=vi.fn();render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="a" name="Fixture" onClose={close}/></QueryClientProvider>);
  expect(screen.getByRole('dialog')).toBeVisible();expect(await screen.findByText('/project')).toBeVisible();const refresh=screen.getByRole('button',{name:'刷新缓存'});const summary=screen.getByText((_,element)=>element?.classList.contains('ci-token-summary')===true);expect(summary.compareDocumentPosition(refresh)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();expect(screen.getAllByText('100.0%')).toHaveLength(2);expect(screen.getByText('模型明细不可用')).toBeVisible();expect(screen.queryByText('0 个模型')).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:/收起 2026-01-01/}));expect(screen.queryByText('/project')).toBeNull();
@@ -51,7 +52,7 @@ it('opens a centered dialog, exposes reset expiry and expands dates into project
  fireEvent.click(screen.getByLabelText('关闭Fixture 账号详情'));expect(close).toHaveBeenCalledOnce();
 });
 it('switches dimensions, recomputes range shares and applies dates before grouping',async()=>{
- const item=(date:string,cwd:string,model:string,n:number)=>({date,cwd,project_name:cwd.slice(1),estimated_credits:n/1000,tokens:{input_tokens:n,cached_input_tokens:n/2,output_tokens:0,total_tokens:n},models:[{model,estimated_credits:n/1000,tokens:{input_tokens:n,cached_input_tokens:n/2,output_tokens:0,total_tokens:n}}]});
+ const item=(date:string,cwd:string,model:string,n:number)=>({date,cwd,project_name:cwd.slice(1),estimated_usd:n/1000,tokens:{input_tokens:n,cached_input_tokens:n/2,output_tokens:0,total_tokens:n},models:[{model,estimated_usd:n/1000,tokens:{input_tokens:n,cached_input_tokens:n/2,output_tokens:0,total_tokens:n}}]});
  vi.mocked(fetchJSON).mockImplementation(async(path)=>path.endsWith('insights')?{usage:{checked_at:null,error:null,partial:false,timezone:'UTC',rows:[item('2026-11-09','/Alpha','model-one',100),item('2026-11-10','/Alpha','model-two',300),item('2026-11-10','/Beta','model-one',100)]}}:{account:{email:null,plan:null},resets:null} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="c" name="Dimensions" onClose={()=>{}}/></QueryClientProvider>);
  await screen.findByText('/Alpha');const dimension=screen.getByRole('combobox',{name:'统计维度'});
@@ -72,14 +73,14 @@ it('expands project models and computes weighted cache rates with explicit unkno
  fireEvent.click(screen.getByRole('button',{name:'收起 Weighted 模型'}));expect(screen.queryByText('model-large')).toBeNull();fireEvent.click(screen.getByRole('button',{name:'展开本页'}));expect(screen.getByText('model-large')).toBeVisible();
 });
 it('distinguishes historical inventory and retains rows with unknown estimates',async()=>{
- const metric={tokens:{input_tokens:100,cached_input_tokens:80,output_tokens:10,total_tokens:110},estimated_credits:1};
+ const metric={tokens:{input_tokens:100,cached_input_tokens:80,output_tokens:10,total_tokens:110},estimated_credits:1,estimated_usd:1};
  vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,checked_at:null,partial:false,error:null,timezone:'UTC',progress:{mode:'daily',history_files:965,files_selected:30,files_total:30,files_complete:30,bytes_total:100,bytes_read:100},rows:[{date:'2026-11-11',cwd:'/known',...metric,models:[{model:'known',...metric}]},{date:'2026-11-11',cwd:'/hidden',tokens:metric.tokens,estimated_credits:null,models:[{model:null,tokens:metric.tokens,estimated_credits:null}]}]}}:{account:{email:null,plan:null},resets:null} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="scope" name="Scope" onClose={()=>{}}/></QueryClientProvider>);
  await screen.findByText('/hidden');expect(screen.queryByText(/读取 30 个文件/)).toBeNull();expect(screen.getByText('/hidden')).toBeVisible();expect(screen.queryByText('暂不可估')).toBeNull();expect(screen.getByText('/known')).toBeVisible();expect(screen.getAllByText('100.0%').length).toBeGreaterThan(0);expect(screen.getByText(/2 条日期｜项目记录/)).toBeVisible();
 });
 it('filters leaves before grouping and sorts parents and children numerically',async()=>{
  const metric=(n:number)=>({input_tokens:n,cached_input_tokens:0,output_tokens:0,total_tokens:n});
- const row=(cwd:string,models:Array<{model:string;n:number}>)=>({date:'2026-11-11',cwd,project_name:cwd.split('/').pop(),tokens:metric(models.reduce((s,m)=>s+m.n,0)),estimated_credits:models.reduce((s,m)=>s+m.n,0),models:models.map(m=>({model:m.model,tokens:metric(m.n),estimated_credits:m.n}))});
+ const row=(cwd:string,models:Array<{model:string;n:number}>)=>({date:'2026-11-11',cwd,project_name:cwd.split('/').pop(),tokens:metric(models.reduce((s,m)=>s+m.n,0)),estimated_usd:models.reduce((s,m)=>s+m.n,0),models:models.map(m=>({model:m.model,tokens:metric(m.n),estimated_usd:m.n}))});
  vi.mocked(fetchJSON).mockImplementation(async path=>path.endsWith('insights')?{usage:{initialized:true,checked_at:null,partial:false,error:null,timezone:'UTC',rows:[row('/work/dolphindb_manager',[{model:'small',n:9},{model:'large',n:1000}]),row('/work/other',[{model:'other-model',n:200}])]}}:{account:{email:null,plan:null},resets:null} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="filtered" name="Filter" onClose={()=>{}}/></QueryClientProvider>);
  await screen.findByText('/work/dolphindb_manager');expect(screen.getByText((_,element)=>element?.classList.contains('ci-token-summary')===true)).toBeVisible();expect(screen.getByLabelText('缓存率 0.0%')).toBeVisible();fireEvent.click(screen.getByRole('button',{name:'筛选工作目录'}));const filter=screen.getByRole('dialog',{name:'工作目录筛选'});fireEvent.change(within(filter).getByLabelText('工作目录关键词'),{target:{value:'dolphindb_manager'}});fireEvent.click(within(filter).getByRole('button',{name:'筛选'}));
@@ -98,7 +99,7 @@ it('omits account quota and estimated allocation columns for API engines',async(
  const tokens={input_tokens:10,cached_input_tokens:0,output_tokens:0,total_tokens:10};
  vi.mocked(fetchJSON).mockResolvedValue({usage:{initialized:true,partial:false,timezone:'UTC',rows:[{date:'2026-01-01',cwd:'/api',tokens,models:[{model:'api-model',tokens}]}]}} as any);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="api" name="API" groupId="group" apiOverview={<span>API</span>} onClose={()=>{}}/></QueryClientProvider>);
- const row=(await screen.findByText('/api')).closest('tr')!;expect(within(row).getAllByRole('cell')).toHaveLength(9);expect(within(row).getAllByTitle('预估耗费未知')).toHaveLength(6);expect(row.lastElementChild).toHaveTextContent('10 (—)');for(const label of ['耗用积分 | 额度','耗用额度','预估积分','占比'])expect(screen.queryByRole('columnheader',{name:label})).toBeNull();
+ const row=(await screen.findByText('/api')).closest('tr')!;expect(within(row).getAllByRole('cell')).toHaveLength(9);expect(within(row).getAllByTitle('预估耗费未知：缺少可核验费率或必需 Token 数据')).toHaveLength(6);expect(row.lastElementChild).toHaveTextContent('10 (—)');for(const label of ['耗用积分 | 额度','耗用额度','预估积分','占比'])expect(screen.queryByRole('columnheader',{name:label})).toBeNull();
 });
 it('hides the historical reconciliation warning while keeping data available',async()=>{
  const tokens={input_tokens:10,cached_input_tokens:0,output_tokens:0,total_tokens:10};
@@ -107,13 +108,13 @@ it('hides the historical reconciliation warning while keeping data available',as
  expect(await screen.findByText('/retained')).toBeVisible();expect(screen.queryByText(/历史缓存无法完整核对/)).toBeNull();
 });
 it('recomputes quota by the chosen period and does not redistribute after project search',async()=>{
- const item=(date:string,cwd:string,credit:number)=>({date,cwd,project_name:cwd.slice(1),estimated_credits:credit,tokens:{input_tokens:credit,cached_input_tokens:0,output_tokens:0,total_tokens:credit},models:[{model:'model',estimated_credits:credit,tokens:{input_tokens:credit,cached_input_tokens:0,output_tokens:0,total_tokens:credit}}]});
+ const item=(date:string,cwd:string,amount:number)=>({date,cwd,project_name:cwd.slice(1),estimated_credits:amount,estimated_usd:amount,tokens:{input_tokens:amount,cached_input_tokens:0,output_tokens:0,total_tokens:amount},models:[{model:'model',estimated_credits:amount,estimated_usd:amount,tokens:{input_tokens:amount,cached_input_tokens:0,output_tokens:0,total_tokens:amount}}]});
  const rows=[item('2026-11-09','/A',90),item('2026-11-09','/B',10),item('2026-11-10','/A',10),item('2026-11-10','/B',90)];
  vi.mocked(fetchJSON).mockImplementation(async <T,>(path:string)=>(path.endsWith('insights')?{usage:{initialized:true,partial:false,timezone:'UTC',quota_hours:[{hour:'2026-11-09T01:00:00+00:00',quota:1},{hour:'2026-11-10T01:00:00+00:00',quota:3}],rows}}:{account:{},resets:null}) as T);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="period" name="Period" onClose={()=>{}}/></QueryClientProvider>);
- await screen.findByText('/A');let project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[9]).toHaveTextContent('0.3');
- fireEvent.change(screen.getByRole('combobox',{name:'统计维度'}),{target:{value:'week'}});project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[9]).toHaveTextContent('2');
- fireEvent.change(screen.getByLabelText('搜索项目或目录'),{target:{value:'A'}});project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[9]).toHaveTextContent('2');expect(within(project).getAllByRole('cell')[10]).toHaveTextContent('50.0%');
+ await screen.findByText('/A');let project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[9]).toHaveTextContent(/\| 0\.3 \(/);
+ fireEvent.change(screen.getByRole('combobox',{name:'统计维度'}),{target:{value:'week'}});project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[9]).toHaveTextContent(/\| 2 \(/);
+ fireEvent.change(screen.getByLabelText('搜索项目或目录'),{target:{value:'A'}});project=screen.getByText('/A').closest('tr')!;expect(within(project).getAllByRole('cell')[9]).toHaveTextContent(/\| 2 \(/);expect(within(project).getAllByRole('cell')[10]).toHaveTextContent('50.0%');
 });
 
 it('omits the partial historical rule-refresh banner requested by the user',async()=>{
@@ -136,34 +137,34 @@ it.each(['csv','database'] as const)('shows the actual %s storage path and lates
 });
 
 it.each([
- [1000,20,'1,000 | 20 (50)'],[0,20,'0 | 20 (0)'],[1000,0,'1,000 | 0 (—)'],[0,0,'0 | 0 (—)'],
- [null,20,'— | 20 (—)'],[1000,null,'1,000 | — (—)'],[null,null,''],[1,.0001,'1 | 0.0001 (10,000)'],
-] as const)('combines credits %s and quota %s without fabricating a ratio',async(credit,quota,expected)=>{
- const metrics={tokens:{input_tokens:10,output_tokens:0,total_tokens:10},estimated_credits:credit,actual_quota:quota};
+ [1000,20,'$1,000.00 | 20 (50)'],[0,20,'$0.00 | 20 (0)'],[1000,0,'$1,000.00 | 0 (—)'],[0,0,'$0.00 | 0 (—)'],
+ [null,20,'— | 20 (—)'],[1000,null,'$1,000.00 | — (—)'],[null,null,''],[1,.0001,'$1.00 | 0.0001 (10,000)'],
+] as const)('combines dollar estimate %s and quota %s without fabricating a ratio',async(amount,quota,expected)=>{
+ const metrics={tokens:{input_tokens:10,output_tokens:0,total_tokens:10},estimated_usd:amount,actual_quota:quota};
  vi.mocked(fetchJSON).mockImplementation(async <T,>(path:string)=>(path.endsWith('insights')?{usage:{initialized:true,partial:false,timezone:'UTC',rows:[{date:'2026-11-16',cwd:'/ratio',...metrics,models:[{model:'model',...metrics}]}]}}:{account:{},resets:null}) as T);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="ratio" name="Ratio" onClose={()=>{}}/></QueryClientProvider>);
  const row=(await screen.findByText('/ratio')).closest('tr')!;
  expect(within(row).getAllByRole('cell')).toHaveLength(11);expect(within(row).getAllByRole('cell')[9].textContent).toBe(expected);
  expect(screen.queryByRole('columnheader',{name:'耗用额度',exact:true})).toBeNull();expect(screen.queryByRole('columnheader',{name:'预估积分',exact:true})).toBeNull();
 });
-it('computes the ratio from aggregate amounts and preserves partial credit coverage',async()=>{
- const metric=(model:string,quota:number,covered:number)=>({model,tokens:{input_tokens:10,output_tokens:0,total_tokens:10},estimated_credits:1000,actual_quota:quota,credit_coverage:{covered,total:2}});
+it('computes the ratio from aggregate amounts and preserves partial pricing coverage',async()=>{
+ const metric=(model:string,quota:number,covered:number)=>({model,tokens:{input_tokens:10,output_tokens:0,total_tokens:10},estimated_usd:1000,actual_quota:quota,usd_coverage:{covered,total:2}});
  vi.mocked(fetchJSON).mockImplementation(async <T,>(path:string)=>(path.endsWith('insights')?{usage:{initialized:true,partial:true,timezone:'UTC',rows:[{date:'2026-11-16',cwd:'/aggregate',tokens:{},models:[metric('partial',20,1),metric('complete',10,2)]}]}}:{account:{},resets:null}) as T);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="aggregate" name="Aggregate" onClose={()=>{}}/></QueryClientProvider>);
  const row=(await screen.findByText('/aggregate')).closest('tr')!;
- expect(within(row).getAllByRole('cell')[9].textContent).toBe('2,000 * | 30 (66.67)');
+ expect(within(row).getAllByRole('cell')[9].textContent).toBe('$2,000.00 * | 30 (66.67)');
  fireEvent.click(screen.getByRole('button',{name:'展开 aggregate 模型'}));
- expect(within(screen.getByText('partial').closest('tr')!).getAllByRole('cell')[9].textContent).toBe('1,000 * | 20 (50)');
- expect(within(screen.getByText('complete').closest('tr')!).getAllByRole('cell')[9].textContent).toBe('1,000 | 10 (100)');
+ expect(within(screen.getByText('partial').closest('tr')!).getAllByRole('cell')[9].textContent).toBe('$1,000.00 * | 20 (50)');
+ expect(within(screen.getByText('complete').closest('tr')!).getAllByRole('cell')[9].textContent).toBe('$1,000.00 | 10 (100)');
 });
-it('sorts and filters the combined column by numeric credits and preserves the share denominator',async()=>{
- const rows=[2,10,20].map(n=>({date:'2026-11-16',cwd:`/credit-${n}`,tokens:{},models:[{model:'model',tokens:{total_tokens:n},estimated_credits:n,actual_quota:1}]}));
+it('sorts and filters the combined column by numeric amount and preserves the share denominator',async()=>{
+ const rows=[2,10,20].map(n=>({date:'2026-11-16',cwd:`/amount-${n}`,tokens:{},models:[{model:'model',tokens:{total_tokens:n},estimated_usd:n,actual_quota:1}]}));
  vi.mocked(fetchJSON).mockImplementation(async <T,>(path:string)=>(path.endsWith('insights')?{usage:{initialized:true,partial:false,timezone:'UTC',rows}}:{account:{},resets:null}) as T);
  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="sort-credits" name="Sort" onClose={()=>{}}/></QueryClientProvider>);
- await screen.findByText('/credit-2');fireEvent.click(screen.getByRole('button',{name:'耗用积分 | 额度排序'}));
- expect(screen.getByText('/credit-2').closest('tr')!.compareDocumentPosition(screen.getByText('/credit-10').closest('tr')!)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
- fireEvent.click(screen.getByRole('button',{name:'筛选耗用积分 | 额度'}));
- const filter=screen.getByRole('dialog',{name:'耗用积分 | 额度筛选'});fireEvent.change(within(filter).getByLabelText('耗用积分 | 额度最小值'),{target:{value:'11'}});fireEvent.click(within(filter).getByRole('button',{name:'筛选'}));
- expect(screen.queryByText('/credit-2')).toBeNull();expect(screen.queryByText('/credit-10')).toBeNull();
- const row=screen.getByText('/credit-20').closest('tr')!;expect(within(row).getAllByRole('cell')[9].textContent).toBe('20 | 1 (20)');expect(row.lastElementChild).toHaveTextContent('62.5%');
+ await screen.findByText('/amount-2');fireEvent.click(screen.getByRole('button',{name:'预估金额 | 额度排序'}));
+ expect(screen.getByText('/amount-2').closest('tr')!.compareDocumentPosition(screen.getByText('/amount-10').closest('tr')!)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'筛选预估金额 | 额度'}));
+ const filter=screen.getByRole('dialog',{name:'预估金额 | 额度筛选'});fireEvent.change(within(filter).getByLabelText('预估金额 | 额度最小值'),{target:{value:'11'}});fireEvent.click(within(filter).getByRole('button',{name:'筛选'}));
+ expect(screen.queryByText('/amount-2')).toBeNull();expect(screen.queryByText('/amount-10')).toBeNull();
+ const row=screen.getByText('/amount-20').closest('tr')!;expect(within(row).getAllByRole('cell')[9].textContent).toBe('$20.00 | 1 (20)');expect(row.lastElementChild).toHaveTextContent('62.5%');
 });

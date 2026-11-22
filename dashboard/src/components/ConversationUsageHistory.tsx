@@ -84,7 +84,7 @@ interface ModelUsage {
 function usageByModel(models: SessionMetadataDetails['models']): ModelUsage[] {
   const groups = new Map<string, ModelUsage>();
   for (const row of models) {
-    const key = JSON.stringify([row.model,row.speed]);
+    const key = JSON.stringify([row.model,row.speed,row.cost?.unit]);
     const previous = groups.get(key);
     const tokens = row.tokens?.total_tokens ?? null;
     if (!previous) {
@@ -97,7 +97,7 @@ function usageByModel(models: SessionMetadataDetails['models']): ModelUsage[] {
     previous.calls += row.tool_calls;
     if (previous.cost || row.cost) {
       const a = previous.cost?.amount, b = row.cost?.amount;
-      previous.cost = {unit: 'credits', amount: a == null && b == null ? null : (a ?? 0) + (b ?? 0),
+      previous.cost = {unit: previous.cost?.unit ?? row.cost?.unit ?? 'USD', amount: a == null && b == null ? null : (a ?? 0) + (b ?? 0),
         complete: previous.cost?.complete === true && row.cost?.complete === true};
     }
   }
@@ -122,12 +122,12 @@ function ModelUsageTable({details, loading, error, onRetry}: {
       loading={loading} header={<>
         <th scope="col">模型</th><th scope="col">速度</th><th scope="col">总量 Token</th>
         {requestCountColumns.map(({label,title}) => <th key={label} scope="col" title={title}>{label}</th>)}
-        <th scope="col">预估积分</th>
+        <th scope="col">预估金额</th>
       </>}>
       {loading ? <TableStateRow columnCount={6} loading>加载中…</TableStateRow>
       : error ? <TableStateRow columnCount={6} error onRetry={onRetry}>{error}</TableStateRow>
       : models.length === 0 ? <TableStateRow columnCount={6}>暂无模型用量</TableStateRow>
-      : models.map(row => <tr key={JSON.stringify([row.model,row.speed])}>
+      : models.map(row => <tr key={JSON.stringify([row.model,row.speed,row.cost?.unit])}>
         <th scope="row">{row.model ?? '未知模型'}</th><td>{row.speed ?? '—'}</td>
         <td>{number(row.tokens)}</td><td>{number(row.requests)}</td>
         <td>{number(row.calls)}</td>
@@ -141,7 +141,7 @@ const intervalColumns: Array<{label: string; title?: string}> = [
   {label:'时间'}, {label:'总输入'}, {label:'缓存输入'}, {label:'未缓存输入'},
   {label:'缓存率'}, {label:'输出'}, {label:'总量'},
   ...requestCountColumns,
-  {label:'预估积分'},
+  {label:'预估金额'},
 ];
 
 interface UsageScope {

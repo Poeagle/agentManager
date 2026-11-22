@@ -6,7 +6,7 @@ const interval={tokens:{total_tokens:200},requests:1,tool_calls:2,tool_rounds:1,
 const label=()=>document.querySelector('.session-chat-message-statistics')!;
 describe('English message metadata',()=>{
  it('shows fixed field/value ordering and rounds before calls for the current interval',()=>{
-  render(<ConversationStatisticsLabel interval statistics={{...base,interval}}/>);expect(label()).toHaveTextContent('Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr : 200 (—)｜—｜—｜—｜— · 1 round | 2 calls');expect(label()).toHaveAttribute('title',expect.stringContaining('Usage for this Item'));
+  render(<ConversationStatisticsLabel interval statistics={{...base,interval}}/>);expect(label()).toHaveTextContent('Total｜Input｜Cache｜Reasoning｜Output｜Est. $ : 200 (—)｜—｜—｜—｜— · 1 round | 2 calls');expect(label()).toHaveAttribute('title',expect.stringContaining('Usage for this Item'));
  });
  it('uses conclusion interval data instead of native turn totals',()=>{
   render(<ConversationStatisticsLabel statistics={{...base,interval,conclusion:{...interval,start_at:null,end_at:null,elapsed_ms:null}}}/>);expect(label()).not.toHaveTextContent('summary ·');expect(label()).toHaveTextContent('200 (—)｜');expect(label()).not.toHaveTextContent('1K');expect(label()).toHaveAttribute('title',expect.stringContaining('Usage between completed Final boundaries'));
@@ -26,7 +26,7 @@ describe('English message metadata',()=>{
  it('uses the same parentheses for every token count with API currency',()=>{
   const tokens={total_tokens:120,input_tokens:100,cached_input_tokens:60,reasoning_output_tokens:5,output_tokens:20};
   render(<ConversationStatisticsLabel statistics={{...base,tokens,cost:{amount:0.03,unit:'CNY',basis:'api',complete:true,breakdown:{input:0.01,cache:0.002,reasoning:0.001,output:0.018}}}}/>);
-  expect(label()).toHaveTextContent('120 (¥0.03)｜40 (¥0.01)｜60 (¥0.002 | 60%)｜5 (¥0.001)｜20 (¥0.018)');
+  expect(label()).toHaveTextContent('120 (¥0.03)｜40 (¥0.01)｜60 (<¥0.01 | 60%)｜5 (<¥0.01)｜20 (¥0.02)');
  });
  it('does not split or duplicate a shared model request',()=>{
   render(<ConversationStatisticsLabel interval statistics={{...base,interval:{...interval,shared_messages:2}}}/>);expect(label()).toHaveTextContent('Shared request');expect(label()).toHaveAttribute('title',expect.stringContaining('2 updates share the same model request'));expect(label()).toHaveAttribute('title',expect.stringContaining('200 tokens'));
@@ -92,4 +92,13 @@ describe('English message metadata',()=>{
  it('uses English units and timing tooltips',()=>{
   expect(englishMetadataDuration('本轮耗时 1时2分3秒')).toBe('Total time: 1h 2m 3s');expect(englishMetadataDuration('耗时 19秒')).toBe('Elapsed: 19s');expect(metadataDurationTitle('commentary')).toMatch(/^Time between/);expect(metadataTimestampTitle({id:'a',role:'assistant',text:'',timestamp:'2026-11-03T01:00:00Z'},true)).toMatch(/^Progress completion time:/);
  });
+});
+it('updates each token category with its USD-equivalent estimate while a Progress is live',()=>{
+ const tokens={total_tokens:1100000,input_tokens:1000000,cached_input_tokens:900000,reasoning_output_tokens:10000,output_tokens:100000};
+ const statistics={...base,interval:{...interval,tokens,cost:{amount:1.29,unit:'USD',basis:'public_usd_reference',complete:true,rate_date:'2026-11-22',breakdown:{input:0.2,cache:0.09,reasoning:0.1,output:1}}}};
+ const view=render(<ConversationStatisticsLabel interval statistics={statistics}/>);
+ expect(label()).toHaveTextContent('1.1M ($1.29)｜100K ($0.20)｜900K ($0.09 | 90%)｜10K ($0.10)｜100K ($1.00)');
+ expect(label()).toHaveAttribute('title',expect.stringContaining('Codex Credits converted at 25 Credits per USD'));
+ view.rerender(<ConversationStatisticsLabel interval statistics={{...statistics,interval:{...statistics.interval,cost:{...statistics.interval.cost,amount:1.58,breakdown:{input:0.3,cache:0.08,reasoning:0.2,output:1.2}}}}}/>);
+ expect(label()).toHaveTextContent('1.1M ($1.58)｜100K ($0.30)｜900K ($0.08 | 90%)｜10K ($0.20)｜100K ($1.20)');
 });

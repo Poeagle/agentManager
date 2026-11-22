@@ -136,7 +136,7 @@ Engine 设置分别读取单个 Provider 状态，Provider 卡片和设置页共
 通过 NDJSON 进度流返回校验、准备、启动、等待 socket、确认和清理等阶段，前端按阶段显示
 进度条与历史步骤，只有目标 Provider 的缓存会更新。
 
-模型悬停详情展示 Engine 提供的模型元数据和可核验的官方费率。模型契约可选返回 `release_date` 与 `api_pricing`，费率按百万 Token 表示，附币种和来源。ChatGPT 账号的参考 Credits 和用量统计共用 Codex 费率，官方 API 单价用对应币种表示。DeepSeek 官方 API 接入展示已核验的模型版本发布日期及峰谷价。
+模型悬停详情展示 Engine 提供的模型元数据和可核验的官方费率。模型契约可选返回 `release_date` 与 `api_pricing`，费率按百万 Token 表示，附币种和来源。官方费率仅用于可确认的官方端点和模型 ID；第三方网关的自定义别名或无法确认的费率保持未知，不套用相似模型价格。ChatGPT 账号用量按官方 Codex Credits 模型费率及速度倍率估算，再按 25 Credits = 1 USD 换算为 API 等值金额；该估算用于比较，不代表订阅账单。官方 API 单价用对应币种表示。DeepSeek 官方 API 接入展示已核验的模型版本发布日期及峰谷价。
 
 平台后台启动后及每小时从官方文档同步 Codex Credits、OpenAI API、Anthropic API、DeepSeek API 及已登记年份的中国放假通知。校验成功后写入 SQLite，价格改变时保留历史版本。同步失败时沿用最近有效数据。模型目录使用最新快照，API 请求估算使用请求时间对应的费率版本。费率变更的生效时间无法从文档确认时，以首次观察到该版本的时间为界。Sub2API 的扣费沿用其用量接口，站点级模型单价没有可验证的普通 Key 来源时保持未知。
 

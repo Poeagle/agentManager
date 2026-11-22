@@ -10,7 +10,7 @@ it('renders standard metadata and one collapsed tool, waits after completion, an
   const props={number:7,startedAt,now,statistics:null,connected:true};
   const view=render(<ConversationProgressPending {...props} tool={tool}/>);
   expect(screen.getByLabelText('进展序号 7')).toBeVisible();expect(document.querySelector('time')).toHaveAttribute('datetime',startedAt);
-  expect(document.querySelector('.session-chat-metadata-row')).toHaveTextContent('Total｜Input｜Cache｜Reasoning｜Output｜Est. Cr :');expect(screen.getByText('Elapsed: 12s')).toBeVisible();
+  expect(document.querySelector('.session-chat-metadata-row')).toHaveTextContent('Total｜Input｜Cache｜Reasoning｜Output｜Est. $ :');expect(screen.getByText('Elapsed: 12s')).toBeVisible();
   const summary=document.querySelector('summary')!;expect(summary).toHaveTextContent('npm test');expect(screen.getByText('First output')).not.toBeVisible();
   fireEvent.click(summary);expect(screen.getByText('First output')).toBeVisible();expect(screen.getByText('npm test -- --run')).toBeVisible();expect(document.querySelector('.session-chat-live-tool-details')).toHaveTextContent('First output');expect(document.querySelector('.session-chat-live-tool-details')).not.toHaveTextContent('npm test');
   view.rerender(<ConversationProgressPending {...props} tool={{...tool,status:'completed',result_preview:'Tests passed'}}/>);

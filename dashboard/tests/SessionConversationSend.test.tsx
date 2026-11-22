@@ -457,21 +457,21 @@ describe('conversation send transaction', () => {
     act(()=>Socket.latest.emit({type:'snapshot',messages:[prior],activities:[tool],busy:true,stage:'tools',turn_id:'turn',started_at:stamp}));
     const pending=await screen.findByRole('status',{name:'正在执行的进展 2'});expect(pending).toHaveTextContent('— rounds | ≥1 call');
     const segment={id:'live-segment',start_at:stamp,end_at:null,end_reason:null,elapsed_ms:null,tokens:{total_tokens:10000,input_tokens:9000,cached_input_tokens:8000,reasoning_output_tokens:100,output_tokens:1000},requests:2,tool_calls:4,tool_rounds:3,complete:false};
-    const step={segment_id:segment.id,after_message_id:prior.id,after_sequence:null,start_at:stamp,tokens:{total_tokens:1100,input_tokens:1000,cached_input_tokens:900,reasoning_output_tokens:50,output_tokens:100},requests:1,tool_calls:2,tool_rounds:1,complete:true,shared_messages:1,cost:{unit:'credits',amount:3.21,complete:true}};
+    const step={segment_id:segment.id,after_message_id:prior.id,after_sequence:null,start_at:stamp,tokens:{total_tokens:1100,input_tokens:1000,cached_input_tokens:900,reasoning_output_tokens:50,output_tokens:100},requests:1,tool_calls:2,tool_rounds:1,complete:true,shared_messages:1,cost:{unit:'USD',amount:3.21,complete:true}};
     const progress={turn_id:'turn',...segment,segment,step};
-    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress}));const pendingStatistics=pending.querySelector('.session-chat-message-statistics')!;expect(pendingStatistics).toHaveTextContent('1.1K (3.21)｜100｜900 (90%)｜50｜100');expect(pendingStatistics).toHaveTextContent('1 round | 2 calls');
+    act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress}));const pendingStatistics=pending.querySelector('.session-chat-message-statistics')!;expect(pendingStatistics).toHaveTextContent('1.1K ($3.21)｜100 (—)｜900 (— | 90%)｜50 (—)｜100 (—)');expect(pendingStatistics).toHaveTextContent('1 round | 2 calls');
     act(()=>Socket.latest.emit({type:'statistics',native_id:'native',statistics:[{sequence:1,message_id:prior.id,turn_id:'turn',tokens:{total_tokens:200},requests:1,tool_calls:1,tool_rounds:1,complete:true,interval:{tokens:{total_tokens:200},requests:1,tool_calls:1,tool_rounds:1,complete:true,shared_messages:1}}]}));
-    expect(document.querySelector('[data-chat-message-id="prior-step"] .session-chat-message-statistics')).toHaveTextContent('200 (—)｜');expect(pendingStatistics).toHaveTextContent('1.1K (3.21)｜');
+    expect(document.querySelector('[data-chat-message-id="prior-step"] .session-chat-message-statistics')).toHaveTextContent('200 (—)｜');expect(pendingStatistics).toHaveTextContent('1.1K ($3.21)｜');
     const current={id:'streamed-step',role:'assistant',phase:'commentary',turn_id:'turn',text:'Current streamed text',timestamp:stamp,streaming:true};
     act(()=>Socket.latest.emit({type:'snapshot',messages:[prior,current],activities:[tool],busy:true,stage:'answering',turn_id:'turn',started_at:stamp}));
-    const bubble=document.querySelector('[data-chat-message-id="streamed-step"]')!;expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('1.1K (3.21)｜');expect(bubble.querySelector('time')).toBeNull();
+    const bubble=document.querySelector('[data-chat-message-id="streamed-step"]')!;expect(bubble.querySelector('.session-chat-message-statistics')).toHaveTextContent('1.1K ($3.21)｜');expect(bubble.querySelector('time')).toBeNull();
     act(()=>Socket.latest.emit({type:'progress_statistics',native_id:'native',progress:{...progress,step:{...step,after_message_id:'wrong-boundary',tokens:{total_tokens:999999}}}}));
     expect(bubble.querySelector('.session-chat-message-statistics')).not.toHaveTextContent('1M');
   });
   it.each(['account:fixture','provider:fixture'])('updates the running Item and the whole Progress in %s',async(environment)=>{
     await mount({...session,agent_environment_id:environment});
     const stamp=new Date(Date.now()-5000).toISOString();
-    const cost=environment.startsWith('account:')?{unit:'credits',amount:1,complete:true}:null;
+    const cost=environment.startsWith('account:')?{unit:'USD',basis:'public_usd_reference',amount:0.04,complete:true}:null;
     const counters=(total_tokens:number,requests:number,tool_calls:number)=>({tokens:{total_tokens},requests,tool_calls,tool_rounds:requests,complete:true,cost});
     const scope=(id:string,total_tokens:number,requests:number,tool_calls:number)=>({...counters(total_tokens,requests,tool_calls),id,start_at:stamp,end_at:null,elapsed_ms:null,end_reason:null});
     const first=scope('earlier',1000,1,1),second=scope('current',1700,2,2);
@@ -489,7 +489,7 @@ describe('conversation send transaction', () => {
     expect(header).toHaveTextContent('4 items');
     expect(header.querySelector('.session-chat-message-statistics')).toHaveAttribute('title',expect.stringContaining('Total 2,700;'));
     expect(header).toHaveTextContent('3 rounds | 3 calls');
-    expect(header.textContent?.includes('Est. Cr')).toBe(cost!==null);
+    expect(header.textContent?.includes('Est. $')).toBe(cost!==null);
     expect(pending).toHaveTextContent('npm test');
   });
   it('updates the active progress total without mixing other native sessions',async()=>{
@@ -516,7 +516,7 @@ describe('conversation send transaction', () => {
     const timestamp=new Date(Date.now()-10000).toISOString();
     const usage=(tokens:number,requests:number,calls:number,amount:number)=>({
       tokens:{total_tokens:tokens},requests,tool_calls:calls,tool_rounds:calls,complete:true,coverage:'complete' as const,
-      shared_messages:1,cost:{unit:'credits',amount,complete:true},
+      shared_messages:1,cost:{unit:'USD',amount,complete:true},
     });
     const itemUsage=usage(2900000,7,6,10.532),workUsage=usage(1400000,3,4,3.498);
     const timing={start_at:timestamp,end_at:null,end_reason:null,elapsed_ms:null};
@@ -537,17 +537,17 @@ describe('conversation send transaction', () => {
     const group=screen.getByText(item.text).closest('.session-chat-progress')!;
     const heading=group.querySelector('summary .session-chat-message-statistics')!;
     expect(heading).toHaveAttribute('title',expect.stringContaining('Total 4,300,000;'));
-    expect(heading).toHaveTextContent('4.3M (14.03)');
+    expect(heading).toHaveTextContent('4.3M ($14.03)');
     expect(heading).toHaveTextContent('10 rounds | 10 calls');
-    expect(group.querySelector('[data-chat-message-id="local-first"] .session-chat-message-statistics')).toHaveTextContent('2.9M (10.532)');
-    expect(within(group as HTMLElement).getByRole('status',{name:'正在执行的进展 2'})).toHaveTextContent('1.4M (3.498)');
+    expect(group.querySelector('[data-chat-message-id="local-first"] .session-chat-message-statistics')).toHaveTextContent('2.9M ($10.53)');
+    expect(within(group as HTMLElement).getByRole('status',{name:'正在执行的进展 2'})).toHaveTextContent('1.4M ($3.50)');
     const settled={id:'local-next',role:'assistant',phase:'commentary',turn_id:'turn',text:'Second local Item',timestamp,
       statistics:{...workUsage,sequence:4,revision:3,turn_id:'turn',progress_id:'local',interval:workUsage,segment:total}};
     send({type:'snapshot',messages:[old,user,item,settled],activities:[],busy:true,stage:'waiting',turn_id:'turn'});
-    expect(heading).toHaveTextContent('4.3M (14.03)');
+    expect(heading).toHaveTextContent('4.3M ($14.03)');
     expect(group.querySelectorAll('.session-chat-progress-entry')).toHaveLength(2);
     expect(screen.queryByRole('status',{name:'正在执行的进展 2'})).not.toBeInTheDocument();
-    expect(group.querySelector('[data-chat-message-id="local-next"] .session-chat-message-statistics')).toHaveTextContent('1.4M (3.498)');
+    expect(group.querySelector('[data-chat-message-id="local-next"] .session-chat-message-statistics')).toHaveTextContent('1.4M ($3.50)');
   });
   it('restores completed progress totals and duration from recorded conclusion statistics',async()=>{
     const existing=await api.agent.conversation(session.id),item={id:'historical-progress',role:'assistant',turn_id:'turn',phase:'commentary',text:'Earlier work',timestamp:'2026-01-01T00:00:05Z'},final={id:'historical-final',role:'assistant',turn_id:'turn',phase:'final',text:'Complete',timestamp:'2026-01-01T00:01:00Z'};

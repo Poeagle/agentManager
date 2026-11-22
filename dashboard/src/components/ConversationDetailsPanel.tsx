@@ -59,8 +59,8 @@ export function ConversationDetailsPanel({usage, model, state, statusTitle, meta
   const counters: ConversationDetailRow[] = [
     {label: '会话状态', value: state, title: statusTitle ?? undefined},
     {label: '当前模型', value: model},
-    {label: '预估积分', value: creditsLabel(cost), credits: true,
-      title: cost ? `费率 ${cost.rate_date ?? '未知'}${cost.complete ? '' : ' · 费率或用量覆盖不完整'}` : undefined},
+    {label: '预估金额', value: creditsLabel(cost), credits: true,
+      title: cost ? `${cost.basis==='public_usd_reference'?'Codex Credits 按 25:1 换算为 USD API 等值金额，不代表订阅账单。 ':''}费率 ${cost.rate_date ?? '未知'}${cost.complete ? '' : ' · 费率或用量覆盖不完整'}` : undefined},
     {label: '模型请求（Round）', value: counts(metadata?.totals?.requests)},
     {label: '用户输入 / 已完成问答', value: metadata ? `${counts(metadata.user_inputs)} / ${counts(metadata.completed_turns)}` : '—'},
     {label: '工具调用（Call）', value: counts(metadata?.totals?.tool_calls)},
