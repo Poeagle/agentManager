@@ -520,6 +520,8 @@ export interface AgentHistoryRecord {
   asyncQuestions?: AgentMessage["async_questions"];
   questionReplies?: AgentMessage["question_replies"];
   imagePaths: string[];
+  /** Native image checksums, used only to recover project-scoped upload references. */
+  imageDigests?: string[];
   /** Provider-specific auxiliary record role retained for bounded indexing. */
   sourceRole?: "tool_result";
   /** Tool result record identity and public result, kept out of message text. */
@@ -535,7 +537,7 @@ export interface AgentFileHistoryPort {
   project(
     record: Buffer,
     questionCallId?: string,
-    context?: { nativeId?: string | null; replacementIndex?: number },
+    context?: { nativeId?: string | null; replacementIndex?: number; attachmentDigests?: boolean },
   ): AgentHistoryRecord | null;
   /** Native log records that replace the preceding projected history. */
   replacementHistory?(record: Buffer): number[] | null;

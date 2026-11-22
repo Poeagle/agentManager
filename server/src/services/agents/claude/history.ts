@@ -1,5 +1,8 @@
 import { decodeClaudeText } from "./text.js";
+import { createHash } from "node:crypto";
+import { claudeErrorCode } from "./errors.js";
 import { conversationQuestionReply } from "../../conversation-interactions.js";
+import { conversationMessageId } from "../../conversation-reader.js";
 import type { AgentHistoryRecord, AgentMessage } from "../types.js";
 export function claudeRecordLimit(buffer: Buffer) {
   const header = buffer.subarray(0, 4096).toString("utf8");
@@ -12,7 +15,7 @@ export function claudeRecordLimit(buffer: Buffer) {
 /** Project one durable record into the generic bounded file index. Tool
  * results remain separate records until the platform projects the turn, so
  * the index can retain identities without reading or caching their bodies. */
-export function parseClaudeMessage(line: Buffer): AgentHistoryRecord | null {
+export function parseClaudeMessage(line: Buffer, _questionCallId?: string, options?: {attachmentDigests?: boolean}): AgentHistoryRecord | null {
   if (line.length > claudeRecordLimit(line)) return null;
   let entry: ClaudeEntry;
   try {
@@ -49,13 +52,25 @@ export function parseClaudeMessage(line: Buffer): AgentHistoryRecord | null {
   }
   if (!message || (entry.type !== "user" && entry.type !== "assistant"))
     return null;
-  if (
-    entry.isSidechain === true ||
-    entry.isMeta === true ||
-    message.model === "<synthetic>"
-  )
-    return null;
+  if (entry.isSidechain === true || entry.isMeta === true) return null;
   const content = message.content;
+  if (entry.type === 'assistant' && entry.isApiErrorMessage === true) {
+    const extracted = decodeClaudeText([entry], 8000)[0];
+    if (!extracted) return null;
+    const code = claudeErrorCode(extracted.text, typeof entry.error === 'string' ? entry.error : undefined);
+    const itemId = typeof message.id === 'string' ? message.id : entry.uuid;
+    if (typeof itemId !== 'string') return null;
+    const error = { ...(code ? {code} : {}), will_retry: false };
+    return {
+      message: { ...extracted, phase: 'error' },
+      failure: {
+        ...extracted, phase: 'error', error, streaming: false,
+        id: conversationMessageId('', 'assistant', itemId),
+      },
+      itemId, turnId: entry.parentUuid, recordType: 'native_message', imagePaths: [],
+    };
+  }
+  if (message.model === '<synthetic>') return null;
   if (
     Array.isArray(content) &&
     content.some((block) => block?.type === "tool_result")
@@ -80,9 +95,14 @@ export function parseClaudeMessage(line: Buffer): AgentHistoryRecord | null {
       },
     };
   }
+  const images = entry.type === 'user' && message.role === 'user' && Array.isArray(content)
+    ? content.filter(block => block?.type === 'image') : [];
   const extracted = decodeClaudeText([entry], 128 * 1024).find(
     (item) => item.role === "user" || item.role === "assistant",
-  );
+  ) ?? (images.length && (!entry.origin?.kind || entry.origin.kind === 'human') ? {
+    role: 'user' as const, phase: 'user' as const, text: '请查看附件。',
+    timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null,
+  } : null);
   if (!extracted) return null;
   if (
     extracted.role === "user" &&
@@ -117,11 +137,15 @@ export function parseClaudeMessage(line: Buffer): AgentHistoryRecord | null {
   const contentBlocks =
     extracted.role === "assistant" ? claudeContentBlocks(content) : undefined;
   const usage = extracted.role === "assistant" ? claudeUsage(message.usage) : null;
+  const imageDigests = options?.attachmentDigests && images.length && images.length <= 8 && images.every(
+    block => block.source?.type === 'base64' && typeof block.source.data === 'string' && block.source.data.length > 0,
+  ) ? images.map(block => createHash('sha256').update(block.source.data, 'base64').digest('hex')) : undefined;
   return {
     message: reply ? { ...extracted, text: reply.text } : extracted,
     recordType: "native_message",
     questionReplies: reply?.answers,
     imagePaths: [],
+    ...(imageDigests ? { imageDigests } : {}),
     itemId,
     turnId:
       extracted.role === "user"
@@ -215,6 +239,9 @@ interface ClaudeEntry {
   promptId?: string;
   isSidechain?: boolean;
   isMeta?: boolean;
+  origin?: {kind?: string};
+  isApiErrorMessage?: boolean;
+  error?: unknown;
   timestamp?: string;
   compactMetadata?: {
     trigger?: string;

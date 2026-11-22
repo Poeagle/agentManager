@@ -7,7 +7,9 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.19.0');
+    expect(contract.version).toBe('3.19.1');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation')?.description).toContain('verified project attachment references');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('error.code=rate_limit');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/new-conversation')?.description).toContain('environment_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/new-conversation')?.request).toHaveProperty('environment_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/metadata')?.description).toContain('decreases in recorded cached input tokens');

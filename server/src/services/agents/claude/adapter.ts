@@ -7,6 +7,7 @@ import { NATIVE_SESSION_ID_RE } from "../native-identifiers.js";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { conversationMessageId } from "../../conversation-reader.js";
+import { rememberConversationInputMessage } from "../../conversation-input-links.js";
 import { resolveClaudeDir } from "./archive.js";
 import {
   claudeCommand,
@@ -154,7 +155,11 @@ export const claudeAdapter: AgentDefinition = {
         true,
         provider,
       );
-      const userId=clientId && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId) ? clientId : undefined;
+      let userId=clientId && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId) ? clientId : undefined;
+      if (context.session.id && clientId && attachments?.length) {
+        userId ??= randomUUID();
+        rememberConversationInputMessage(context.session.id, requireNative(context), clientId, conversationMessageId('', 'user', userId));
+      }
       return runtime.submit(text, clientId, attachments, userId);
     },
     afterTerminalSubmit: async () => {},

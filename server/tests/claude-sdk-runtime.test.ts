@@ -62,6 +62,50 @@ describe('Claude Agent SDK runtime',()=>{
       error:{code:'provider_unavailable',will_retry:false},
     });
   });
+  it('keeps the same 429 error identity in the SDK stream and on history reload',async()=>{
+    const text='API Error: Request rejected (429) · Daily usage quota exhausted for this platform.';
+    const message={id:'synthetic-rate-limit',model:'<synthetic>',role:'assistant',stop_reason:'stop_sequence',content:[{type:'text',text}]};
+    sdk.messages=[
+      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,error:'rate_limit',message},
+      {type:'result',subtype:'error_during_execution',uuid:'result',errors:[text]},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Send a message');
+    await vi.waitFor(()=>expect(runtime.snapshot().busy).toBe(false));
+    const persisted=parseClaudeMessage(Buffer.from(JSON.stringify({
+      type:'assistant',uuid:assistant,isApiErrorMessage:true,error:'rate_limit',message,
+    })));
+    expect(runtime.snapshot().messages.filter(item=>item.role==='assistant')).toEqual([
+      expect.objectContaining({id:persisted?.failure?.id,text,phase:'error',error:{code:'rate_limit',will_retry:false}}),
+    ]);
+  });
+  it('continues an already submitted follow-up after a tool interruption diagnostic',async()=>{
+    let deliverInitial!:(value:unknown)=>void;
+    let deliverDiagnostic!:(value:unknown)=>void;
+    let deliverFollowup!:(value:unknown)=>void;
+    sdk.messages=[
+      new Promise(resolve=>{deliverInitial=resolve;}),
+      new Promise(resolve=>{deliverDiagnostic=resolve;}),
+      new Promise(resolve=>{deliverFollowup=resolve;}),
+      {type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'followup-answer',stop_reason:'end_turn',content:[{type:'text',text:'Follow-up complete'}]}},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp');
+    await runtime.submit('Use a tool','initial');
+    await vi.waitFor(()=>expect(sdk.queries).toHaveLength(1));
+    const input=sdk.queries[0].prompt[Symbol.asyncIterator]();
+    deliverInitial((await input.next()).value);
+    await runtime.submit('Continue','followup');
+    const followup=(await input.next()).value;
+    deliverDiagnostic({type:'result',subtype:'error_during_execution',uuid:'diagnostic',errors:[
+      '[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use',
+    ]});
+    deliverFollowup(followup);
+    await vi.waitFor(()=>expect(runtime.snapshot().busy).toBe(false));
+    expect(runtime.snapshot().messages.filter(item=>item.role==='assistant')).toEqual([
+      expect.objectContaining({phase:'final',text:'Follow-up complete'}),
+    ]);
+    expect(sdk.queries).toHaveLength(1);
+  });
   it('injects only the bound Provider credentials and model into the SDK process',async()=>{
     sdk.messages=[{type:'result',subtype:'success',uuid:assistant,session_id:session}];
     const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'claude-a',effort:''},false,{

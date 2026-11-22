@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { parseClaudeMessage } from "../src/services/agents/claude/history.js";
 import { conversationMessageId } from "../src/services/conversation-reader.js";
 import { readConversation } from "../src/services/conversation-reader.js";
+import { projectAttachmentDirectory } from "../src/services/attachment-storage.js";
+import { rememberConversationAttachments } from "../src/services/conversation-attachments.js";
+import { prepareBriefSend, parseBriefContext } from "../src/shared/conversation-brief.js";
+import { createTestDatabase } from "./helpers/database.js";
+import { getDb } from "../src/db/index.js";
 
 const paths = vi.hoisted(() => ({ directory: "" }));
 vi.mock("../src/services/agents/claude/archive.js", async () => ({
@@ -87,6 +92,35 @@ describe("Claude history identity", () => {
 });
 
 describe("Claude durable conversation projection", () => {
+  it('restores embedded screenshots into brief context without matching by repeated text alone', async () => {
+    const fixture=createTestDatabase();
+    try {
+      paths.directory=join(fixture.dir,'transcripts');mkdirSync(paths.directory);
+      const project=join(fixture.dir,'project');mkdirSync(project);
+      const sessionId='brief-session',nativeId='019ff001-1212-7212-8212-121212121212';
+      getDb().prepare("INSERT INTO projects(id,name,path) VALUES('p','P',?)").run(project);
+      getDb().prepare("INSERT INTO sessions(id,project_id,task,status,claude_session_id) VALUES(?,'p','Test','running',?)").run(sessionId,nativeId);
+      const directory=projectAttachmentDirectory(project,true);
+      const bytes=Buffer.from('screenshot');
+      const image={kind:'image' as const,name:'screen.png',path:join(directory,'screen.png')};
+      const other={kind:'image' as const,name:'other.png',path:join(directory,'other.png')};
+      writeFileSync(image.path,bytes);writeFileSync(other.path,'different screenshot');
+      rememberConversationAttachments(sessionId,'browser-screen','看图',[image],true);
+      rememberConversationAttachments(sessionId,'browser-other','看图',[other],true);
+      const content=[{type:'image',source:{type:'base64',data:bytes.toString('base64')}},{type:'text',text:'看图'}];
+      writeFileSync(join(paths.directory,`${nativeId}.jsonl`),[
+        {type:'user',uuid:'text-only',message:{role:'user',content:'看图'}},
+        {type:'user',uuid:'image-input',message:{role:'user',content}},
+      ].map(value=>JSON.stringify(value)+'\n').join(''));
+      const page=await readConversation({id:sessionId,cli_type:'claude',claude_session_id:nativeId,codex_session_id:null,project_path:project});
+      expect(page.messages[0]).not.toHaveProperty('attachments');
+      expect(page.messages[1].attachments).toEqual([image]);
+      const result=await prepareBriefSend(sessionId,nativeId,{input:'继续'},async()=>({...page,session_id:sessionId,native_id:nativeId}));
+      expect(parseBriefContext(result.input)?.context.turns[1].attachments).toEqual([image]);
+      expect(result.attachments).toBeUndefined();
+      expect(result.input).not.toContain(bytes.toString('base64'));
+    } finally { fixture.cleanup(); }
+  });
   it("uses the generic bounded index and folds tool results into tool cards", async () => {
     paths.directory = mkdtempSync(join(tmpdir(), "claude-history-"));
     const native = "019ff001-1212-7212-8212-121212121212";

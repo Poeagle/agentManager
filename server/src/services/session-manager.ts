@@ -1618,7 +1618,7 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
   if(initialClientId&&boundInitialMessageId){
     const links=await import('./conversation-input-links.js');
     links.bindInputSourceMessage(sessionId,initialClientId,boundInitialMessageId);
-    if(launch.nativeId)links.rememberInitialConversationInput(sessionId,launch.nativeId,initialClientId,boundInitialMessageId);
+    if(launch.nativeId)links.rememberConversationInputMessage(sessionId,launch.nativeId,initialClientId,boundInitialMessageId);
   }
   if(launch.nativeId)storeAgentNativeId({...context.session,id:sessionId},launch.nativeId);
   const preSpawnFiles=launch.preSpawnFiles;

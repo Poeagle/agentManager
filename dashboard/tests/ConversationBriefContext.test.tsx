@@ -40,3 +40,19 @@ it('shows scheduled runs and their shared prompt reference as separate turns',as
   expect(within(dialog).getByText('第一次结果')).toBeVisible();
   expect(within(dialog).getByText('第二次结果')).toBeVisible();
 });
+
+it('opens a historical screenshot from the brief details through project preview',async()=>{
+  const user=userEvent.setup();
+  render(<ConversationBriefContext messageId="brief" active projectId="p" onNavigate={()=>{}} context={{
+    version:1,truncated:false,older_omitted:false,omitted_turns:0,turns:[{
+      input:'查看错误',attachments:[{kind:'image',name:'error.png',path:'/project/error.png'}],
+    }],
+  }}/>);
+  await user.click(screen.getByRole('button',{name:/简要压缩/}));
+  await user.click(screen.getByRole('button',{name:'打开附件 error.png'}));
+  const image=within(screen.getByRole('dialog',{name:'图片预览 · error.png'})).getByRole('img');
+  const url=new URL(image.getAttribute('src')!,location.origin);
+  expect(url.pathname).toBe('/api/files/preview');
+  expect(url.searchParams.get('project_id')).toBe('p');
+  expect(url.searchParams.get('path')).toBe('/project/error.png');
+});

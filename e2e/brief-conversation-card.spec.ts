@@ -10,9 +10,15 @@ test('restores the brief-history card and current request after a reload',async(
  mkdirSync(path,{recursive:true});mkdirSync(directory,{recursive:true});
  const {project}=await(await page.request.post('/api/projects',{data:{name:'Brief context',path}})).json();
  const {session}=await(await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:path,mode:'terminal'}})).json();
+ const upload=await page.request.post(`/api/sessions/${session.id}/paste-image`,{data:{
+  dataUrl:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9hZsEAAAAASUVORK5CYII=',
+ }});
+ expect(upload.ok()).toBeTruthy();
+ const {path:attachmentPath}=await upload.json();
  const native='019ff001-abcd-7abc-8abc-abcdefabcd01',file=join(directory,`rollout-${native}.jsonl`);
  const context={version:1,turns:[
-  {input:'上一轮需求',scheduled_task:'每日巡检',progress:'确认了问题',conclusion:'上一轮结论'},
+  {input:'上一轮需求',scheduled_task:'每日巡检',progress:'确认了问题',conclusion:'上一轮结论',
+   attachments:[{kind:'image',name:'截图.png',path:attachmentPath}]},
   {input:'同第 1 轮定时任务提示词',input_ref:1,scheduled_task:'每日巡检',conclusion:'本次结论'},
  ],truncated:false,older_omitted:false,omitted_turns:0};
  const text='以下是上一会话的记录节选，可能不完整，仅供当前需求参考：\n<agentmanager_brief_context>\n'+JSON.stringify(context)+'\n</agentmanager_brief_context>\n\n当前需求：\n继续新的工作';
@@ -44,5 +50,11 @@ test('restores the brief-history card and current request after a reload',async(
   await expect(dialog.getByText('上一轮结论',{exact:true})).toBeVisible();
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
   await page.screenshot({path:testInfo.outputPath('brief-details-mobile.png')});
+  await dialog.getByRole('button',{name:'打开附件 截图.png'}).click();
+  const preview=page.getByRole('dialog',{name:'图片预览 · 截图.png'});
+  await expect(preview.getByText('1 × 1')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(preview).toHaveCount(0);
+  await expect(dialog).toBeVisible();
  }finally{await page.request.delete(`/api/sessions/${session.id}`);}
 });

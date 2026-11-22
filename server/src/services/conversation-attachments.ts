@@ -1,3 +1,4 @@
+import {constants} from 'node:fs';
 import {open,realpath,stat} from 'fs/promises';
 import {extname} from 'path';
 import {getDb} from '../db/index.js';
@@ -76,6 +77,56 @@ export function decorateConversationAttachments<T extends {role:string;text:stri
     const reply=conversationQuestionReply(row.input_text);
     return {...visible,text:reply?.text??row.input_text,attachments:JSON.parse(row.attachments),...(reply?{question_replies:reply.answers}:{})} as T;
   });
+}
+
+/** Embedded image inputs in older transcripts have neither the upload path
+ * nor the browser's ID. A repeated prompt alone cannot identify its images. */
+export async function recoverConversationImageAttachments(sessionId:string,nativeId:string|null,messageId:string,projectPath:string,text:string,digests:string[]) {
+  const db=getDb();
+  const linked=nativeId && db.prepare(`SELECT a.input_text,a.attachments FROM conversation_input_links l
+    JOIN conversation_attachments a USING (session_id,client_id)
+    WHERE l.session_id=? AND l.native_id=? AND l.message_id=?`).get(sessionId,nativeId,messageId) as {input_text:string;attachments:string}|undefined;
+  if(linked)return {text:linked.input_text,attachments:JSON.parse(linked.attachments) as ConversationAttachment[]};
+  const footer=text.lastIndexOf('\n\n附件：\n');
+  const original=footer<0?text:text.slice(0,footer).trim();
+  const candidates=db.prepare(`SELECT input_text,attachments FROM conversation_attachments
+    WHERE session_id=? AND input_text IN (?,?) LIMIT 9`).all(sessionId,text,original) as Array<{input_text:string;attachments:string}>;
+  if(candidates.length>8)return undefined;
+  let match: {text:string; attachments:ConversationAttachment[]} | undefined;
+  for(const row of candidates) {
+    try {
+      const attachments:ConversationAttachment[]=JSON.parse(row.attachments);
+      if(!Array.isArray(attachments)||attachments.length>8)continue;
+      const files=attachments.filter(item=>item.kind==='file');
+      const images=attachments.filter(item=>item.kind==='image');
+      if(images.length!==digests.length||formatConversationInput(row.input_text,files,true).trim()!==text)continue;
+      let remaining=10*MIB, verified=true;
+      for(const [index,image] of images.entries()) {
+        const path=await realpath(image.path);
+        if(!isProjectAttachment(path,projectPath,true)){verified=false;break;}
+        const handle=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+        try {
+          const info=await handle.stat();
+          if(!info.isFile()||info.size>remaining){verified=false;break;}
+          const data=Buffer.alloc(info.size+1);
+          let bytesRead=0;
+          while(bytesRead<data.length) {
+            const chunk=await handle.read(data,bytesRead,data.length-bytesRead,bytesRead);
+            if(!chunk.bytesRead)break;
+            bytesRead+=chunk.bytesRead;
+          }
+          if(bytesRead!==info.size||createHash('sha256').update(data.subarray(0,bytesRead)).digest('hex')!==digests[index]){
+            verified=false;break;
+          }
+          remaining-=info.size;
+        }finally{await handle.close();}
+      }
+      if(!verified)continue;
+      if(match&&JSON.stringify(match.attachments)!==JSON.stringify(attachments))return undefined;
+      match={text:row.input_text,attachments};
+    }catch{/* Missing files or corrupt metadata cannot establish identity. */}
+  }
+  return match;
 }
 
 /** Only files saved by the existing project-scoped paste/upload endpoints
