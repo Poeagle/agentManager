@@ -49,9 +49,24 @@ export function publicApiModel(catalog:TokenCatalog,model:string){
 }
 
 export function apiTariffAt(catalog:TokenCatalog,model:string,at:number){
- const models=pricingSnapshot(catalog,at)?.data.models;
+ const snapshot=pricingSnapshot(catalog,at);
+ const models=snapshot?.data.models;
  const id=apiModelId(catalog,model);
- return models&&Object.hasOwn(models,id)?models[id]:undefined;
+ const tariff=models&&Object.hasOwn(models,id)?models[id]:undefined;
+ if(catalog!=='openai'||!snapshot||!tariff||tariff.bands.length!==2||!tariff.bands.every(band=>band.min_input_tokens===undefined))return tariff;
+
+ // Older OpenAI snapshots stored both prices but omitted the context boundary.
+ // Use the next snapshot only when both tiers have the same labels and prices.
+ const snapshots=current.get(catalog);
+ const next=snapshots?.[snapshots.indexOf(snapshot)-1];
+ const newer=next&&Object.hasOwn(next.data.models,id)?next.data.models[id]:undefined;
+ const boundary=newer?.bands[1]?.min_input_tokens;
+ if(newer?.bands.length!==2||newer.bands[0].min_input_tokens!==0||boundary===undefined||!Number.isSafeInteger(boundary)||boundary<=0)return tariff;
+ const sameBands=tariff.bands.every((band,index)=>band.label===newer.bands[index].label &&
+   JSON.stringify(band.rates)===JSON.stringify(newer.bands[index].rates));
+ if(!sameBands)return tariff;
+ const [standard,long]=tariff.bands;
+ return {...tariff,bands:[{...standard,min_input_tokens:0},{...long,min_input_tokens:boundary}]};
 }
 
 export function estimatePublicApiCost(catalog:TokenCatalog,model:string|null,at:string|null,tokens:Record<string,number|null>|null,cacheWrites?:readonly [number,number]){

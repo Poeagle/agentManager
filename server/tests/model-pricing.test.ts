@@ -109,6 +109,26 @@ it('prices only the exact gateway model and applies the rate effective at the re
  expect(modelRate(removed,model,first)).toBe(1.2);
 });
 
+it.each([false,true])('recovers historical context thresholds only when both tariff tiers match (price changed: %s)',async(changed)=>{
+ const before=epoch('2026-11-22T05:17:43Z');
+ const request='2026-11-22T06:28:14.688Z';
+ const after=epoch('2026-11-22T07:00:41Z');
+ const row=(longInput:string)=>`### Standard pricing data
+| gpt-6.2-sol | $2 | $10 | $0.10 | $2.50 | $5 | ${longInput} | $15 | $0.20 |`;
+ let document=row('$4');
+ const fetcher:typeof fetch=async url=>String(url)===pricingSources.openai?new Response(document):new Response(null,{status:404});
+ await refreshModelPricing(fetcher,undefined,before);
+ document=row(changed?'$5':'$4')+'\n\nLong context: >272K input tokens.';
+ await refreshModelPricing(fetcher,undefined,after);
+ const use=(input_tokens:number)=>({input_tokens,cached_input_tokens:3564,output_tokens:1000});
+ const estimate=(input:number)=>estimateProviderApiCost('https://gateway.example/v1',undefined,'gpt-6.2-sol',request,use(input));
+ if(changed){expect(estimate(100075)).toBeNull();return;}
+ expect(estimate(100075)?.breakdown.input).toBeCloseTo(0.193022);
+ expect(estimate(100075)?.breakdown.cache).toBeCloseTo(0.0003564);
+ expect(estimate(272000)?.breakdown.input).toBeCloseTo(0.536872);
+ expect(estimate(272001)?.breakdown.input).toBeCloseTo(1.073748);
+});
+
 it('syncs official model metadata and applies provider rates before the manual multiplier fallback',async()=>{
  const model='gpt-6.2-sol',routerModel=`openai/${model}`;
  const now=epoch('2026-11-22T00:00:00Z'),at=new Date(now).toISOString();

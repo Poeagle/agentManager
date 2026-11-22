@@ -673,6 +673,7 @@ test('shows dated cache drops under each Progress header before its Items and be
     await expect(firstNotice.locator('time').first()).toHaveCSS('color', 'rgb(220, 38, 38)');
     await expect(firstNotice).toHaveText(/2026-11-20 17:00:07\s*10K ｜ 1K \(10\.0%\)\s*←\s*2026-11-20 17:00:04\s*10K ｜ 9\.8K \(98\.0%\)\s*Elapsed: 3s/);
     await expect(firstNotice.locator('time').last()).toHaveAttribute('datetime',at(4));
+    await expect(firstNotice.locator('time').last()).toHaveCSS('color', 'rgb(220, 38, 38)');
     await expect(firstNotice).toContainText('预估多耗 0.418 Credits');
     const cacheRates=firstNotice.locator('.session-chat-cache-hit');
     await expect(cacheRates.first()).toHaveCSS('color','rgb(131, 55, 33)');
