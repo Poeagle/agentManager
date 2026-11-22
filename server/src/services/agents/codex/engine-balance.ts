@@ -8,7 +8,7 @@ import {allCodexEnvironments,environmentConnection,engineForEnvironment,getCodex
 import {accountCommandInput,localCommandInput} from './account-transport.js';
 import {runInCodexEngine} from './engine-context.js';
 import {withCodexConnection} from './stream.js';
-import {providerApiKey} from './management.js';
+import {nativeCodexConnectionConfig,providerApiKey} from './management.js';
 import {readWallet,type BalanceFailure} from './balance-protocol.js';
 
 type AuthMode='account'|'api';
@@ -58,15 +58,18 @@ export async function collectEngineBalance(id:string):Promise<void>{
  if(pending.has(id))return pending.get(id)!;
  const task=(async()=>{
   const e=getCodexEnvironment(id);if(!e.enabled)return;const sourceKey=sourceIdentity(id);
+ const storedConfig=e.kind==='native'?nativeCodexConnectionConfig():null;
   let auth:AuthMode|null=null,runtimeProviderId:string|null=null,runtimeConfig:{providerId:string;base:string;envkey:string}|undefined;
   try{
    const {result,config}=await runInCodexEngine(await engineForEnvironment(id),()=>withCodexConnection(async request=>({result:await request('account/read',{}),config:await request('config/read',{}).catch(()=>null)})));
    const settings=config?.config as Record<string,any>|undefined,provider=settings?.model_providers?.[settings?.model_provider];
    if(typeof settings?.model_provider==='string'&&settings.model_provider)runtimeProviderId=settings.model_provider;
    if(runtimeProviderId&&provider)runtimeConfig={providerId:runtimeProviderId,base:typeof provider.base_url==='string'?provider.base_url:'',envkey:typeof provider.env_key==='string'?provider.env_key:''};
-   if(provider&&(typeof provider.env_key==='string'&&provider.env_key||provider.requires_openai_auth===false)||result.account?.type==='apiKey'||!result.account&&result.requiresOpenaiAuth===false)auth='api';
+   if(storedConfig?.apiMode||provider&&(typeof provider.env_key==='string'&&provider.env_key||provider.requires_openai_auth===false)||result.account?.type==='apiKey'||!result.account&&result.requiresOpenaiAuth===false)auth='api';
    else if(result.account?.type==='chatgpt'||result.account?.type==='chatgptAuthTokens')auth='account';
-  }catch{/* Keep unknown separate from both authentication modes. */}
+  }catch{
+   if(storedConfig?.apiMode)auth='api';
+  }
   if(auth!=='api'){
    const current=cachedEngineBalance(id);
    if(sourceIdentity(id)!==sourceKey)return;
@@ -75,6 +78,12 @@ export async function collectEngineBalance(id:string):Promise<void>{
    return;
   }
   let cfg:{base:string;key:string;providerId:string};try{cfg=await apiConfig(id,runtimeConfig);}catch{cfg={base:runtimeConfig?.base||'',key:'',providerId:runtimeConfig?.providerId||''};}
+  if(e.kind==='native'&&(!cfg.base||!cfg.providerId)){
+   if(storedConfig)cfg={...cfg,base:cfg.base||storedConfig.baseUrl,providerId:cfg.providerId||storedConfig.providerId};
+  }
+  if(e.kind==='native'&&!cfg.key){
+   if(storedConfig?.apiMode)cfg.key=providerApiKey('native')||(storedConfig.envKey?process.env[storedConfig.envKey]||'':'');
+  }
   if(runtimeProviderId&&cfg.providerId&&runtimeProviderId!==cfg.providerId)cfg={base:'',key:'',providerId:runtimeProviderId};
   const identity=sourceKey;
   const row=getDb().prepare('SELECT identity,data FROM codex_engine_balance WHERE id=?').get(id) as {identity:string;data:string}|undefined;

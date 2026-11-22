@@ -34,7 +34,7 @@ export function CodexAccountProvider({environment,readOnly=false,onDirtyChange,o
     {key:'tiers',title:'服务层级',value:m=>m.service_tiers?.map(t=>t.name).join('、')},
   ]);
   const native=environment.kind==='native';
-  const apiMode=details?.authentication.type==='apiKey'||environment.auth_mode==='api';
+  const apiMode=details?.authentication.type==='apiKey'||environment.auth_mode==='api'||nativeInfo?.authentication.mode==='api';
   const balance=useEngineBalance(environment.id,apiMode&&!readOnly&&environment.enabled);
   const quota=useQuery({queryKey:['agent-weekly-quota','codex',environment.id],queryFn:()=>api.codexEnvironments.quota(environment.id),enabled:environment.enabled&&!editing&&!apiMode,retry:false,staleTime:300000});
   const changed=useCallback((value:boolean)=>{setDirty(value);onDirtyChange?.(value);},[onDirtyChange]);

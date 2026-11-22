@@ -100,6 +100,9 @@ export function providerApiKey(providerId: string): string {
   const row = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(secretKeyName(providerId)) as {value:string}|undefined;
   return row?.value ? openAgentSecret(row.value, secretPurpose(providerId)) : '';
 }
+export function providerApiKeyConfigured(providerId:string):boolean {
+  return !!getDb().prepare('SELECT 1 FROM settings WHERE key=?').get(secretKeyName(providerId));
+}
 
 function catalogPathFromConfig(config: string): string | null {
   return config.match(/^\s*model_catalog_json\s*=\s*"([^"]+)"/m)?.[1] || null;
@@ -277,12 +280,14 @@ function tomlKey(value:string):string {
 
 /** Read the native Provider through Codex's own config rather than duplicate
  * connection state in AgentManager. */
-function nativeConnectionSettings():{
+export function nativeCodexConnectionConfig():{
   baseUrl:string;
   models:string[];
   defaultModel:string|null;
   providerId:string;
+  envKey:string;
   apiKeyConfigured:boolean;
+  apiMode:boolean;
 } {
   const config=existsSync(configPath())?readFileSync(configPath(),'utf8'):'';
   const providerId=config.match(/^\s*model_provider\s*=\s*"([^"]+)"/m)?.[1]||'';
@@ -302,9 +307,18 @@ function nativeConnectionSettings():{
   const sectionStart=providerId?config.search(providerPattern):-1;
   const section=sectionStart<0?'':config.slice(sectionStart);
   const baseUrl=section.match(/^\s*base_url\s*=\s*"([^"]+)"/m)?.[1]||'';
-  const apiKeyConfigured=!!providerApiKey('native')
+  const envKey=section.match(/^\s*env_key\s*=\s*"([^"]+)"/m)?.[1]||'';
+  const apiKeyConfigured=providerApiKeyConfigured('native')
     || existsSync(join(dirname(configPath()),'auth.json'));
-  return {baseUrl,models,defaultModel:model,providerId,apiKeyConfigured};
+  return {
+    baseUrl,
+    models,
+    defaultModel:model,
+    providerId,
+    envKey,
+    apiKeyConfigured,
+    apiMode:!!envKey&&!!baseUrl,
+  };
 }
 
 function replaceTomlRootString(config:string,key:string,value:string):string {
@@ -383,7 +397,7 @@ function updateInferredNativeCatalog(settings:{models:string[];defaultModel:stri
   writeFileSync(inferred,JSON.stringify(existing,null,2)+'\n',{encoding:'utf8',mode:0o600});
 }
 
-function validateNativeConnection(input:AgentProviderInput,current:ReturnType<typeof nativeConnectionSettings>):{
+function validateNativeConnection(input:AgentProviderInput,current:ReturnType<typeof nativeCodexConnectionConfig>):{
   baseUrl:string;
   models:string[];
   defaultModel:string;
@@ -402,7 +416,7 @@ function validateNativeConnection(input:AgentProviderInput,current:ReturnType<ty
 }
 
 function updateNativeConnection(input:AgentProviderInput):{restartRequired:boolean} {
-  const current=nativeConnectionSettings();
+  const current=nativeCodexConnectionConfig();
   const next=validateNativeConnection(input,current);
   const connectionChanged=(input.fields?.baseUrl!==undefined&&next.baseUrl!==current.baseUrl)||input.apiKey!==undefined;
   let config=existsSync(configPath())?readFileSync(configPath(),'utf8'):'';
@@ -425,7 +439,7 @@ function nativeProviders(): AgentProviderState[] {
   const codexHome = join(dirname(configPath()));
   const launchConfig = nativeEngineConfig();
   const launch = nativeEngineLaunchDescription();
-  const nativeSettings=nativeConnectionSettings();
+  const nativeSettings=nativeCodexConnectionConfig();
   return [{
     id: 'native',
     name: nativeProviderName(),
@@ -434,7 +448,11 @@ function nativeProviders(): AgentProviderState[] {
     managed: true,
     status: engine.status,
     statusText: engine.statusText,
-    authentication: { status: existsSync(join(codexHome, 'auth.json')) ? 'authenticated' : 'unknown', method: 'Codex 登录或原生 Provider' },
+    authentication: {
+      status: existsSync(join(codexHome, 'auth.json')) ? 'authenticated' : 'unknown',
+      method: nativeSettings.apiMode ? 'API Key' : 'Codex 登录或原生 Provider',
+      mode: nativeSettings.apiMode ? 'api' : 'unknown',
+    },
     models: nativeSettings.models,
     defaultModel: nativeSettings.defaultModel,
     socket: engine.socket,

@@ -43,6 +43,22 @@ it('shows the native API engine in the Provider layout using runtime settings',a
  await open('Native API');expect(await screen.findByRole('textbox',{name:'Responses API 地址'})).toHaveValue('https://fixture.invalid/v1');
  expect(screen.queryByRole('table',{name:'Provider 模型'})).not.toBeInTheDocument();expect(screen.queryByText('CODEX 登录账号')).not.toBeInTheDocument();vi.unstubAllGlobals();
 });
+it('opens native API settings even while environment authentication is pending',async()=>{
+ provider={...provider,id:'native',name:'Native Pending',kind:'native',authentication:{status:'authenticated',method:'API Key',mode:'api'},models:['model-a'],defaultModel:'model-a',codexHome:'/fixture/.codex',fields:[
+  {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},
+  {key:'envKey',label:'API Key',type:'password',value:'',configured:true},
+  {key:'codexHome',label:'CODEX_HOME',type:'text',value:'/fixture/.codex',readOnly:true},
+  {key:'models',label:'模型',type:'string-list',value:['model-a'],required:true},
+  {key:'defaultModel',label:'默认模型',type:'text',value:'model-a'},
+  {key:'command',label:'启动命令',type:'text',value:'codex'},
+ ]};state={...state,providers:[provider]};
+ vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[{id:'native',name:'Native Pending',kind:'native',enabled:true,auth_mode:null,allowed_user_ids:null}],users:[]});
+ vi.mocked(api.codexEnvironments.details).mockResolvedValue({details:{id:'native',checked_at:'',home:'/fixture/.codex',executable:'codex',version:null,engine:{state:'connected',pid:1},authentication:{status:'authenticated',type:'apiKey',email:null,plan:null},config:{path:null,exists:true,notice:null},settings:{model:'model-a',base_url:'https://fixture.invalid/v1'},models:[{model:'model-a',name:'Model A'}]}});
+ const dialog=await open('Native Pending');
+ expect(within(dialog).getByRole('textbox',{name:'Responses API 地址'})).toHaveValue('https://fixture.invalid/v1');
+ expect(within(dialog).getByLabelText('API Key')).toBeVisible();
+ expect(within(dialog).queryByText('账号与运行状态')).not.toBeInTheDocument();
+});
 it('edits native Codex connection settings without exposing the stored API key',async()=>{
  provider={...createFixture().provider,id:'native',name:'Native API',kind:'native',models:['model-a'],defaultModel:'model-a',codexHome:'/fixture/.codex',fields:[
   {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},
