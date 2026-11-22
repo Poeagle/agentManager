@@ -1,8 +1,18 @@
 import {expect,it} from 'vitest';
 import {DEFAULT_SEND_GUARD,evaluateSendGuard,validateSendGuard} from '../src/services/send-guard-policy.js';
-it('evaluates inclusive thresholds and nested AND/OR without treating unknown as zero',()=>{
- const evaluate=(context_percent:number|null,idle_minutes:number|null)=>evaluateSendGuard(DEFAULT_SEND_GUARD.conditions,{context_percent,idle_minutes,context_tokens:null});
- expect(evaluate(80,0)).toBe(true);expect(evaluate(79,29)).toBe(false);expect(evaluate(50,30)).toBe(true);expect(evaluate(49,100)).toBe(false);expect(evaluate(90,null)).toBe(true);expect(evaluate(50,null)).toBe(null);expect(evaluate(null,null)).toBe(null);
+const evaluate=(context_percent:number|null,idle_minutes:number|null)=>evaluateSendGuard(DEFAULT_SEND_GUARD.conditions,{context_percent,idle_minutes,context_tokens:null});
+it.each([
+ [80,0], [30,30], [50,20], [60,10], [20,60],
+])('matches when occupancy %s and idle %s reach a default branch', (percent,minutes)=>{
+ expect(evaluate(percent,minutes)).toBe(true);
+ expect(evaluate(percent-1,minutes)).toBe(false);
+ if(minutes>0)expect(evaluate(percent,minutes-1)).toBe(false);
+});
+it('retains unknown telemetry and can match occupancy independently of idle time',()=>{
+ expect(evaluate(80,null)).toBe(true);
+ expect(evaluate(60,null)).toBe(null);
+ expect(evaluate(19,null)).toBe(false);
+ expect(evaluate(null,null)).toBe(null);
 });
 it('validates bounded groups and numeric limits',()=>{
  expect(()=>validateSendGuard(DEFAULT_SEND_GUARD)).not.toThrow();

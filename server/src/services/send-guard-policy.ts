@@ -2,7 +2,26 @@ export type SendGuardCondition={type:'context_percent'|'context_tokens'|'idle_mi
 export interface SendGuardGroup {operator:'and'|'or';conditions:Array<SendGuardCondition|SendGuardGroup>}
 export interface SendGuardPolicy {enabled:boolean;conditions:SendGuardGroup}
 export const SEND_GUARD_KEY='conversation_send_guard';
-export const DEFAULT_SEND_GUARD:SendGuardPolicy={enabled:true,conditions:{operator:'or',conditions:[{type:'context_percent',value:80},{operator:'and',conditions:[{type:'context_percent',value:50},{type:'idle_minutes',value:30}]}]}};
+const afterIdle = (minutes: number, percent: number): SendGuardGroup => ({
+ operator: 'and',
+ conditions: [
+  {type:'idle_minutes',value:minutes},
+  {type:'context_percent',value:percent},
+ ],
+});
+export const DEFAULT_SEND_GUARD: SendGuardPolicy = {
+ enabled: true,
+ conditions: {
+  operator: 'or',
+  conditions: [
+   {type:'context_percent',value:80},
+   afterIdle(30,30),
+   afterIdle(20,50),
+   afterIdle(10,60),
+   afterIdle(60,20),
+  ],
+ },
+};
 export function validateSendGuard(value:unknown):asserts value is SendGuardPolicy {
  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('发送保护配置无效');
  if(Object.keys(value).some(k=>!['enabled','conditions'].includes(k)))throw Error('不支持的发送保护字段');

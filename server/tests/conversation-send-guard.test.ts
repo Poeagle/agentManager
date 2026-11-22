@@ -50,6 +50,13 @@ it('only permits administrators to update rules even when a member has settings-
  const invalid=await app.inject({method:'PUT',url:'/api/settings',headers:{cookie},payload:{settings:{[SEND_GUARD_KEY]:JSON.stringify({enabled:true,conditions:{operator:'or',conditions:[]}})}}});expect(invalid.statusCode).toBe(400);
  const saved=await app.inject({method:'PUT',url:'/api/settings',headers:{cookie},payload:{settings:{[SEND_GUARD_KEY]:JSON.stringify({...DEFAULT_SEND_GUARD,enabled:false})}}});expect(saved.statusCode).toBe(200);expect(JSON.parse(saved.json().settings[SEND_GUARD_KEY]).enabled).toBe(false);
 });
+it('shows the effective defaults and confirms an input that matches a combined branch',async()=>{
+ const settings=await app.inject({url:'/api/settings',headers:{cookie}});
+ expect(JSON.parse(settings.json().settings[SEND_GUARD_KEY])).toEqual(DEFAULT_SEND_GUARD);
+ vi.mocked(codexAdapter.telemetry.read).mockResolvedValue({usage:{total:{},last:{total_tokens:300},window:1000},observed_at:null});
+ const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ expect(response.json()).toMatchObject({needs_confirmation:true,context_percent:30});
+});
 it('does not fabricate idle time while a turn is running',async()=>{
  vi.mocked(codexAdapter.runtime.read).mockResolvedValue({source:'fixture',session_id:'native',state:'running',last_activity_at:new Date(Date.now()-99999999).toISOString(),observed_at:new Date().toISOString(),reason:'fixture'});
  const result=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});expect(result.json()).toMatchObject({idle_minutes:null,can_compact:false,can_new:false});
