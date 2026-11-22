@@ -24,9 +24,15 @@ function canUseAdapterEnvironment(agentId:string,id:string|null|undefined,userId
   if(isRetiredEnvironment(id))return false;
   let environment:ReturnType<typeof getAgent>['environment'];
   try { environment=getAgent(agentId).environment; } catch { return false; }
-  if(environment)return operation==='use'
-    ? environment.canUse(id,userId)
-    : environment.canControl(id,userId);
+  if(environment)try {
+    return operation==='use'
+      ? environment.canUse(id,userId)
+      : environment.canControl(id,userId);
+  } catch {
+    // A missing or stale Agent provider is unavailable to this session, not
+    // an error that should make unrelated records or routes fail together.
+    return false;
+  }
   const row=environmentRecord(id);
   if(row && row.agent_id!==agentId)return false;
   const admin=(getDb().prepare('SELECT role FROM users WHERE id=? AND disabled=0').get(userId) as {role:string}|undefined)?.role==='admin';

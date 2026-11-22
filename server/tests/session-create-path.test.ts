@@ -179,4 +179,23 @@ describe('session creation project identity', () => {
       'claude-session',
     ]));
   });
+
+  it('keeps healthy sessions visible when a Claude Provider-bound record is unavailable', async () => {
+    const insert = getDb().prepare(`
+      INSERT INTO sessions (id, project_id, task, status, mode, cli_type, agent_environment_id, created_by_user_id)
+      VALUES (?, 'project-1', ?, 'cancelled', 'session', ?, ?, ?)
+    `);
+    insert.run('healthy-codex', 'Keep working', 'codex', null, adminId);
+    insert.run('orphaned-claude', 'Old Claude work', 'claude', 'claude-provider:removed', adminId);
+
+    const response = await app.inject({
+      url: '/api/sessions?project_id=project-1',
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().sessions).toEqual([
+      expect.objectContaining({ id: 'healthy-codex' }),
+    ]);
+  });
 });
