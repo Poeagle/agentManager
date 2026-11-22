@@ -387,3 +387,32 @@ it.each([
  await collectAccountUsage('native');
  expect(cachedAccountUsage('native').rows[0].models[0]).toMatchObject({estimated_usd:expected,usd_coverage:{covered:1,total:1}});
 });
+
+it('prices official models used through an API Provider without inventing unknown model costs',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-11-23T01:30:00Z'));
+ initModelPricing();
+ const pricing=`| 模型 | 模型 | 模型 | deepseek-flash(1) |
+| 模型版本 | 模型版本 | 模型版本 | DeepSeek-V4.1-Flash-1017 |
+| 价格(2) | 输入（缓存命中） | 高峰时段 | 0.04元 |
+| 价格(2) | 输入（缓存命中） | 空闲时段 | 0.02元 |
+| 价格(2) | 输入（缓存未命中） | 高峰时段 | 2元 |
+| 价格(2) | 输入（缓存未命中） | 空闲时段 | 1元 |
+| 价格(2) | 百万tokens输出 | 高峰时段 | 8元 |
+| 价格(2) | 百万tokens输出 | 空闲时段 | 4元 |
+
+北京时间周一至周五（不含中国法定节假日）9:00 - 12:00、14:00 - 18:00 为高峰时段。`;
+ await refreshModelPricing(async url=>String(url)===pricingSources.deepseek?new Response(pricing):new Response('',{status:404}));
+ const provider={id:'xindu',name:'xindu',kind:'responses',enabled:true,fields:{codexHome:'/tmp/provider-official-cost',models:['deepseek-v4.1-flash','private-model'],baseUrl:'https://xindu.example/v1'}};
+ updateAgentManagement('codex',()=>({defaults:{},providers:[provider]}));
+ const tokens={input_tokens:1000000,cached_input_tokens:500000,output_tokens:100000,reasoning_output_tokens:0,total_tokens:1100000};
+ const official={key:'e'.repeat(64),day:'2026-11-23',hour:'2026-11-23T01:00:00+00:00',at:'2026-11-23T01:30:00.000Z',cwd:'/project',model:'deepseek-v4.1-flash',tier:'default',provider:null,tokens};
+ const unknown={...official,key:'f'.repeat(64),model:'private-model'};
+ respond([
+  {...official,requests:1},
+  {...unknown,requests:1},
+ ],{events:[official,unknown]});
+ await collectAccountUsage('provider:xindu');
+ const result=cachedAccountUsage('provider:xindu').rows[0],models=new Map(result.models.map(model=>[model.model,model]));
+ expect(models.get('deepseek-v4.1-flash')).toMatchObject({estimated_usd:1.82,usd_coverage:{covered:1,total:1}});
+ expect(models.get('private-model')).toMatchObject({estimated_usd:null,usd_coverage:{covered:0,total:1}});
+});

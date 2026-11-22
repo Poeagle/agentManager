@@ -331,7 +331,7 @@ export function cachedAccountUsage(id:string){
  const fileBreakdown=status?.checked_at?csvUsageBreakdown(id,status.checked_at,timezone):null;
  const directoryFor=usageDirectoryPresenter();
  const breakdown=(fileBreakdown??usageAggregates(id).map(row=>{const tokens=JSON.parse(row.tokens);return {...row,...tokens,requests:tokens.requests??1};})).map(row=>({...row,cwd:directoryFor(row.cwd).cwd}));
- const officialApi=environment.kind==='provider'?null:officialApiEstimates(id,timezone,breakdown,directoryFor);
+ const officialApi=officialApiEstimates(id,timezone,breakdown,directoryFor);
  const groups=new Map<string,Record<string,any>>();for(const row of breakdown){const key=JSON.stringify([row.day,row.cwd]);let group=groups.get(key);if(!group){group={day:row.day,cwd:row.cwd,...Object.fromEntries(tokenFields.map(k=>[k,row[k]??null]))};groups.set(key,group);}else for(const k of tokenFields)group[k]=group[k]==null||row[k]==null?null:group[k]+row[k];}
  const rows=[...groups.values()].sort((a,b)=>b.day.localeCompare(a.day)||a.cwd.localeCompare(b.cwd)).slice(0,5001);
  const estimates=new Map<string,{value:number;covered:number;requests:number;usd:number;usdCovered:number}>();
