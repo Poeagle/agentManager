@@ -16,6 +16,7 @@ import {accountCommandInput,localCommandInput} from './account-transport.js';
 import {USAGE_EVENT_LIMIT,USAGE_SCAN} from './usage-scanner.js';
 import {tokenFields} from '../../conversation-usage.js';
 import {creditRateDate,usdReferenceRateDate,estimateUsageCredits,estimateUsageBreakdown,estimateUsageUsd,estimateUsageUsdBreakdown} from './usage-credits.js';
+import {estimatePublicApiCost,pricingSnapshot,publicApiModel} from '../model-pricing.js';
 import {createHash} from 'node:crypto';
 import {deepseekDay,deepseekOrigin,estimateDeepseekBreakdown} from '../deepseek-pricing.js';
 import {codexApiEstimate,codexApiPricing} from './statistics-cost.js';
@@ -240,6 +241,48 @@ function quotaByModel(allocation:Map<string,number>,day:string,cwd:string,model:
 function addBreakdown(a:TokenCostBreakdown|undefined,b:TokenCostBreakdown):TokenCostBreakdown{
  return a?{input:a.input+b.input,cache:a.cache+b.cache,output:a.output+b.output,reasoning:a.reasoning===null||b.reasoning===null?null:a.reasoning+b.reasoning}:{...b};
 }
+type OfficialApiEstimate={amount:number;coverage:{covered:number;total:number};breakdown:TokenCostBreakdown};
+function addOfficialApiEstimate(target:OfficialApiEstimate,cost:NonNullable<ReturnType<typeof estimatePublicApiCost>>,requests:number){
+ target.amount+=cost.amount;target.coverage.covered+=requests;
+ target.breakdown={input:target.breakdown.input+cost.breakdown.input,cache:target.breakdown.cache+cost.breakdown.cache,
+  output:target.breakdown.output+cost.breakdown.output,reasoning:target.breakdown.reasoning===null||cost.breakdown.reasoning===null?null:target.breakdown.reasoning+cost.breakdown.reasoning};
+}
+function officialApiEstimates(id:string,timezone:string,rows:Array<Record<string,any>>,directoryFor:(path:string)=>{cwd:string}){
+ const estimates=new Map<string,OfficialApiEstimate>(),tieredModels=new Set<string>(),rateAt=new Date().toISOString();
+ const key=(day:string,cwd:string,model:string|null)=>JSON.stringify([day,cwd,model]);
+ const blank=()=>({amount:0,coverage:{covered:0,total:0},breakdown:{input:0,cache:0,output:0,reasoning:0 as number|null}});
+ for(const row of rows){
+  const estimateKey=key(row.day,row.cwd,row.model),estimate=estimates.get(estimateKey)??blank();
+  estimate.coverage.total+=row.requests;
+  estimate.breakdown.reasoning=estimate.breakdown.reasoning===null?null:estimate.breakdown.reasoning;
+  const bands=row.model?publicApiModel('openai',row.model)?.api_pricing.bands:undefined;
+  if(bands?.length===1){
+   const cost=estimatePublicApiCost('openai',row.model,rateAt,row);
+   if(cost)addOfficialApiEstimate(estimate,cost,row.requests);
+   else estimate.breakdown.reasoning=null;
+  }else if(bands?.length&&bands.every(band=>band.min_input_tokens!=null))tieredModels.add(row.model);
+  else estimate.breakdown.reasoning=null;
+  estimates.set(estimateKey,estimate);
+ }
+ let detailsIncomplete=false;
+ if(tieredModels.size){
+  const models=[...tieredModels],placeholders=models.map(()=>'?').join(',');
+  const query=getDb().prepare(`SELECT day,cwd,model,tokens FROM codex_usage_dedup_events WHERE account=? AND model IN (${placeholders}) LIMIT ?`);
+  let scanned=0;
+  for(const event of query.iterate(id,...models,USAGE_EVENT_LIMIT+1) as Iterable<{day:string;cwd:string;model:string;tokens:string}>){
+   if(++scanned>USAGE_EVENT_LIMIT){detailsIncomplete=true;break;}
+   const tokens=JSON.parse(event.tokens) as Record<string,number|null>&{_timezone?:string};
+   if((tokens._timezone??'UTC')!==timezone)continue;
+   const cwd=directoryFor(event.cwd).cwd;
+   const estimate=estimates.get(key(event.day,cwd,event.model));
+   const cost=estimatePublicApiCost('openai',event.model,rateAt,tokens);
+   if(estimate&&cost)addOfficialApiEstimate(estimate,cost,1);
+   else if(estimate)estimate.breakdown.reasoning=null;
+  }
+ }
+ const checked=pricingSnapshot('openai')?.checked;
+ return {estimates,detailsIncomplete,rateDate:checked?new Date(checked).toISOString().slice(0,10):undefined};
+}
 type ModelUsage={model:string|null;tokens:Record<string,number|null>;estimated_credits:number|null;credit_coverage:{covered:number;total:number};estimated_usd:number|null;usd_coverage:{covered:number;total:number};usd_breakdown?:TokenCostBreakdown;cost_breakdown?:TokenCostBreakdown;api_cost?:ApiCost};
 export function cachedAccountUsage(id:string){
  const db=getDb(),timezone=usageStoredTimezone(id),timezone_pending=timezone!==usageTimezone()?usageTimezone():null;
@@ -253,6 +296,7 @@ export function cachedAccountUsage(id:string){
  const fileBreakdown=status?.checked_at?csvUsageBreakdown(id,status.checked_at,timezone):null;
  const directoryFor=usageDirectoryPresenter();
  const breakdown=(fileBreakdown??usageAggregates(id).map(row=>{const tokens=JSON.parse(row.tokens);return {...row,...tokens,requests:tokens.requests??1};})).map(row=>({...row,cwd:directoryFor(row.cwd).cwd}));
+ const officialApi=environment.kind==='provider'?null:officialApiEstimates(id,timezone,breakdown,directoryFor);
  const groups=new Map<string,Record<string,any>>();for(const row of breakdown){const key=JSON.stringify([row.day,row.cwd]);let group=groups.get(key);if(!group){group={day:row.day,cwd:row.cwd,...Object.fromEntries(tokenFields.map(k=>[k,row[k]??null]))};groups.set(key,group);}else for(const k of tokenFields)group[k]=group[k]==null||row[k]==null?null:group[k]+row[k];}
  const rows=[...groups.values()].sort((a,b)=>b.day.localeCompare(a.day)||a.cwd.localeCompare(b.cwd)).slice(0,5001);
  const estimates=new Map<string,{value:number;covered:number;requests:number;usd:number;usdCovered:number}>();
@@ -266,17 +310,28 @@ export function cachedAccountUsage(id:string){
   model.usd_coverage.total+=row.requests;if(usd!==null){model.estimated_usd=(model.estimated_usd??0)+usd;model.usd_coverage.covered+=row.requests;const cost=estimateUsageUsdBreakdown(row.model,row.tier,row);if(cost)model.usd_breakdown=addBreakdown(model.usd_breakdown,cost);}
   byModel.set(modelKey,model);models.set(key,byModel);
  }
+ if(officialApi)for(const [groupKey,entries]of models){
+  const [day,cwd]=JSON.parse(groupKey) as [string,string];
+  for(const model of entries.values()){
+   const estimate=officialApi.estimates.get(JSON.stringify([day,cwd,model.model]));
+   const complete=estimate&&estimate.coverage.covered===model.usd_coverage.total;
+   model.estimated_usd=complete?estimate.amount:null;
+   model.usd_breakdown=complete?estimate.breakdown:undefined;
+   model.usd_coverage={covered:complete?estimate.coverage.covered:0,total:model.usd_coverage.total};
+  }
+ }
  const quota_range:{start:string|null;end:string|null}={start:null,end:null},quota_hours:Array<{hour:string;quota:number}>=[],allocation=allocatedQuota(id,quota_range,quota_hours,timezone);
  const dailyQuota=new Map<string,number>(),dailyCredits=new Map<string,number>();for(const h of quota_hours)dailyQuota.set(h.hour.slice(0,10),(dailyQuota.get(h.hour.slice(0,10))??0)+h.quota);for(const [key,value] of estimates){const [day]=JSON.parse(key);dailyCredits.set(day,(dailyCredits.get(day)??0)+value.value);}
  allocation.clear();for(const [key,entries] of models){const [day,cwd]=JSON.parse(key),total=dailyQuota.get(day),denominator=dailyCredits.get(day);if(total!==undefined&&denominator)for(const model of entries.values())if(model.estimated_credits!==null)allocation.set(JSON.stringify([day,null,cwd,model.model]),total*model.estimated_credits/denominator);}
 
  const progress=db.prepare('SELECT data FROM codex_usage_progress WHERE account=?').get(id) as {data:string}|undefined;
  const initialized=!!db.prepare('SELECT account FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
- return {storage:fileBreakdown!==null?csvStorage(id):databaseStorage(),initialized,checked_at:status?.checked_at??null,quota_range,quota_hours,error:ruleWarning??status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:!!ruleWarning||status?.partial!==0||rows.length>5000||!!timezone_pending||!!unassigned,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:creditRateDate(),usd_rate_date:usdReferenceRateDate(),rows:rows.slice(0,5000).map(row=>{
+ return {storage:fileBreakdown!==null?csvStorage(id):databaseStorage(),initialized,checked_at:status?.checked_at??null,quota_range,quota_hours,error:ruleWarning??status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:!!ruleWarning||status?.partial!==0||rows.length>5000||!!timezone_pending||!!unassigned||!!officialApi?.detailsIncomplete,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:creditRateDate(),usd_rate_date:officialApi?(officialApi.rateDate??'未提供'):usdReferenceRateDate(),rows:rows.slice(0,5000).map(row=>{
 
   const estimate=estimates.get(JSON.stringify([row.day,row.cwd]));
   const modelRows=[...(models.get(JSON.stringify([row.day,row.cwd]))?.values()||[])];
-  return {date:row.day,...directoryFor(row.cwd),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null,estimated_usd:estimate?.usdCovered?estimate.usd:null,usd_coverage:estimate?{covered:estimate.usdCovered,total:estimate.requests}:null,models:modelRows.map(model=>({...model,actual_quota:quotaByModel(allocation,row.day,row.cwd,model.model)})).sort((a,b)=>(b.tokens.total_tokens??0)-(a.tokens.total_tokens??0))};
+  const knownUsd=modelRows.filter(model=>model.estimated_usd!==null),usdCoverage={covered:modelRows.reduce((sum,model)=>sum+model.usd_coverage.covered,0),total:modelRows.reduce((sum,model)=>sum+model.usd_coverage.total,0)};
+  return {date:row.day,...directoryFor(row.cwd),tokens:Object.fromEntries(tokenFields.map(k=>[k,row[k]])),estimated_credits:estimate?.covered?estimate.value:null,credit_coverage:estimate?{covered:estimate.covered,total:estimate.requests}:null,estimated_usd:knownUsd.length?knownUsd.reduce((sum,model)=>sum+model.estimated_usd!,0):null,usd_coverage:usdCoverage,models:modelRows.map(model=>({...model,actual_quota:quotaByModel(allocation,row.day,row.cwd,model.model)})).sort((a,b)=>(b.tokens.total_tokens??0)-(a.tokens.total_tokens??0))};
  })};
 }
 /** Populate timestamps only for previously recorded event identities. Existing

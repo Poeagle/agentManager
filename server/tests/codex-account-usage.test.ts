@@ -12,6 +12,7 @@ import {accountCommandInput,localCommandInput} from '../src/services/agents/code
 vi.mock('../src/services/agents/codex/account-transport.js',async original=>({...await original<typeof import('../src/services/agents/codex/account-transport.js')>(),accountCommandInput:vi.fn(),localCommandInput:vi.fn()}));
 import {updateAgentManagement} from '../src/services/agents/management-store.js';
 import * as engineBalance from '../src/services/agents/codex/engine-balance.js';
+import {initModelPricing,pricingSources,refreshModelPricing} from '../src/services/agents/model-pricing.js';
 let fixture:ReturnType<typeof createTestDatabase>;
 const tokens={total_tokens:10,input_tokens:10,cached_input_tokens:null,output_tokens:0,reasoning_output_tokens:null};
 const row={day:'2026-01-01',cwd:'/project',model:null,tier:null,requests:1,tokens};
@@ -46,7 +47,7 @@ function response(input:string,rows:any[],options:Record<string,unknown>={}){
  return JSON.stringify({...request,rows:fresh,event_keys:Object.fromEntries(Object.entries(eventKeys).map(([day,keys])=>[day,Buffer.concat(keys).toString('base64')])),events:[],events_truncated:false,partial:false,errors:0,...options});
 }
 function respond(rows:any[]=[row],options:Record<string,unknown>={}){vi.mocked(localCommandInput).mockImplementation(async(_script,input)=>response(input,rows,options));}
-beforeEach(()=>{vi.stubEnv('TZ','UTC');fixture=createTestDatabase();initAccountUsage();respond();vi.mocked(accountCommandInput).mockImplementation(async(_c,_s,input)=>response(input,[row]));});
+beforeEach(()=>{vi.stubEnv('TZ','UTC');fixture=createTestDatabase();initModelPricing();initAccountUsage();respond();vi.mocked(accountCommandInput).mockImplementation(async(_c,_s,input)=>response(input,[row]));});
 afterEach(async()=>{await stopAccountUsage();fixture.cleanup();vi.restoreAllMocks();vi.resetAllMocks();vi.useRealTimers();vi.unstubAllEnvs();});
 
 it('captures the final Codex request before platform history deletion and retains account consumption',async()=>{
@@ -122,17 +123,17 @@ it('groups model usage across speeds while retaining unknown models and exact to
  const sol=r.models.find(m=>m.model==='gpt-6.1-sol')!;expect(sol.tokens.input_tokens).toBe(1000);expect(sol.estimated_credits).toBeCloseTo(0.00825);expect(sol.estimated_usd).toBeCloseTo(0.00033);expect(r.models.find(m=>m.model===null)?.estimated_credits).toBeNull();expect(r.models.find(m=>m.model===null)?.estimated_usd).toBeNull();
  expect(r.models.reduce((n,m)=>n+(m.tokens.total_tokens??0),0)).toBe(r.tokens.total_tokens);
 });
-it('prices persisted GPT-6.2 account aggregates on read without recollecting tokens',async()=>{
+it('keeps Credits estimates when an official API tariff is unavailable',async()=>{
  const counters={input_tokens:1000000,cached_input_tokens:900000,output_tokens:1000,reasoning_output_tokens:100,total_tokens:1001000};
  respond([{...row,model:'gpt-6.2-sol',tier:'default',tokens:counters},{...row,model:'gpt-6.2-sol',tier:'priority',tokens:counters},{...row,model:'gpt-6.2-astra',tier:'ultrafast',tokens:counters}]);
  await collectAccountUsage('native');vi.mocked(localCommandInput).mockClear();
  for(let i=0;i<2;i++){
   const result=cachedAccountUsage('native');expect(result.credit_rate_date).toBe('2026-11-22');
   expect(result.rows[0]).toMatchObject({estimated_credits:202.5,credit_coverage:{covered:3,total:3},tokens:{total_tokens:3003000}});
-  expect(result.rows[0].estimated_usd).toBeCloseTo(4.5);
+  expect(result.rows[0].estimated_usd).toBeNull();
   expect(result.rows[0].models.find(m=>m.model==='gpt-6.2-sol')?.estimated_credits).toBe(22.5);
-  expect(result.rows[0].models.find(m=>m.model==='gpt-6.2-sol')?.estimated_usd).toBeCloseTo(0.9);
-  expect(result.rows[0].models.find(m=>m.model==='gpt-6.2-astra')?.estimated_usd).toBeCloseTo(3.6);
+  expect(result.rows[0].models.find(m=>m.model==='gpt-6.2-sol')?.estimated_usd).toBeNull();
+  expect(result.rows[0].models.find(m=>m.model==='gpt-6.2-astra')?.estimated_usd).toBeNull();
   expect(result.rows[0].models.find(m=>m.model==='gpt-6.2-astra')?.estimated_credits).toBe(180);
  }
  expect(localCommandInput).not.toHaveBeenCalled();
@@ -297,4 +298,62 @@ it('retains the recovery checkpoint across partial scans and resumes without cou
  expect(JSON.parse(vi.mocked(localCommandInput).mock.calls.at(-1)![1])).toMatchObject({mode:'catchup',since_day:'2026-01-01'});
  expect(cachedAccountUsage('native').rows.map(r=>r.tokens.total_tokens)).toEqual([10,10,10]);
  expect(getDb().prepare('SELECT last_day FROM codex_usage_ledger').get()).toEqual({last_day:'2026-01-04'});
+});
+
+it('estimates Codex account USD from official per-request API context bands',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-11-22T23:00:00Z'));
+ initModelPricing();
+ const pricing=`### Standard pricing data
+| gpt-6.2-sol | $2 | $10 | $0.10 | $2.50 | $5 | $4 | $15 | $0.20 |
+
+Long context: >272K input tokens.`;
+ await refreshModelPricing(async url=>String(url)===pricingSources.openai?new Response(pricing):new Response('',{status:404}));
+ const requestTokens=[
+  {input_tokens:200000,cached_input_tokens:190000,output_tokens:1000,reasoning_output_tokens:100,total_tokens:201000},
+  {input_tokens:300000,cached_input_tokens:280000,output_tokens:2000,reasoning_output_tokens:500,total_tokens:302000},
+ ];
+ const events=requestTokens.map((tokens,index)=>({
+  key:(index?'b':'a').repeat(64),day:'2026-11-22',hour:`2026-11-22T${index?'12':'11'}:00:00+00:00`,
+  at:`2026-11-22T${index?'12':'11'}:30:00.000Z`,cwd:'/project',model:'gpt-6.2-sol',tier:'standard',provider:null,tokens,
+ }));
+ const combined={input_tokens:500000,cached_input_tokens:470000,output_tokens:3000,reasoning_output_tokens:600,total_tokens:503000};
+ respond([{day:'2026-11-22',cwd:'/project/src',model:'gpt-6.2-sol',tier:'standard',requests:2,tokens:combined}],{events});
+ await collectAccountUsage('native');
+ const result=cachedAccountUsage('native').rows[0],model=result.models[0];
+ expect(result.tokens).toMatchObject({input_tokens:500000,cached_input_tokens:470000,output_tokens:3000});
+ expect(model.estimated_usd).toBeCloseTo(0.215,10);
+ expect(model).toMatchObject({usd_coverage:{covered:2,total:2},usd_breakdown:{input:0.1,cache:0.075,output:0.04,reasoning:0.0085}});
+});
+
+it('keeps itemized Codex account costs aligned with short and long context requests',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-11-22T23:00:00Z'));
+ initModelPricing();
+ const pricing=`### Standard pricing data
+| gpt-6.2-sol | $2 | $10 | $0.10 | $2.50 | $5 | $4 | $15 | $0.20 |
+
+Long context: >272K input tokens.`;
+ await refreshModelPricing(async url=>String(url)===pricingSources.openai?new Response(pricing):new Response('',{status:404}));
+ const short={input_tokens:200000,cached_input_tokens:190000,output_tokens:1000,reasoning_output_tokens:100,total_tokens:201000};
+ const long={input_tokens:300000,cached_input_tokens:280000,output_tokens:2000,reasoning_output_tokens:500,total_tokens:302000};
+ const events=[short,long].map((tokens,index)=>({
+  key:(index?'b':'a').repeat(64),day:'2026-11-22',hour:'2026-11-22T02:00:00+00:00',
+  at:`2026-11-22T02:0${index+1}:00.000Z`,cwd:'/project/src',model:'gpt-6.2-sol',tier:'standard',provider:null,tokens,
+ }));
+ const combined={input_tokens:500000,cached_input_tokens:470000,output_tokens:3000,reasoning_output_tokens:600,total_tokens:503000};
+ respond([{day:'2026-11-22',cwd:'/project/src',model:'gpt-6.2-sol',tier:'standard',requests:2,tokens:combined}],{events});
+ await collectAccountUsage('native');
+ const result=cachedAccountUsage('native').rows[0],model=result.models[0];
+ expect(model.usd_breakdown).toEqual({
+  input:0.1,cache:0.075,output:0.04,reasoning:0.0085,
+ });
+ const itemized={
+  input:model.usd_breakdown!.input+model.usd_breakdown!.cache,
+  cached:model.usd_breakdown!.cache,
+  uncached:model.usd_breakdown!.input,
+  reasoning:model.usd_breakdown!.reasoning,
+  output:model.usd_breakdown!.output,
+  total:model.estimated_usd,
+ };
+ for(const [key,value] of Object.entries({input:0.175,cached:0.075,uncached:0.1,reasoning:0.0085,output:0.04,total:0.215}))
+  expect(itemized[key as keyof typeof itemized]).toBeCloseTo(value,10);
 });

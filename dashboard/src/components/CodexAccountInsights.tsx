@@ -104,7 +104,7 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
      {shown.map((node,index)=><Group key={node.key} node={node} amountTotal={byPeriod?amountTotals.get(node.key)??null:rangeTotal} depth={0} apiMode={apiMode} currency={pricing?.currency} defaultOpen={currentPage===0&&index===0} expansion={expansion} setExpansion={setExpansion}/>)}
     </TableFrame>
     <div className="ci-pagination"><span>{groups.length} 个{byPeriod?periodName:dimensionLabels[dimension]} · {new Set(rows.map(row=>JSON.stringify([row.date,row.cwd]))).size} 条日期｜项目记录</span><button className="ci-button" disabled={currentPage===0} onClick={()=>setPage(currentPage-1)}>上一页</button><span>{currentPage+1} ｜ {pages}</span><button className="ci-button" disabled={currentPage+1>=pages} onClick={()=>setPage(currentPage+1)}>下一页</button></div>
-    {apiMode?<p className="ci-footnote">日期按本地时间，周从周一开始；周、月扩展为完整自然周期，总量严格按所选日期统计。余额与实际扣费来自上游；Token 来自本地历史。</p>:<p className="ci-footnote">金额按 {data?.usd_rate_date||'当前'} 官方模型费率、速度档位及 Token 用量估算为 USD 等值；这是用量参考，不是实际账单。未记录速度时按 Standard 估算，带 * 为部分覆盖；未知模型费率或 Token 字段缺失时显示 —。占比以实际统计范围内{byPeriod?`对应${periodName}`:'全部范围'}全部项目及模型的预估金额为分母，搜索与字段筛选不改变分母。<a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noreferrer">费率依据</a></p>}
+    {apiMode?<p className="ci-footnote">日期按本地时间，周从周一开始；周、月扩展为完整自然周期，总量严格按所选日期统计。余额与实际扣费来自上游；Token 来自本地历史。</p>:<p className="ci-footnote">金额按 {data?.usd_rate_date||'当前'} 官方模型 API 费率、逐请求上下文档位及 Token 用量估算为 USD 等值；这是用量参考，不是实际账单。Codex Credits 另行统计；带 * 表示部分请求缺少官方费率或逐请求明细，无法完整估算时显示 —。占比以实际统计范围内{byPeriod?`对应${periodName}`:'全部范围'}全部项目及模型的预估金额为分母，搜索与字段筛选不改变分母。<a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noreferrer">费率依据</a></p>}
    </section>}
   </div>
  </Dialog>;
