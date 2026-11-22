@@ -6,11 +6,35 @@ import {
 } from '../src/services/session-manager.js';
 import { createTestDatabase } from './helpers/database.js';
 import { codexAdapter } from '../src/services/agents/codex/adapter.js';
+import { purgeCodexHistory } from '../src/services/agents/codex/identity.js';
+import * as stream from '../src/services/agents/codex/stream.js';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 let cleanup: (() => void) | undefined;
 afterEach(() => { vi.restoreAllMocks(); cleanup?.(); });
 
 describe('session record purge safety', () => {
+  it('deletes the native thread before removing an ended Codex record', async () => {
+    ({ cleanup } = createTestDatabase());
+    const home=join(tmpdir(),'codex-purge-'+Math.random().toString(36).slice(2));
+    mkdirSync(join(home,'sessions'),{recursive:true});
+    const file=join(home,'sessions','rollout-019ff001-9999-7999-8999-999999999999.jsonl');
+    writeFileSync(file,'{}\n');
+    vi.stubEnv('CODEX_HOME',home);
+    const request=vi.fn().mockResolvedValue({});
+    const connection=vi.spyOn(stream,'withCodexConnection').mockImplementation(async action=>action(request as never,{userAgent:null}));
+    try {
+      await purgeCodexHistory({session:{agent_environment_id:'native'},nativeId:'019ff001-9999-7999-8999-999999999999'});
+      expect(request).toHaveBeenCalledWith('thread/delete',{threadId:'019ff001-9999-7999-8999-999999999999'});
+      expect(connection).toHaveBeenCalledOnce();
+      expect(()=>readFileSync(file)).toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home,{recursive:true,force:true});
+    }
+  });
   it.each(['launching', 'released'])('refuses to purge a %s session that may still own a process', async (status) => {
     ({ cleanup } = createTestDatabase());
     getDb().prepare(`

@@ -8,6 +8,7 @@ import { homedir } from 'os';
 import { getCodexEnvironment, environmentConnection } from './environments.js';
 import { localHome, forgetEnvironmentRollout } from './account-files.js';
 import { accountCommand } from './account-transport.js';
+import { withCodexConnection } from './stream.js';
 export function persistCodexBinding(sessionId: string, nativeId: string) {
     const directory = join(dirname(config.dbPath), 'codex-bindings');
     mkdirSync(directory, { recursive: true });
@@ -26,6 +27,12 @@ export async function purgeCodexHistory(context: {session: {agent_environment_id
     if (!nativeId || !CODEX_SESSION_ID_RE.test(nativeId)) return;
     const environmentId = context.session.agent_environment_id || 'native';
     const environment = getCodexEnvironment(environmentId);
+    try {
+        await withCodexConnection(request => request('thread/delete', { threadId: nativeId }));
+    } catch {
+        // An ended thread may already be unloaded or unavailable. File cleanup
+        // below remains the fallback and must not resurrect it in the UI.
+    }
     if (environment.kind === 'account') {
         const connection = environmentConnection(environment);
         const home = connection.codexHome?.trim() || '~/.codex';
