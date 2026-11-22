@@ -7,8 +7,8 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.20.0');
-    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/controls')?.response).toMatchObject({models:expect.stringContaining('api_pricing')});
+    expect(contract.version).toBe('3.20.1');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/controls')?.response).toMatchObject({models:expect.stringContaining('reference_only')});
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation')?.description).toContain('verified project attachment references');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation')?.description).toContain('visible thinking fragments');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('error.code=rate_limit');

@@ -111,7 +111,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.20.0',
+    version:'3.20.1',
     updatedAt:'2026-11-22',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -250,7 +250,7 @@ export function getAgentApiContract() {
       {
         category: 'Sessions', method: 'GET', path: '/api/sessions/:id/controls',
         description: 'Read the accessible session model, runtime controls and available models. Optional ?refresh=true refreshes native data. Model release date, capabilities, reference Credits and official public API tariffs are optional.',
-        response: {models: 'AgentModel[]; optional api_pricing includes currency, official source, and Token prices per million for each documented pricing band.'},
+        response: {models: 'AgentModel[]; optional api_pricing includes currency, official source, and Token prices per million for each documented pricing band. reference_only identifies a public reference tariff for a subscription or gateway.'},
         errors: { 400: 'Invalid refresh flag', 404: 'Session not found or not accessible', 409: 'Session has no native identity' },
       },
       {
