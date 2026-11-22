@@ -8,6 +8,12 @@ export interface AgentModelCatalogEntry extends AgentModelMetadata {
  providers:string[];
 }
 
+/** A configured Provider alias is useful for sessions, but it is not an
+ * official model record unless the platform can verify official metadata. */
+export function hasOfficialModelMetadata(model:AgentModelMetadata):boolean {
+ return model.api_pricing!=null||model.reference_credits!=null;
+}
+
 function modelVendor(model:string):string{
  const id=model.toLowerCase().split('/').at(-1)??model.toLowerCase();
  if(id.startsWith('gpt-'))return 'OpenAI';
@@ -51,6 +57,7 @@ export function buildAgentModelCatalog(sources:Array<{agent:string;providers:Age
    const vendor=modelVendor(model),key=`${vendor}\u0000${model}`;
    const config=configs.find(item=>item.model===model);
    const metadata=mergeMetadata(config,providerModelMetadata(model,baseUrl,fields));
+   if(!hasOfficialModelMetadata(metadata))continue;
    const current=entries.get(key);
    if(current){
     Object.assign(current,mergeMetadata(current,metadata));

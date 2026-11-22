@@ -9,10 +9,11 @@ export function useProviderUsage(environmentId?: string) {
     retry: false,
     refetchInterval: 10000,
   });
+  const tabs = query.data?.tabs ?? [];
   return {
     ...query,
-    inUse: !query.data || !!query.data.tabs.length,
-    busy: !query.data || query.data.busy,
+    inUse: !query.data || tabs.length > 0,
+    busy: !query.data || query.data.busy === true,
     verified: !query.isError && !!query.data?.verified,
   };
 }
