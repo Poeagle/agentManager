@@ -419,6 +419,7 @@ test('uses adjacent cached-input counts and ignores a ratio drop caused by new i
   await expect(incident).toContainText('82.26%');
   await expect(incident).toContainText('90.1%');
   await expect(incident).toContainText('Elapsed: 2.484s');
+  await expect(incident).toContainText('额外费用未知');
   await page.reload();
   await expect(incident).toHaveCount(1);
   await page.getByRole('button',{name:'Details',exact:true}).click();
@@ -626,7 +627,8 @@ test('shows dated cache drops under each Progress header before its Items and be
   const session=await setup(page,'codex','detached');
   const turn='cache-items';
   writeFileSync(session.log,record(0,'session_meta',{id:session.nativeId})+
-    event(1,'task_started',{turn_id:turn})+message(2,'input','user','核对缓存下降条目')+
+    event(1,'task_started',{turn_id:turn})+record(1.5,'turn_context',{turn_id:turn,model:'gpt-6.1-sol'})+
+    message(2,'input','user','核对缓存下降条目')+
     message(3,'baseline','assistant','建立缓存基线','commentary')+request(4,turn,'r1',10000,9800));
   await page.goto('/');
   await expect(session.chat.getByText('建立缓存基线')).toBeAttached();
@@ -671,6 +673,7 @@ test('shows dated cache drops under each Progress header before its Items and be
     await expect(firstNotice.locator('time').first()).toHaveCSS('color', 'rgb(220, 38, 38)');
     await expect(firstNotice).toHaveText(/2026-11-20 17:00:07\s*10K ｜ 1K \(10\.0%\)\s*←\s*2026-11-20 17:00:04\s*10K ｜ 9\.8K \(98\.0%\)\s*Elapsed: 3s/);
     await expect(firstNotice.locator('time').last()).toHaveAttribute('datetime',at(4));
+    await expect(firstNotice).toContainText('预估多耗 0.418 Credits');
     const cacheRates=firstNotice.locator('.session-chat-cache-hit');
     await expect(cacheRates.first()).toHaveCSS('color','rgb(131, 55, 33)');
     await expect(cacheRates.last()).toHaveCSS('color','rgb(33, 131, 60)');

@@ -54,6 +54,7 @@ export interface SessionCacheDrop {
   interval_kind?: 'input' | 'request';
   compaction_at?: string | null;
   decrease_pp: number;
+  extra_cost?: {amount: number; unit: string};
   factors: CacheDropFactor[];
   confirmed_cause: {label: string; evidence: string} | null;
 }

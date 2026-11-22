@@ -376,13 +376,13 @@ Codex 账号与 API 通道共用消息、Token 和工具统计。原生活跃轮
 
 Claude 的同一请求可能将思考和正文分行写入 JSONL，并在每行重复停止原因和用量。统计适配器按原生消息 ID 合并，思考记录上的结束标记要等可见回复或后续原生边界确认后才结算。
 
-`GET /api/sessions/:id/conversation/metadata` 返回已授权会话的摘要、按模型与速度分项、事件和缓存命中输入减少记录。事件和减少记录可分别分页。WebSocket 的 `session_metadata` 帧带原生身份、版本和历史代次，用于实时更新与替换。页面查询只用已持久化的区间和请求聚合。会话详情的当前运行状态和最近原生请求分别展示。
+`GET /api/sessions/:id/conversation/metadata` 返回已授权会话的摘要、按模型与速度分项、事件和缓存命中输入减少记录。事件和减少记录可分别分页。WebSocket 的 `session_metadata` 帧带原生身份、版本和历史代次，用于实时更新与替换。页面查询只用已持久化的区间和请求聚合。会话详情的当前运行状态和最近原生请求分别展示。 当两笔请求的输入用量和本次费率可确认时，缓存记录的 `extra_cost` 提供带单位和正负号的输入费用净差。未缓存输入和缓存命中输入的差额均按本次费率计算。输出与缓存写入单独计费。
 
 `GET /api/sessions/:id/conversation/usage-intervals` 分页读取持久化的用量树。根页的 `kind: "final"` 行汇总前后两个 Final 之间的轮次，并包含已记录的未完成区间组。轮次展开后，`kind: "item", phase: "final"` 表示 Final 自身的用量，与 Progress 同级。用可展开行的 `id` 作为 `parent` 读取子级，用 `next_before` 作为同级的 `before` 读取下一页。Progress 汇总所属 Item，包括正在执行且已有回执的部分。可用的 `last_request_at` 记录段内最后一笔请求时间，供对话和详情显示。原生文件可读时，旧检查点按批次重放以补齐 Item 归属。时间缺失时保持未知。
 
 统计适配器可在原生压缩完成事实中关联执行压缩的请求。Codex 从原生压缩记录读取该关联。平台保留压缩请求的用量，并比较压缩前后普通请求的缓存命中输入 Token。命中输入减少时触发提示，命中率用于对照。
 
-前端用 Round 表示 `requests`，用 Call 表示 `tool_calls`。接口的 `tool_rounds` 表示产生过工具调用的模型响应数。Codex 的异步说明在实时和历史中映射为进展。Codex 的缺省速度按 Standard 解析，有记录的 Fast 等档位按请求所属的有效设置解析。多个 Item 共享一个响应时仅一个 Item 记录用量。相同 native ID 的实时与历史消息按适配器提供的稳定身份关联。`progress_statistics.step` 可提供活动 Item 的原生区间。同一轮内压缩后用相邻请求检测缓存下降。缓存异常以用量记录所属的消息为锚点，同一组 Progress 的异常按时间显示在组标题前。Final 的异常显示在正文前。由压缩触发的异常在对应请求条目可见时随该条目显示，否则随压缩记录显示。Code-mode 中只有包裹工具对平台可见时，统计计为该工具调用。详细规则见 [会话元信息与统计](session-metadata-requirements.md)。
+前端用 Round 表示 `requests`，用 Call 表示 `tool_calls`。接口的 `tool_rounds` 表示产生过工具调用的模型响应数。Codex 的异步说明在实时和历史中映射为进展。Codex 的缺省速度按 Standard 解析，有记录的 Fast 等档位按请求所属的有效设置解析。多个 Item 共享一个响应时仅一个 Item 记录用量。相同 native ID 的实时与历史消息按适配器提供的稳定身份关联。`progress_statistics.step` 可提供活动 Item 的原生区间。同一轮内压缩后用相邻请求检测缓存下降。缓存异常以用量记录所属的消息为锚点，同一组 Progress 的异常按时间显示在组标题下方、第一条 Item 前。Final 的异常显示在正文前。由压缩触发的异常在对应请求条目可见时随该条目显示，否则随压缩记录显示。Code-mode 中只有包裹工具对平台可见时，统计计为该工具调用。详细规则见 [会话元信息与统计](session-metadata-requirements.md)。
 
 企业微信通知引用回复通过现有平台权限和输入接口直接提交，调度模型不参与路由。
 `POST /api/sessions/:id/input` 的可选 `expected_native_id`、`expected_environment_id` 将输入绑定到预期原生会话和账号环境，服务端在接收及排队实际发送前均检查；绑定变化返回 `409` 和 `submission=rejected`。标识保持不透明，不限定某个 Agent 的格式；既有调用不传这些字段时保持兼容。通知路由仅使用 Agent 中立的原生绑定与公开消息，不访问适配器内部状态。

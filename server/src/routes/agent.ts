@@ -111,7 +111,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.23.0',
+    version:'3.24.0',
     updatedAt:'2026-11-22',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -261,7 +261,7 @@ export function getAgentApiContract() {
       },
       {
         category: 'Sessions', method: 'GET', path: '/api/sessions/:id/conversation/metadata',
-        description: 'Read verified session totals, model and speed totals, lifecycle records and decreases in recorded cached input tokens. Pass event_before or cache_before from next_event or next_cache_drop for earlier records. The status and reasons report missing or pending evidence. Credits are request-based estimates.',
+        description: 'Read verified session totals, model and speed totals, lifecycle records and decreases in recorded cached input tokens. Optional extra_cost gives the signed net change in uncached and cache-read input cost, using the current request tariff. Pass event_before or cache_before from next_event or next_cache_drop for earlier records. The status and reasons report missing or pending evidence. Credits are request-based estimates.',
         response: {metadata:'SessionMetadataDetails | null'},
         errors: {400:'Invalid cursor',404:'Session not found or not accessible'},
       },
@@ -436,7 +436,7 @@ export function getAgentApiContract() {
         category: 'Session control',
         method: 'WS',
         path: '/api/sessions/:id/conversation/stream',
-        description: 'Cookie-authenticated conversation stream. Optional UI-only activities carry turn_id, after_message_id, an optional request_message_id, and bounded, redacted input_preview and result_preview. User messages may include batch and verified input_source. Statistics carry Item and Final intervals and optional progress segment and cost estimate. cost.breakdown reports uncached input, cache hits, output and nullable reasoning in cost.unit (credits or currency). Reasoning is included in output. The dashboard displays Round as requests and Call as tool_calls. Progress segments may carry last_request_at. Asynchronous assistant updates are commentary and do not close a Final interval. A history frame can deliver a durable compaction summary card during a live turn. Its optional compaction.replaces_message_id supersedes the earlier assistant echo. Claude API errors carry phase=error, including error.code=rate_limit for an upstream 429. progress_statistics.step identifies the open Item interval through segment_id, after_message_id, after_sequence and start_at. session_metadata carries the persisted native_id, generation and revision with session totals and cache_drops. Cache drops can carry the public message_id of the owning item. Coverage marks pending and partial intervals. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
+        description: 'Cookie-authenticated conversation stream. Optional UI-only activities carry turn_id, after_message_id, an optional request_message_id, and bounded, redacted input_preview and result_preview. User messages may include batch and verified input_source. Statistics carry Item and Final intervals and optional progress segment and cost estimate. cost.breakdown reports uncached input, cache hits, output and nullable reasoning in cost.unit (credits or currency). Reasoning is included in output. The dashboard displays Round as requests and Call as tool_calls. Progress segments may carry last_request_at. Asynchronous assistant updates are commentary and do not close a Final interval. A history frame can deliver a durable compaction summary card during a live turn. Its optional compaction.replaces_message_id supersedes the earlier assistant echo. Claude API errors carry phase=error, including error.code=rate_limit for an upstream 429. progress_statistics.step identifies the open Item interval through segment_id, after_message_id, after_sequence and start_at. session_metadata carries the persisted native_id, generation and revision with session totals and cache_drops. Cache drops can carry the public message_id of the owning item and an optional signed extra_cost with amount and unit. Coverage marks pending and partial intervals. input_reconciliation carries journal-verified durable user messages, with native_client_id when terminal and browser identities differ.',
       },
       {
         category: 'Session control',

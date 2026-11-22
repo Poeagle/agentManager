@@ -271,6 +271,24 @@ describe('persisted session statistics',()=>{
     expect(readSessionMetadata(context)).toMatchObject({reasons:[],totals:{requests:2,tool_calls:1}});
   });
 
+  it('subtracts reduced cache-read spend from the increased uncached-input cost and preserves signed savings',async()=>{
+    updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'ds',name:'DS',kind:'responses',enabled:true,fields:{baseUrl:'https://api.deepseek.com/v1',models:['deepseek-flash']}}]}));
+    const api=agentContext({...codex.session,agent_environment_id:'provider:ds'});
+    await writeFile(file,row(0,'session_meta',{id:'codex-session',model_provider:'ds'})+
+      event(1,'task_started',{turn_id:'turn'})+row(2,'turn_context',{turn_id:'turn',model:'deepseek-flash'})+
+      user(3,'input')+answer(4,'first','commentary')+receipt(5,'first','turn',tokens(10000,9000,40))+
+      answer(6,'second','commentary')+receipt(7,'second','turn',tokens(10000,0,2000))+
+      answer(8,'third','commentary')+receipt(9,'third','turn',tokens(10000,9000,20))+
+      answer(10,'fourth','commentary')+receipt(11,'fourth','turn',tokens(6000,5500,100)));
+    await updateSessionFacts(api,file);
+    const drops=readSessionMetadataDetails(api,true)!.cache_drops;
+    expect(drops).toHaveLength(2);
+    const extra=drops.find(drop=>drop.current.request_id==='second')!.extra_cost;
+    expect(extra?.unit).toBe('CNY');
+    expect(extra?.amount).toBeCloseTo(9000*(2-0.04)/1e6,12);
+    expect(drops.find(drop=>drop.current.request_id==='fourth')?.extra_cost?.amount).toBeCloseTo((-500*2-3500*0.04)/1e6,12);
+  });
+
   it('compares hits even when new input exceeds the entire preceding input',async()=>{
     await writeFile(file,event(0,'task_started',{turn_id:'turn'})+user(1,'same-input')+
       answer(2,'progress','commentary')+receipt(3,'before','turn',tokens(40_000,39_000))+

@@ -12,6 +12,9 @@ export function cacheSample(
     ...request.dimensions, input_id: input?.id ?? null, input_at: input?.at ?? null, turn_id: request.turn_id,
     request_id: request.id, request_at: request.at, input_tokens: input_tokens!,
     cached_input_tokens: cached_input_tokens!, hit_rate: cached_input_tokens! / input_tokens!,
+    ...(request.cache_write_input_tokens !== undefined ? {
+      uncached_input_tokens: input_tokens! - cached_input_tokens! - request.cache_write_input_tokens,
+    } : {}),
   };
 }
 
@@ -41,4 +44,17 @@ export function detectCacheDrop(
     interval_kind: intervalKind, ...(compaction ? {compaction_at: compaction.at} : {}),
     decrease_pp: (previous.hit_rate - current.hit_rate) * 100, factors, confirmed_cause: null,
   };
+}
+
+/** Apply the current request's prices to both samples' read-side input. */
+export function cacheDropExtraCost(drop: SessionCacheDrop, request: NativeRequestFact): SessionCacheDrop['extra_cost'] {
+  const pricing = request.cache_input_pricing;
+  const previousUncached = drop.previous.uncached_input_tokens;
+  const currentUncached = drop.current.uncached_input_tokens;
+  if (!pricing || !request.cost?.complete || previousUncached == null || currentUncached == null ||
+      previousUncached < 0 || currentUncached < 0) return undefined;
+  const uncachedDelta = currentUncached - previousUncached;
+  const cachedDelta = drop.current.cached_input_tokens - drop.previous.cached_input_tokens;
+  const amount = uncachedDelta * pricing.uncached_per_token + cachedDelta * pricing.cached_per_token;
+  return Number.isFinite(amount) ? {amount,unit:request.cost.unit} : undefined;
 }

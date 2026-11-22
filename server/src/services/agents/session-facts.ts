@@ -37,6 +37,11 @@ export interface SessionLifecycleFact {
   execution?: SessionActivityContext;
 }
 
+export interface CacheInputPricing {
+  uncached_per_token: number;
+  cached_per_token: number;
+}
+
 export interface NativeRequestFact {
   id: string;
   turn_id: string | null;
@@ -47,6 +52,8 @@ export interface NativeRequestFact {
   evidence: 'request' | 'legacy';
   inherited?: boolean;
   cost: AgentCostEstimate | null;
+  cache_input_pricing?: CacheInputPricing;
+  cache_write_input_tokens?: number;
 }
 
 export type NativeSessionFact = (
@@ -106,6 +113,7 @@ export interface SessionCacheSample extends RequestDimensions {
   input_tokens: number;
   cached_input_tokens: number;
   hit_rate: number;
+  uncached_input_tokens?: number;
 }
 export type CacheDropFactor = 'input_gap' | 'model' | 'speed' | 'environment' | 'account' | 'compact' | 'input_size';
 export interface SessionCacheDrop {
@@ -118,6 +126,7 @@ export interface SessionCacheDrop {
   interval_kind?: 'input' | 'request';
   compaction_at?: string | null;
   decrease_pp: number;
+  extra_cost?: {amount: number; unit: string};
   factors: CacheDropFactor[];
   confirmed_cause: { label: string; evidence: string } | null;
 }
@@ -129,7 +138,7 @@ export interface SessionMetadata {
   status: SessionCoverage;
   reasons: SessionCoverageReason[];
   totals: SessionUsageTotals | null;
-  latest: NativeRequestFact | null;
+  latest: Omit<NativeRequestFact, 'cache_input_pricing' | 'cache_write_input_tokens'> | null;
   user_inputs: number | null;
   completed_turns: number | null;
   cache_drop_count: number;

@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { readClaudeRuntimeProvider } from './providers.js';
 import {apiPricingCurrency,estimateProviderApiCost} from '../provider-pricing.js';
+import {cacheInputPricing} from '../cache-read-pricing.js';
 
 interface Assistant {
   id: string;
@@ -53,7 +54,7 @@ export function claudeRequestUsage(usage: Record<string, unknown> | null | undef
 }
 
 export const claudeSessionFacts: AgentSessionFactsPort = {
-  revision: 5,
+  revision: 6,
   async *discover() {
     const bindings = getDb().prepare(`SELECT DISTINCT COALESCE(native_session_id,claude_session_id) AS id,
       agent_environment_id AS environment FROM sessions WHERE COALESCE(agent_id,cli_type)='claude'
@@ -99,11 +100,20 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
       for (const id of group.tools) facts.push({kind: 'tool', id, turn_id: group.turn});
       const provider=declared?readClaudeRuntimeProvider(context.session,context.environmentAccess):null;
       const unit=provider&&apiPricingCurrency(provider.baseUrl,provider.models);
-      const estimate=provider&&group.cacheWrites&&(!group.speed||group.speed==='standard')?
-        estimateProviderApiCost(provider.baseUrl,provider.billingFields,group.model,group.at,group.tokens,group.cacheWrites):null;
-      const priced=estimate?.unit===unit?estimate:null;
+      const cacheWrites=group.cacheWrites;
+      const price=(tokens:NativeRequestFact['tokens'])=>{
+        const estimate=provider&&cacheWrites&&(!group.speed||group.speed==='standard')
+          ? estimateProviderApiCost(provider.baseUrl,provider.billingFields,group.model,group.at,tokens,cacheWrites) : null;
+        return estimate?.unit===unit ? estimate : null;
+      };
+      const priced=price(group.tokens);
+      const writeTokens=cacheWrites ? cacheWrites[0]+cacheWrites[1] : undefined;
+      const inputPricing=writeTokens!==undefined && priced
+        ? cacheInputPricing(group.tokens,writeTokens,usage=>price(usage)?.breakdown) : undefined;
       facts.push({kind: 'request', source_offset: group.offset, request: {
         id: group.id, at: group.at, turn_id: group.turn, tokens: group.tokens, dimensions, cost: unit?{unit,basis:'api',amount:priced?.amount??null,breakdown:priced?.breakdown,complete:priced!==null}:null, evidence: 'request',
+        cache_write_input_tokens:writeTokens,
+        ...(inputPricing ? {cache_input_pricing:inputPricing} : {}),
       }});
       for (const id of group.endedTools ?? []) facts.push({kind: 'tool_end', id, turn_id: group.turn});
       if (group.outcome) {

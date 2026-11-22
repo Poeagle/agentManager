@@ -1,6 +1,7 @@
 import { cacheHitColor, type CacheDropFactor, type SessionCacheDrop, type SessionCacheSample } from '../lib/session-metadata';
 import { formatElapsed } from '../lib/conversation-timing';
 import { TableFrame, TableStateRow } from './table/DataTable';
+import { formatEstimatedTokenCost } from './estimated-token-cost';
 
 const compact = new Intl.NumberFormat('en', {notation:'compact', maximumFractionDigits: 1});
 const date = new Intl.DateTimeFormat('sv-SE', {
@@ -66,6 +67,12 @@ export function CacheDropTable({drops, loading, error, onRetry}: {
 
 export function ConversationCacheDrop({drop}: {drop: SessionCacheDrop}) {
   const elapsed = drop.elapsed_ms === null ? '—' : `${drop.elapsed_ms / 1000}s`;
+  const extra = drop.extra_cost;
+  const extraAmount = extra ? formatEstimatedTokenCost(Math.abs(extra.amount),extra.unit,false) : null;
+  const extraLabel = extra
+    ? `${extra.amount < 0 ? '预估节省' : '预估多耗'} ${extraAmount}${extra.unit === 'credits' ? ' Credits' : ''}`
+    : '额外费用未知';
+  const extraTitle = extra ? '两笔请求的未缓存输入费用差，加上缓存命中输入费用差，均按本次费率计算' : '缺少可用的费率或用量，无法估算';
   return <div className="conversation-cache-notice" data-cache-drop-id={drop.id} role="group" aria-label="缓存命中输入减少">
     <MetadataTime at={drop.current.request_at ?? drop.at} />
     <SampleTokens sample={drop.current} inline />
@@ -73,5 +80,6 @@ export function ConversationCacheDrop({drop}: {drop: SessionCacheDrop}) {
     <MetadataTime at={drop.previous.request_at} />
     <SampleTokens sample={drop.previous} inline />
     <span title={dropInterval(drop)}>Elapsed: {elapsed}</span>
+    <span title={extraTitle}>{extraLabel}</span>
   </div>;
 }
