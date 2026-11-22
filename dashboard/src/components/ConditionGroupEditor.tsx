@@ -24,14 +24,21 @@ export function ConditionGroupEditor<T extends {type:string}>({group,onChange,ti
  const update=(index:number,value:T|ConditionGroup<T>)=>onChange({...group,conditions:group.conditions.map((c,i)=>i===index?value:c)});
  const remove=(index:number)=>onChange({...group,conditions:group.conditions.filter((_,i)=>i!==index)});
  const operatorLabel=group.operator==='and'?'且':'或';
+ const operatorSummary=group.operator==='and'?'全部满足':'任一满足';
+ const toggleOperator=()=>onChange({...group,operator:group.operator==='and'?'or':'and'});
  return <section aria-label={title} className="schedule-condition-panel" data-phase={phase} data-nested={nested} data-layout={layout}>
-  <div className="rule-group-header mb-2 flex flex-wrap items-center justify-between gap-2">
+  <div className="rule-group-header flex flex-wrap items-center justify-between gap-1.5">
    {(!expression||!nested)&&<h3 className="font-semibold">{nested?'条件组':heading}</h3>}
    <div className="rule-group-actions flex flex-wrap items-center gap-2">
-    <select aria-label={`${title}组合方式`} value={group.operator} onChange={e=>onChange({...group,operator:e.target.value as 'and'|'or'})} className="rounded-md border px-2 py-1.5 text-[11px]" style={{borderColor:'var(--border)',background:'var(--bg-primary)'}}>
-     <option value="and">全部满足（且）</option>
-     <option value="or">任一满足（或）</option>
-    </select>
+    {expression
+      ? <span className="rule-group-operator" aria-label={`${title}组合方式`}>
+          <span className="rule-group-operator-summary">{operatorSummary}</span>
+          <button type="button" className="rule-operator-toggle" aria-label={`${title}组合方式`} title={`点击切换为${group.operator==='and'?'或':'且'}`} onClick={toggleOperator}>{operatorLabel}</button>
+        </span>
+      : <select aria-label={`${title}组合方式`} value={group.operator} onChange={e=>onChange({...group,operator:e.target.value as 'and'|'or'})} className="rounded-md border px-2 py-1.5 text-[11px]" style={{borderColor:'var(--border)',background:'var(--bg-primary)'}}>
+          <option value="and">全部满足（且）</option>
+          <option value="or">任一满足（或）</option>
+        </select>}
     <button type="button" aria-label={`${title}添加条件`} disabled={group.conditions.length>=20} onClick={()=>onChange({...group,conditions:[...group.conditions,makeCondition()]})} className="flex items-center gap-1 text-xs" style={{color:'var(--accent)'}}><Plus size={12}/>添加条件</button>
     <button type="button" aria-label={`${title}添加分组`} disabled={depth>=4||group.conditions.length>=20} onClick={()=>onChange({...group,conditions:[...group.conditions,{operator:group.operator==='and'?'or':'and',conditions:[makeCondition()]}]})} className="flex items-center gap-1 text-xs" style={{color:'var(--accent)'}}><Plus size={12}/>分组</button>
    </div>
@@ -41,7 +48,11 @@ export function ConditionGroupEditor<T extends {type:string}>({group,onChange,ti
    {group.conditions.map((condition,index)=>{
     const label=`${title} ${index+1}`;
     const subgroup='conditions' in condition;
-    const connector=expression&&index===0?null:<span className="rule-connector">{index===0?'当':operatorLabel}</span>;
+    const connector=expression&&index===0
+      ? null
+      : expression
+        ? <button type="button" className="rule-connector" aria-label={`${title}连接方式`} title={`点击切换为${group.operator==='and'?'或':'且'}`} onClick={toggleOperator}>{operatorLabel}</button>
+        : <span className="rule-connector">{index===0?'当':operatorLabel}</span>;
     const row=<div className={subgroup?'rule-subgroup':'rule-row'}>
      {!expression&&connector}
      {subgroup?<ConditionGroupEditor group={condition} onChange={value=>update(index,value)} title={`${label}分组`} heading={heading} makeCondition={makeCondition} renderCondition={renderCondition} emptyText={emptyText} help={help} phase={phase} depth={depth+1} layout={layout}/>:renderCondition(condition,value=>update(index,value),label)}

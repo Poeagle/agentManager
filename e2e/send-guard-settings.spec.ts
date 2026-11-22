@@ -13,14 +13,14 @@ test('shows the default send guard branches and their operators on desktop and m
  await platform.getByRole('button',{name:'平台设置',exact:true}).click();
  await platform.getByRole('button',{name:'发送保护',exact:true}).click();
  const rule=platform.getByRole('region',{name:'发送提醒条件',exact:true});
- await expect(rule.getByRole('combobox',{name:'发送提醒条件组合方式'})).toHaveValue('or');
+ await expect(rule.getByRole('button',{name:'发送提醒条件组合方式'})).toHaveText('或');
  await expect(rule.getByLabel('发送提醒条件 1数值')).toHaveValue('80');
- await expect(rule.getByText('或',{exact:true})).toHaveCount(4);
+ await expect(rule.getByText('或',{exact:true})).toHaveCount(5);
  for(const [index,[minutes,percent]] of [[30,30],[20,50],[10,60],[60,20]].entries()){
   const label=`发送提醒条件 ${index+2}分组`;
   const branch=rule.getByRole('region',{name:label,exact:true});
-  await expect(branch.getByRole('combobox',{name:`${label}组合方式`})).toHaveValue('and');
-  await expect(branch.getByText('且',{exact:true})).toBeVisible();
+  await expect(branch.getByRole('button',{name:`${label}组合方式`})).toHaveText('且');
+  await expect(branch.getByRole('button',{name:`${label}连接方式`})).toHaveText('且');
   await expect(branch.getByLabel(`${label} 1`,{exact:true})).toHaveValue('idle_minutes');
   await expect(branch.getByLabel(`${label} 1数值`,{exact:true})).toHaveValue(String(minutes));
   await expect(branch.getByLabel(`${label} 2`,{exact:true})).toHaveValue('context_percent');
@@ -30,6 +30,8 @@ test('shows the default send guard branches and their operators on desktop and m
  const idle=desktopBranch.getByLabel('发送提醒条件 2分组 1',{exact:true});
  const usage=desktopBranch.getByLabel('发送提醒条件 2分组 2',{exact:true});
  expect(Math.abs((await idle.boundingBox())!.y-(await usage.boundingBox())!.y)).toBeLessThan(2);
+ await desktopBranch.getByRole('button',{name:'发送提醒条件 2分组连接方式'}).click();
+ await expect(desktopBranch.getByRole('button',{name:'发送提醒条件 2分组组合方式'})).toHaveText('或');
  await page.setViewportSize({width:390,height:844});
  await expect(rule.getByLabel('发送提醒条件 5分组 2数值',{exact:true})).toHaveValue('20');
  expect(await rule.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
