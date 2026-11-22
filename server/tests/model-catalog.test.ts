@@ -36,6 +36,14 @@ it('uses the official canonical ID when a legacy alias and its current ID are bo
  expect(models[0]).toMatchObject({model:'deepseek-flash',providers:['DeepSeek'],release_date:'2026-10-17'});
 });
 
+it('keeps the gateway reference-price flag when the same model is also configured on an official endpoint',()=>{
+ const models=buildAgentModelCatalog([
+  {agent:'claude',providers:[provider('gateway','Gateway',['deepseek-flash'],'https://gateway.example/v1')]},
+  {agent:'codex',providers:[provider('official','DeepSeek',['deepseek-flash'],'https://api.deepseek.com/v1')]},
+ ]);
+ expect(models.find(row=>row.model==='deepseek-flash')?.api_pricing).toMatchObject({reference_only:true});
+});
+
 it('keeps official reference metadata from a gateway but excludes unregistered vendor IDs',()=>{
  const models=buildAgentModelCatalog([
   {agent:'claude',providers:[provider('gateway','Gateway',['claude-sonnet-5-5','private-alias'],'https://gateway.example/v1')]},
