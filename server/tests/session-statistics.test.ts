@@ -9,6 +9,9 @@ import { beginSessionAction, collectSessionStatisticsInventory, readChangedSessi
 import type { AgentStatisticsInterval } from '../src/services/agents/types.js';
 import { createTestDatabase } from './helpers/database.js';
 import { updateAgentManagement } from '../src/services/agents/management-store.js';
+import {initModelPricing,pricingSources,refreshModelPricing} from '../src/services/agents/model-pricing.js';
+import {saveModelRates} from '../src/services/agents/provider-pricing.js';
+import type {StoredProvider} from '../src/services/agents/management-store.js';
 
 const base = Date.parse('2026-11-20T09:00:00Z');
 const stamp = (seconds: number) => new Date(base + seconds * 1000).toISOString();
@@ -65,26 +68,36 @@ describe('persisted session statistics',()=>{
     closeDb();initDb();
     expect(readSessionUsageIntervals(api)).toEqual(saved);
   });
-  it('reconciles every API receipt across adjacent Progress groups, duplicate delivery and Final after reopening',async()=>{
-    updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'ds',name:'DS',kind:'responses',enabled:true,fields:{baseUrl:'https://api.deepseek.com/v1',models:['deepseek-flash']}}]}));
-    const api=agentContext({...codex.session,agent_environment_id:'provider:ds'});
+  it.each([
+    {model:'deepseek-flash',url:'https://api.deepseek.com/v1',unit:'CNY',costs:[0.00616,0.0142,0.01836,0.06712]},
+    {model:'grok-4.7',url:'https://gateway.example/v1',unit:'USD',costs:[0.0084,0.0174,0.0222,0.0804]},
+  ])('reconciles $model receipts across adjacent Progress groups, duplicate delivery and Final after reopening',async({model,url,unit,costs})=>{
+    const fields:StoredProvider['fields']={baseUrl:url,models:[model]};
+    if(unit==='USD'){
+      initModelPricing();
+      await refreshModelPricing(async url=>String(url)===pricingSources.xai?new Response('### Text API Pricing\n| grok-4.7 (< 200k prompt tokens) | 500k | $2 | $0.50 | $6 |\n| grok-4.7 (≥ 200k prompt tokens) | 500k | $4 | $1 | $12 |'):new Response(null,{status:404}),undefined,base);
+      fields.modelRateMultipliers=[`${model}=1.2`];
+      saveModelRates(fields,undefined,base);
+    }
+    updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'priced',name:'Priced',kind:'responses',enabled:true,fields}]}));
+    const api=agentContext({...codex.session,agent_environment_id:'provider:priced'});
     const r1=receipt(5,'first','turn',tokens(5000,4000,500));
     const r2=receipt(9,'crossing','turn',tokens(8000,5000,1000));
     const r3=receipt(12,'second','turn',tokens(10000,9000,2000));
     const r4=receipt(15,'final','turn',tokens(12000,10000,3000));
-    await writeFile(file,row(0,'session_meta',{id:'codex-session',model_provider:'ds'})+
-      event(1,'task_started',{turn_id:'turn'})+row(2,'turn_context',{turn_id:'turn',model:'deepseek-flash'})+
+    await writeFile(file,row(0,'session_meta',{id:'codex-session',model_provider:'priced'})+
+      event(1,'task_started',{turn_id:'turn'})+row(2,'turn_context',{turn_id:'turn',model})+
       user(3,'input')+answer(4,'first','commentary')+r1+answer(6,'crossing','commentary')+tool(7,'old-tool')+user(8,'steer'));
     await updateSessionFacts(api,file);
     await appendFile(file,r2+r2+answer(10,'second','commentary')+tool(11,'new-tool')+r3+r3);
     await updateSessionFacts(api,file);
     const [first,crossing,second]=readChangedSessionStatistics(api,0);
     expect(first.interval).toMatchObject({requests:1,tool_calls:0,tokens:{total_tokens:5500}});
-    expect(first.interval?.cost?.amount).toBeCloseTo(0.00616,10);
+    expect(first.interval?.cost?.amount).toBeCloseTo(costs[0],10);
     expect(crossing.interval).toMatchObject({requests:1,tool_calls:1,tokens:{total_tokens:9000}});
     expect(second.interval).toMatchObject({requests:1,tool_calls:1,tokens:{total_tokens:12000}});
-    expect(crossing.interval?.cost?.amount).toBeCloseTo(0.0142,10);
-    expect(second.interval?.cost?.amount).toBeCloseTo(0.01836,10);
+    expect(crossing.interval?.cost?.amount).toBeCloseTo(costs[1],10);
+    expect(second.interval?.cost?.amount).toBeCloseTo(costs[2],10);
     expect(crossing.segment?.id).not.toBe(second.segment?.id);
     expectUsageSum({...crossing.segment!,shared_messages:1},[first.interval!,crossing.interval!]);
     expectUsageSum({...second.segment!,shared_messages:1},[second.interval!]);
@@ -93,8 +106,8 @@ describe('persisted session statistics',()=>{
     await appendFile(file,answer(14,'final','final_answer')+r4+r4+event(16,'task_complete',{turn_id:'turn'}));
     await updateSessionFacts(api,file);
     const final=readSessionUsageIntervals(api)!.rows[0];
-    expect(final.usage).toMatchObject({requests:4,tool_calls:2,tool_rounds:2,tokens:{total_tokens:41500},cost:{unit:'CNY',complete:true}});
-    expect(final.usage?.cost?.amount).toBeCloseTo(0.06712,10);
+    expect(final.usage).toMatchObject({requests:4,tool_calls:2,tool_rounds:2,tokens:{total_tokens:41500},cost:{unit,complete:true}});
+    expect(final.usage?.cost?.amount).toBeCloseTo(costs[3],10);
     const children=readSessionUsageIntervals(api,{parent:final.id})!.rows;
     expectUsageSum(final.usage!,children.map(row=>row.usage!));
     const progress=children.filter(row=>row.kind==='progress');

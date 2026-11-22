@@ -24,6 +24,7 @@ import {
   updateNativeClaudeProvider,
 } from './providers.js';
 import { readAgentManagement } from '../management-store.js';
+import { providerModelMetadata } from '../provider-pricing.js';
 
 const CLAUDE_ENVIRONMENT: Array<{name:string;description:string;secret?:boolean}> = [
   { name: 'ANTHROPIC_AUTH_TOKEN', description: 'Claude 网关或 Anthropic API 认证令牌', secret: true },
@@ -165,6 +166,19 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
   return {
     ...base,
     inspect,
+    readModelConfigs:async()=>{
+      const stored=readAgentManagement('claude').providers;
+      return [nativeClaudeProviderState(),...stored.filter(provider=>provider.id!=='anthropic').map(provider=>claudeProviderState(provider,{resolveSecret:false}))].flatMap(provider=>{
+        const fields=stored.find(item=>item.id===provider.id)?.fields;
+        const base=provider.fields.find(field=>field.key==='baseUrl')?.value;
+        const window=Number(provider.fields.find(field=>field.key==='contextWindow')?.value)||null;
+        return provider.models.map(model=>{
+          const metadata=providerModelMetadata(model,base,fields);
+          return {...metadata,provider:provider.id,model,name:model,contextWindow:window??metadata.context_window??null,
+            maxContextWindow:null,effectiveContextWindowPercent:null,inputModalities:metadata.input_modalities??[],supportsImages:metadata.input_modalities?.includes('image')??false,sourceFile:null};
+        });
+      });
+    },
     update: async input => ({ ...await base.update(input), environment: environment() }),
     action: async action => ({ ...await base.action(action), environment: environment() }),
     createProvider: async input => {

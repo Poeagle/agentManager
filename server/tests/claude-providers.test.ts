@@ -231,9 +231,16 @@ describe('Claude managed providers',()=>{
  });
  it('detects models through the provider protocol without returning error bodies',async()=>{
   create();
-  const fetchMock=vi.fn().mockResolvedValue(new Response(JSON.stringify({data:[{id:'claude-a',display_name:'Claude A'},{id:'invalid model'}]}),{status:200}));
+  const fetchMock=vi.fn().mockResolvedValue(new Response(JSON.stringify({data:[{id:'claude-a',display_name:'Claude A',context_window:500000,capabilities:{image_input:{supported:true}}},{id:'invalid model'}]}),{status:200}));
   vi.stubGlobal('fetch',fetchMock);
-  expect(await detectClaudeProviderModels({providerId:'gateway'})).toEqual([{model:'claude-a',name:'Claude A',description:'由 Claude 兼容网关返回'}]);
+  const [model]=await detectClaudeProviderModels({providerId:'gateway'});
+  expect(model).toMatchObject({model:'claude-a',name:'Claude A',description:'由 Claude 兼容网关返回',context_window:500000,input_modalities:['text','image']});
+  updateClaudeProvider('gateway',{fields:{contextWindow:'',modelCapabilities:JSON.stringify({'claude-a':model})}});
+  const saved=claudeProviderForEnvironment('claude-provider:gateway');
+  expect(claudeProviderEnvironment(saved,'claude-a')?.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe('500000');
+  expect(claudeProviderEnvironment(saved,'claude-b')?.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBeUndefined();
+  updateClaudeProvider('gateway',{fields:{baseUrl:'https://other.example'}});
+  expect(claudeProviderEnvironment(claudeProviderForEnvironment('claude-provider:gateway'),'claude-a')?.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBeUndefined();
   expect(fetchMock).toHaveBeenCalledWith('https://gateway.example/models',expect.objectContaining({headers:expect.objectContaining({Authorization:'Bearer secret-token','anthropic-version':'2023-06-01'})}));
   fetchMock.mockResolvedValueOnce(new Response('private upstream body',{status:502}));
   await expect(detectClaudeProviderModels({providerId:'gateway'})).rejects.toThrow('502');

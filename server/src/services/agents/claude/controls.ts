@@ -8,8 +8,7 @@ import type { AgentCompaction } from '../events.js';
 import type { AgentContext, AgentControls, AgentRuntime, ModelPreference } from '../types.js';
 import { managedEnv } from '../environment-store.js';
 import { readClaudeRuntimeProvider } from './providers.js';
-import { claudeReleaseDate, publicApiPricing } from '../model-pricing.js';
-import { modelRate } from '../provider-pricing.js';
+import { providerModelMetadata } from '../provider-pricing.js';
 const cache = new Map<string, {
     size: number;
     inode: number;
@@ -200,11 +199,9 @@ export async function readClaudeControls(context: AgentContext): Promise<AgentCo
         .map(model => ({ model, name: model, description: provider ? `${provider.name} · Provider 模型` : aliases.includes(model) ? 'Claude 原生模型别名' : '网关配置的模型', context_window:provider?.contextWindow??null, max_output_tokens:provider?.maxOutputTokens??null, input_modalities:['text','image'], efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' }));
     if (!provider&&value.model && !models.some(model => model.model === value.model))
         models.unshift({ model: value.model, name: value.model, description: '当前原生模型', context_window:null, max_output_tokens:null, input_modalities:['text','image'], efforts: [{ value: '', description: '由原生客户端决定' }], defaultEffort: '' });
-    const officialApi=!!provider&&/^https:\/\/api\.anthropic\.com\/*$/.test(provider.baseUrl);
     for(const model of models){
-        model.release_date=claudeReleaseDate(model.model);
-        const pricing=publicApiPricing('claude',model.model);
-        if(pricing)model.api_pricing={...pricing,reference_only:!officialApi,provider_multiplier:officialApi?undefined:modelRate(provider?.billingFields,model.model)};
+        const details=providerModelMetadata(model.model,provider?.baseUrl,provider?.billingFields);
+        Object.assign(model,details,{context_window:model.context_window??details.context_window,input_modalities:details.input_modalities??(!provider?['text','image']:undefined)});
     }
     const persisted=readClaudeSessionModelPreference(context);
     const selected=persisted&&(!provider||provider.models.includes(persisted.model))?persisted.model:runtime?.selectedModel()||provider?.defaultModel||value.model;

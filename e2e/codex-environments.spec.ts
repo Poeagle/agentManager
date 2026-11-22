@@ -94,7 +94,11 @@ test('switches from account Providers to native and API Providers without becomi
  const providers=[provider('native','原生测试 Provider'),provider('gateway','API 测试 Provider')];
  const state={agent:descriptor,installation:{status:'ready',executable:'/fixture/codex',version:'0.test',latestVersion:null,updateAvailable:false,installCommand:'',updateCommand:''},authentication:{status:'authenticated',method:'fixture'},defaults:[],providers,configFiles:[],diagnostics:[],actions:[],providerManagement:{create:true,update:true,delete:true,actions:[],fields:[]},applySemantics:{settings:'new_session',providers:'immediate',detail:'fixture'},checkedAt:new Date().toISOString()};
  const environments=[{id:'native',name:'原生测试 Provider',kind:'native',enabled:true,allowed_user_ids:null},...['A','B'].map(name=>({id:'account:'+name,name:'账号 '+name,kind:'account',enabled:true,allowed_user_ids:[],connection:{username:'fixture_'+name.toLowerCase(),port:22,authMethod:'key',identityFile:'',codexCommand:'codex',codexHome:''}}))];
- await page.route('**/api/agent-management**',route=>{const path=new URL(route.request().url()).pathname;if(path.includes('/providers/'))return route.fulfill({json:{provider:providers.find(p=>path.endsWith('/'+p.id))||providers[0]}});if(path.includes('/model-configs'))return route.fulfill({json:{models:[]}});return route.fulfill({json:path==='/api/agent-management'?{agents:[{agent:descriptor,state}]}:{state}})});
+ await page.route('**/api/agent-management**',route=>{const path=new URL(route.request().url()).pathname;if(path.includes('/providers/'))return route.fulfill({json:{provider:providers.find(p=>path.endsWith('/'+p.id))||providers[0]}});if(path.includes('/model-configs'))return route.fulfill({json:{models:[{
+  provider:'gateway',model:'fixture-model',name:'Fixture model',release_date:'2026-11-17',official_context_window:1050000,
+  api_pricing:{currency:'USD',reference_only:true,source:'fixture-official',bands:[{rates:{input:2,cached:0.1,output:10}}]},
+  provider_pricing:{currency:'USD',source:'fixture-provider',bands:[{rates:{input:3,cached:0.2,output:12}}]},
+ }]}});return route.fulfill({json:path==='/api/agent-management'?{agents:[{agent:descriptor,state}]}:{state}})});
  await page.route('**/api/codex/environments**',route=>{const path=new URL(route.request().url()).pathname;if(path.endsWith('/config-files'))return route.fulfill({json:{files:[{id:'credentials',label:'Codex 凭据文件',description:'仅显示文件状态',format:'JSON',path:'/fixture/.codex/auth.json',exists:true,sensitive:true}]}});if(path.endsWith('/details'))return route.fulfill({json:{details:accountDetails(decodeURIComponent(path.split('/').at(-2)!))}});if(path.endsWith('/usage'))return route.fulfill({json:{tabs:[],busy:false,verified:true}});return route.fulfill({json:{environments,users:[]}})});
  await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});let unexpectedDialogs=0;page.on('dialog',async dialog=>{unexpectedDialogs++;await dialog.dismiss()});
  await page.setViewportSize({width:1500,height:1100});await page.goto('/');await page.getByTitle('My account').click();await page.getByRole('button',{name:'Agent 配置'}).click();
@@ -109,6 +113,13 @@ test('switches from account Providers to native and API Providers without becomi
   await expect(dialog).toHaveCount(0);
  };
  for(const name of ['账号 A','原生测试 Provider','账号 B','API 测试 Provider','账号 A']) await close(await open(name));
+ const gateway=await open('API 测试 Provider');
+ const modelRow=gateway.getByRole('table',{name:'Provider 模型'}).getByRole('row').filter({hasText:'fixture-model'});
+ await expect(modelRow).toContainText('2026-11-17');
+ await expect(modelRow).toContainText('1,050,000');
+ await expect(modelRow).toContainText('输入 2 · 缓存命中 0.1 · 输出 10');
+ await expect(modelRow).toContainText('输入 3 · 缓存命中 0.2 · 输出 12');
+ await close(gateway);
  expect(unexpectedDialogs).toBe(0);
  const account=await open('账号 A');
  await account.getByRole('button',{name:'账号详情'}).click();

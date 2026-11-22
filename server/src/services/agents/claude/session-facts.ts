@@ -5,9 +5,8 @@ import { NATIVE_SESSION_ID_RE } from '../native-identifiers.js';
 import { getDb } from '../../../db/index.js';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
-import { estimatePublicApiCost } from '../model-pricing.js';
 import { readClaudeRuntimeProvider } from './providers.js';
-import {estimateProviderApiCost} from '../provider-pricing.js';
+import {apiPricingCurrency,estimateProviderApiCost} from '../provider-pricing.js';
 
 interface Assistant {
   id: string;
@@ -99,13 +98,12 @@ export const claudeSessionFacts: AgentSessionFactsPort = {
       });
       for (const id of group.tools) facts.push({kind: 'tool', id, turn_id: group.turn});
       const provider=declared?readClaudeRuntimeProvider(context.session,context.environmentAccess):null;
-      const official=provider&&/^https:\/\/api\.anthropic\.com\/*$/.test(provider.baseUrl);
-      const billable=official||provider?.billingFields?.modelRateVersions;
-      const estimate=billable&&group.cacheWrites&&(!group.speed||group.speed==='standard')?
-        (official?estimatePublicApiCost('claude',group.model,group.at,group.tokens,group.cacheWrites):
-          estimateProviderApiCost('claude',provider?.billingFields,group.model,group.at,group.tokens,group.cacheWrites)):null;
+      const unit=provider&&apiPricingCurrency(provider.baseUrl,provider.models);
+      const estimate=provider&&group.cacheWrites&&(!group.speed||group.speed==='standard')?
+        estimateProviderApiCost(provider.baseUrl,provider.billingFields,group.model,group.at,group.tokens,group.cacheWrites):null;
+      const priced=estimate?.unit===unit?estimate:null;
       facts.push({kind: 'request', source_offset: group.offset, request: {
-        id: group.id, at: group.at, turn_id: group.turn, tokens: group.tokens, dimensions, cost: billable?{unit:'USD',basis:'api',amount:estimate?.amount??null,breakdown:estimate?.breakdown,complete:estimate!==null}:null, evidence: 'request',
+        id: group.id, at: group.at, turn_id: group.turn, tokens: group.tokens, dimensions, cost: unit?{unit,basis:'api',amount:priced?.amount??null,breakdown:priced?.breakdown,complete:priced!==null}:null, evidence: 'request',
       }});
       for (const id of group.endedTools ?? []) facts.push({kind: 'tool_end', id, turn_id: group.turn});
       if (group.outcome) {

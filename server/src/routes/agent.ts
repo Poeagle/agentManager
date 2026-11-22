@@ -111,7 +111,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.22.0',
+    version:'3.23.0',
     updatedAt:'2026-11-22',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -249,8 +249,8 @@ export function getAgentApiContract() {
       },
       {
         category: 'Sessions', method: 'GET', path: '/api/sessions/:id/controls',
-        description: 'Read the accessible session model, runtime controls and available models. Optional ?refresh=true refreshes native data. Model release date, capabilities, reference Credits and official public API tariffs are optional.',
-        response: {models: 'AgentModel[]; optional api_pricing includes currency, official source, and Token prices per million for each documented pricing band. reference_only identifies a public reference tariff for a subscription or gateway. provider_multiplier is the optional configured gateway multiplier for that exact model.'},
+        description: 'Read the accessible session model, runtime controls and available models. Optional ?refresh=true refreshes native data. Model metadata can include release_date, context_window, official_context_window, input_modalities, reference_credits, official api_pricing and separately available provider_pricing. A manually configured provider_multiplier applies to the official tariff fallback.',
+        response: {models: 'AgentModel[]; optional api_pricing and provider_pricing include currency, source, and prices per million Tokens for each documented band. api_pricing.reference_only identifies an official reference tariff for a subscription or gateway. api_pricing.provider_multiplier is the manual multiplier for the official tariff fallback.'},
         errors: { 400: 'Invalid refresh flag', 404: 'Session not found or not accessible', 409: 'Session has no native identity' },
       },
       {

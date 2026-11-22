@@ -13,7 +13,9 @@ import type {
 } from '../types.js';
 import { environmentUserOverride } from '../environment-access.js';
 import { readManagedEnvironment, updateManagedEnvironment } from '../environment-store.js';
-import {modelRateField,saveModelRates} from '../provider-pricing.js';
+import {detectedModelMetadata,modelRateField,providerModelMetadata,saveModelRates} from '../provider-pricing.js';
+import {saveModelCapabilities} from '../model-capabilities.js';
+import type {AgentModelMetadata} from '../types.js';
 
 const ID_RE = /^[a-z][a-z0-9_.-]{0,63}$/;
 /** Provider-native model IDs are opaque; brackets are used by some Claude
@@ -47,7 +49,7 @@ export interface ClaudeProviderRuntime {
   adaptiveThinking: boolean;
   contextWindow: number | null;
   maxOutputTokens: number | null;
-  billingFields?: Pick<StoredProvider['fields'],'modelRateVersions'>;
+  billingFields?: Pick<StoredProvider['fields'],'modelRateVersions'|'modelCapabilities'>;
 }
 
 /** The SDK model aliases all resolve to the session's exact model. */
@@ -57,6 +59,7 @@ export function claudeProviderEnvironment(
 ): Record<string, string> | undefined {
   if (!provider) return undefined;
   const selected = model || provider.defaultModel || '';
+  const contextWindow=provider.contextWindow??providerModelMetadata(selected,provider.baseUrl,provider.billingFields).context_window;
   const capabilities = provider.adaptiveThinking
     ? 'adaptive_thinking'
     : undefined;
@@ -84,8 +87,8 @@ export function claudeProviderEnvironment(
           ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES: capabilities,
         }
       : {}),
-    ...(provider.contextWindow
-      ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(provider.contextWindow) }
+    ...(contextWindow
+      ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(contextWindow) }
       : {}),
     ...(provider.maxOutputTokens
       ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(provider.maxOutputTokens) }
@@ -322,6 +325,7 @@ export function updateNativeClaudeProvider(input: AgentProviderInput): void {
       {
         id:'anthropic',name:'Anthropic',kind:'official',enabled:true,
         fields:validateFields({baseUrl,models,defaultModel,adaptiveThinking,contextWindow,maxOutputTokens,...optionalFields,
+          ...(input.fields?.modelCapabilities!==undefined?{modelCapabilities:input.fields.modelCapabilities}:{}),
           ...(input.fields?.modelRateMultipliers!==undefined?{modelRateMultipliers:input.fields.modelRateMultipliers}:{})},
           current.providers.find(provider=>provider.id==='anthropic')),
       },
@@ -452,6 +456,7 @@ function validateFields(
       next[key] = fields[key] as string;
     }
   }
+  saveModelCapabilities(next,current?.fields,fields?.modelCapabilities);
   saveModelRates(next,current?.fields);
   return next;
 }
@@ -820,7 +825,7 @@ export function claudeRuntimeProvider(
     name: provider.name,
     baseUrl,
     authToken,
-    billingFields: {modelRateVersions:provider.fields.modelRateVersions??null},
+    billingFields: {modelRateVersions:provider.fields.modelRateVersions??null,modelCapabilities:provider.fields.modelCapabilities},
     models,
     defaultModel: models.includes(requested) ? requested : models[0] || null,
     ...providerOptions,
@@ -993,7 +998,7 @@ export function claudeProviderModels(
 
 export async function detectClaudeProviderModels(
   input: AgentModelDetectionInput,
-): Promise<Array<{ model: string; name: string; description?: string }>> {
+): Promise<Array<AgentModelMetadata & { model: string; name: string; description?: string }>> {
   let endpoint = input.endpoint || '';
   let apiKey = input.apiKey || '';
   if (input.providerId) {
@@ -1041,7 +1046,7 @@ export async function detectClaudeProviderModels(
       statusCode: 502,
     });
   const body = (await response.json()) as {
-    data?: Array<{ id?: unknown; display_name?: unknown; name?: unknown }>;
+    data?: Array<Record<string,unknown>>;
   };
   if (!Array.isArray(body.data))
     throw Object.assign(Error('模型列表格式无效'), { statusCode: 502 });
@@ -1055,7 +1060,7 @@ export async function detectClaudeProviderModels(
         : typeof item.name === 'string'
           ? item.name
           : model;
-    return [{ model, name, description: '由 Claude 兼容网关返回' }];
+    return [{ model, name, description: '由 Claude 兼容网关返回', ...detectedModelMetadata(model,baseUrl,item) }];
   });
 }
 

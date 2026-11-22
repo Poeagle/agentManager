@@ -1,15 +1,16 @@
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
 import {initModelPricing,parseHolidayNotice,pricingSnapshot,pricingSources,refreshModelPricing,estimatePublicApiCost} from '../src/services/agents/model-pricing.js';
-import {deepseekModelPricing,estimateDeepseekCost} from '../src/services/agents/codex/deepseek-pricing.js';
+import {deepseekModelPricing,estimateDeepseekCost} from '../src/services/agents/deepseek-pricing.js';
 import {estimateUsageCredits} from '../src/services/agents/codex/usage-credits.js';
-import {estimateProviderApiCost,modelRate,saveModelRates} from '../src/services/agents/provider-pricing.js';
+import {estimateProviderApiCost,modelRate,providerModelMetadata,saveModelRates} from '../src/services/agents/provider-pricing.js';
 import {codexApiEstimate,codexApiPricing} from '../src/services/agents/codex/statistics-cost.js';
 import {updateAgentManagement,type StoredProvider} from '../src/services/agents/management-store.js';
+import {probeProviderModels} from '../src/services/agents/codex/management.js';
 
 let fixture:ReturnType<typeof createTestDatabase>;
 beforeEach(()=>{fixture=createTestDatabase();initModelPricing();});
-afterEach(()=>{fixture.cleanup();});
+afterEach(()=>{vi.unstubAllGlobals();fixture.cleanup();});
 
 const tokens={input_tokens:1_000_000,cached_input_tokens:500_000,output_tokens:100_000};
 const model='deepseek-flash';
@@ -90,12 +91,12 @@ it('prices only the exact gateway model and applies the rate effective at the re
  const updated={...fields,modelRateMultipliers:[`${model}=1.5`]};
  saveModelRates(updated,fields,second);
  expect(modelRate(updated,model)).toBe(1.5);
- expect(estimateProviderApiCost('openai',updated,model,receiptAt(first-1),tokens)).toBeNull();
- expect(estimateProviderApiCost('openai',updated,'unknown-model',receiptAt(first),tokens)).toBeNull();
- const estimate=estimateProviderApiCost('openai',updated,model,receiptAt(first),tokens);
+ expect(estimateProviderApiCost(baseUrl,updated,model,receiptAt(first-1),tokens)?.amount).toBeCloseTo(2.05);
+ expect(estimateProviderApiCost(baseUrl,updated,'unknown-model',receiptAt(first),tokens)).toBeNull();
+ const estimate=estimateProviderApiCost(baseUrl,updated,model,receiptAt(first),tokens);
  expect(estimate?.amount).toBeCloseTo(2.46,10);
  expect(estimate?.breakdown).toEqual({input:1.2,cache:0.06,output:1.2,reasoning:null});
- expect(estimateProviderApiCost('openai',updated,model,receiptAt(second),tokens)?.amount).toBeCloseTo(3.075,10);
+ expect(estimateProviderApiCost(baseUrl,updated,model,receiptAt(second),tokens)?.amount).toBeCloseTo(3.075,10);
  updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'gateway',name:'Gateway',kind:'responses',enabled:true,fields:updated}]}));
  const binding=codexApiPricing('provider:gateway')!;
  expect(codexApiEstimate(binding,'gateway',model,'default',receiptAt(first),tokens).amount).toBeCloseTo(2.46,10);
@@ -106,4 +107,45 @@ it('prices only the exact gateway model and applies the rate effective at the re
  saveModelRates(removed,updated,second+1);
  expect(modelRate(removed,model)).toBeUndefined();
  expect(modelRate(removed,model,first)).toBe(1.2);
+});
+
+it('syncs official model metadata and applies provider rates before the manual multiplier fallback',async()=>{
+ const model='gpt-6.2-sol',routerModel=`openai/${model}`;
+ const now=epoch('2026-11-22T00:00:00Z'),at=new Date(now).toISOString();
+ const documents:Record<string,string>={
+  [pricingSources.openai]:'### Standard pricing data\n| gpt-6.2-sol | $2 | $10 | $0.10 | $2.50 | $5 | $4 | $15 | $0.20 |\n\nLong context: >272K input tokens.',
+  'https://developers.openai.com/api/docs/changelog.md':'## November, 2026\n### Nov 17\nFeature · Model: gpt-6.2-sol · API: v1/responses',
+  'https://developers.openai.com/api/docs/models/gpt-6.2-sol.md':'## Model details\n- Input modalities: text, image\n- 1,050,000 context window',
+  [pricingSources.openrouter]:JSON.stringify({data:[{id:routerModel,context_length:500000,pricing:{prompt:'0.000003',completion:'0.000009',input_cache_read:'0.0000005'}}]}),
+  [pricingSources.xai]:'### Text API Pricing\n| grok-4.7 (< 200k prompt tokens) | 500k | $2.00 | $0.50 | $6.00 |\n| grok-4.7 (≥ 200k prompt tokens) | 500k | $4.00 | $1.00 | $12.00 |',
+ };
+ const fetcher:typeof fetch=async url=>new Response(documents[String(url)]??'',{status:Object.hasOwn(documents,String(url))?200:404});
+ await refreshModelPricing(fetcher,undefined,now);
+ const official='https://api.openai.com/v1',gateway='https://gateway.example/v1',router='https://openrouter.ai/api/v1';
+ const fields:StoredProvider['fields']={baseUrl:gateway,modelRateMultipliers:[`${model}=1.2`,`${routerModel}=1.5`]};
+ saveModelRates(fields,undefined,now);
+ const usage=(input_tokens:number)=>({input_tokens,cached_input_tokens:0,output_tokens:1000});
+ expect(providerModelMetadata(model,gateway,fields)).toMatchObject({release_date:'2026-11-17',official_context_window:1050000,api_pricing:{reference_only:true,provider_multiplier:1.2}});
+ expect(providerModelMetadata(routerModel,router,fields)).toMatchObject({release_date:'2026-11-17',official_context_window:1050000,context_window:500000,provider_pricing:{bands:[{rates:{input:3}}]}});
+ expect(providerModelMetadata(routerModel,router,fields).api_pricing?.provider_multiplier).toBeUndefined();
+ expect(estimateProviderApiCost(official,fields,model,at,usage(272000))?.amount).toBeCloseTo(0.554);
+ expect(estimateProviderApiCost(official,fields,model,at,usage(272001))?.amount).toBeCloseTo(1.103004);
+ expect(estimateProviderApiCost(gateway,fields,model,at,usage(272001))?.amount).toBeCloseTo(1.103004*1.2);
+ expect(estimateProviderApiCost(router,fields,routerModel,at,usage(272001))?.amount).toBeCloseTo(0.825003);
+ expect(estimateProviderApiCost('https://openrouter.ai.example/api/v1',fields,routerModel,at,usage(272001))?.amount).toBeCloseTo(1.103004*1.5);
+ expect(providerModelMetadata('grok-4.7',gateway)).toMatchObject({release_date:'2026-09-21',official_context_window:500000});
+ expect(estimateProviderApiCost('https://api.x.ai/v1',undefined,'grok-4.7',at,usage(199999))?.amount).toBeCloseTo(0.405998);
+ expect(estimateProviderApiCost(gateway,undefined,'grok-4.7',at,usage(200000))?.amount).toBeCloseTo(0.812);
+ expect(estimateProviderApiCost(gateway,undefined,'grok-4.7-build-fast',at,usage(200000))).toBeNull();
+ vi.stubGlobal('fetch',vi.fn(async()=>Response.json({data:[
+  {id:model},
+  {id:'custom',context_length:120000,architecture:{input_modalities:['text']}},
+  {id:'unknown',context_window:-10,input_modalities:['INVALID']},
+ ]})));
+ const models=await probeProviderModels(gateway,'fixture-key');
+ expect(models).toMatchObject([
+  {model,context_window:1050000,input_modalities:['text','image']},
+  {model:'custom',context_window:120000,input_modalities:['text']},
+  {model:'unknown',context_window:undefined,input_modalities:undefined},
+ ]);
 });

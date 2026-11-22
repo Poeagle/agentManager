@@ -6,7 +6,7 @@ import {AgentManagementPanel} from '../src/components/AgentManagementPanel';
 import {api,type AgentProviderState} from '../src/lib/api';
 vi.mock('../src/lib/api',async original=>{
  const actual=await original<typeof import('../src/lib/api')>();
- return {...actual,api:{...actual.api,agentManagement:{...actual.api.agentManagement,list:vi.fn(),get:vi.fn(),detectModels:vi.fn(),createProvider:vi.fn(),updateProvider:vi.fn(),deleteProvider:vi.fn(),providerAction:vi.fn()}}};
+ return {...actual,api:{...actual.api,agentManagement:{...actual.api.agentManagement,list:vi.fn(),get:vi.fn(),detectModels:vi.fn(),modelConfigs:vi.fn(async()=>({models:[]})),createProvider:vi.fn(),updateProvider:vi.fn(),deleteProvider:vi.fn(),providerAction:vi.fn()}}};
 });
 let client:QueryClient,provider:AgentProviderState;
 beforeEach(()=>{
@@ -54,12 +54,15 @@ it('replaces stale aliases with only the gateway discovery result',async()=>{
  expect(api.agentManagement.detectModels).toHaveBeenCalledWith('claude',{endpoint:'https://gateway.example',apiKey:'new-token',providerId:'gateway'});
 });
 it('creates a Provider from one page and uses a fixed primary action',async()=>{
- vi.mocked(api.agentManagement.detectModels).mockResolvedValue({models:[{model:'claude-a',name:'Claude A',description:''}]});
+ vi.mocked(api.agentManagement.detectModels).mockResolvedValue({models:[{model:'claude-a',name:'Claude A',description:'',efforts:[],defaultEffort:'',context_window:500000,input_modalities:['text','image']}]});
  vi.mocked(api.agentManagement.createProvider).mockResolvedValue({state:{agent:{id:'claude',label:'Claude'},providers:[provider]} as any});
  const onSaved=vi.fn();render(<QueryClientProvider client={client}><ClaudeProviderEditor readOnly={false} onSaved={onSaved}/></QueryClientProvider>);
  fireEvent.change(screen.getByLabelText('Claude Provider ID'),{target:{value:'second'}});fireEvent.change(screen.getByLabelText('Claude Provider 名称'),{target:{value:'Second'}});fireEvent.change(screen.getByLabelText('Claude API 地址'),{target:{value:'https://second.example'}});fireEvent.change(screen.getByLabelText('Claude API Key'),{target:{value:'secret'}});
  expect(screen.getByRole('button',{name:'添加 Provider'})).toBeDisabled();fireEvent.click(screen.getByRole('button',{name:'探测模型目录'}));await screen.findByRole('checkbox',{name:'启用模型 claude-a'});expect(screen.getByRole('button',{name:'添加 Provider'})).toBeEnabled();fireEvent.click(screen.getByRole('button',{name:'添加 Provider'}));
  await waitFor(()=>expect(api.agentManagement.createProvider).toHaveBeenCalledWith('claude',expect.objectContaining({id:'second',name:'Second',apiKey:'secret',fields:expect.objectContaining({baseUrl:'https://second.example',models:['claude-a']})})));
+ expect(screen.getByRole('row',{name:/claude-a/})).toHaveTextContent('500,000');
+ expect(screen.getByRole('row',{name:/claude-a/})).toHaveTextContent('支持');
+ expect(JSON.parse(String(vi.mocked(api.agentManagement.createProvider).mock.lastCall?.[1].fields?.modelCapabilities))).toEqual({'claude-a':{context_window:500000,input_modalities:['text','image']}});
  expect(onSaved).toHaveBeenCalledWith('second');
 });
 it('adds a manually entered model when the provider has no catalog endpoint',async()=>{

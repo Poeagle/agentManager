@@ -1,5 +1,6 @@
 import {ProviderDeleteDialog} from './ProviderDeleteDialog';
 import {ProviderModelTable} from './ProviderModelTable';
+import {modelCapabilitiesPayload,modelImageLabel} from './ModelPricing';
 import {useProviderUsage} from '../lib/use-provider-usage';
 import {CodexAccountProvider} from './CodexAccountProvider';
 import {BalanceSummary,useEngineBalance} from './CodexEngineBalance';
@@ -724,14 +725,20 @@ function ProviderEditor({
     }));
   };
   const update = useMutation({
-    mutationFn: () => {
+    mutationFn: (patches?:Parameters<typeof api.agentManagement.updateModelConfigs>[1]) => {
       beginEngineOperation("正在校验 Provider 配置…");
+      const edited=new Map(patches?.map(patch=>[patch.model,patch]));
+      const observations=detected.map(model=>{
+        const patch=edited.get(model.model);
+        return {...model,context_window:patch?.contextWindow===undefined?model.context_window:undefined,
+          input_modalities:patch?.supportsImages===undefined?model.input_modalities:undefined};
+      });
       return api.agentManagement.updateProviderStream(agentId, provider.id, {
         ...(provider.fields.some((field) => field.key === "envKey") &&
         saveApiKey
           ? { apiKey: fields.envKey || "" }
           : {}),
-        fields: Object.fromEntries(
+        fields: {...Object.fromEntries(
           provider.fields.map((field) => [
             field.key,
             field.key === "envKey"
@@ -744,7 +751,7 @@ function ProviderEditor({
                     : splitLines(fields[field.key] || "")
                   : fields[field.key] || "",
           ]),
-        ),
+        ),...modelCapabilitiesPayload(observations)},
       }, recordEngineProgress);
     },
     onSuccess: (result) => {
@@ -844,8 +851,9 @@ function ProviderEditor({
     onError: (failure: Error) => setError(failure.message),
   });
   const detect = useMutation({
-    mutationFn: () =>
-      api.agentManagement.detectModels(agentId, {
+    mutationFn: async () => {
+      const endpoint=fields.baseUrl;
+      const result=await api.agentManagement.detectModels(agentId, {
         providerId: provider.id,
         ...(provider.id !== "native" && provider.managed
           ? {
@@ -853,7 +861,9 @@ function ProviderEditor({
               apiKey: saveApiKey ? fields.envKey : undefined,
             }
           : {}),
-      }),
+      });
+      return {...result,endpoint};
+    },
     onSuccess: (result) => {
       setSelectedModels((previous) => [
         ...new Set([...previous, ...result.models.map((item) => item.model)]),
@@ -869,7 +879,7 @@ function ProviderEditor({
   });
   const busy = engineOperation.busy || modelsSaving || update.isPending || detect.isPending || remove.isPending || rename.isPending;
   useEffect(() => { onBusyChange(busy); }, [busy, onBusyChange]);
-  const detected = detect.data?.models || [];
+  const detected = detect.data?.endpoint===fields.baseUrl?detect.data?.models??[]:[];
   const files = (liveProvider.configFiles||[]).filter(file=>file.exists&&file.writable!==false&&!file.sensitive);
   const saveProvider=async (patches:Parameters<typeof api.agentManagement.updateModelConfigs>[1])=>{
     let written=false;
@@ -880,7 +890,7 @@ function ProviderEditor({
         queryClient.setQueryData(['agent-model-configs',agentId,provider.id],result);
         written=true;
       }
-      await update.mutateAsync();
+      await update.mutateAsync(patches);
       await queryClient.invalidateQueries({queryKey:['agent-model-configs',agentId,provider.id]});
     }catch(failure){
       const message=(written?'模型参数已写入，Engine 配置保存或重启失败：':'')+(failure instanceof Error?failure.message:'保存失败');
@@ -1075,7 +1085,7 @@ function ProviderEditor({
           {nativeApi&&<p className="agent-management-hint">API 地址和凭据由本机 Codex 配置管理；可在下方配置文件中编辑可公开的配置。</p>}
       </section>
       {nativeApi&&nativeDetails.data?.details&&<ProviderModelTable key="native-models" agentId={agentId} providerId="native"
-        options={[...nativeDetails.data.details.models.map(model=>({model:model.model,name:model.name||model.model})),...detected]}
+        options={[...nativeDetails.data.details.models.map(model=>({...model,name:model.name||model.model})),...detected]}
         selected={nativeDetails.data.details.models.map(model=>model.model)} defaultModel={nativeDetails.data.details.settings.model||''} readOnly={readOnly} selectionReadOnly
         busy={update.isPending||engineOperation.busy} detecting={detect.isPending} canSave={!usage.busy&&usage.verified}
         onSelectedChange={()=>{}} onDefaultChange={()=>{}} onDetect={()=>detect.mutate()} onSave={saveProvider} onDirtyChange={setModelsDirty} onBusyChange={setModelsSaving}/>}
@@ -1085,7 +1095,7 @@ function ProviderEditor({
         busy={update.isPending||engineOperation.busy||remove.isPending} detecting={detect.isPending}
         canSave={!usage.busy&&usage.verified&&(provider.id==='native'||selectedModels.length>0)}
         onSelectedChange={setSelectedModels} onDefaultChange={model=>setFields(current=>({...current,defaultModel:model}))}
-        onDetect={()=>detect.mutate()} onSave={saveProvider} onDirtyChange={setModelsDirty} onBusyChange={setModelsSaving}/>:!readOnly&&!nativeApi&&<div className="agent-management-actions"><button type="button" className="agent-management-button" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate()}><Save size={13}/>保存并重启 Engine</button></div>}
+        onDetect={()=>detect.mutate()} onSave={saveProvider} onDirtyChange={setModelsDirty} onBusyChange={setModelsSaving}/>:!readOnly&&!nativeApi&&<div className="agent-management-actions"><button type="button" className="agent-management-button" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate(undefined)}><Save size={13}/>保存并重启 Engine</button></div>}
       {files.length>0&&<section className="agent-management-section provider-files"><button type="button" className="agent-management-button" aria-expanded={filesOpen} onClick={()=>setFilesOpen(!filesOpen)}><ChevronRight size={13} style={{transform:filesOpen?'rotate(90deg)':undefined}}/>配置文件 ({files.length})</button>{filesOpen&&<ConfigFiles agentId={agentId} files={files} readOnly={readOnly} onDirtyChange={onFileDirtyChange}/>}</section>}
       {deleteOpen && (
         <ProviderDeleteDialog
@@ -1174,6 +1184,7 @@ function AddCodexProvider({
           models: selectedModels,
           defaultModel,
           modelRateMultipliers: splitLines(modelRateMultipliers),
+          ...modelCapabilitiesPayload(models),
           codexHome: `~/.codex-agentmanager/${id}`,
         },
       }),
@@ -1278,6 +1289,7 @@ function AddCodexProvider({
                   />
                   <span>{item.name}</span>
                   <code>{item.model}</code>
+                  <small>上下文 {item.context_window?.toLocaleString()??'未提供'} · 图片输入 {modelImageLabel(item.input_modalities)}</small>
                 </label>
               ))}
             </div>

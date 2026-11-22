@@ -17,7 +17,7 @@ import {USAGE_EVENT_LIMIT,USAGE_SCAN} from './usage-scanner.js';
 import {tokenFields} from '../../conversation-usage.js';
 import {creditRateDate,estimateUsageCredits,estimateUsageBreakdown} from './usage-credits.js';
 import {createHash} from 'node:crypto';
-import {deepseekDay,deepseekOrigin,estimateDeepseekBreakdown} from './deepseek-pricing.js';
+import {deepseekDay,deepseekOrigin,estimateDeepseekBreakdown} from '../deepseek-pricing.js';
 import {codexApiEstimate,codexApiPricing} from './statistics-cost.js';
 import type {TokenCostBreakdown} from '../types.js';
 import {initUsageProvenance,usageOrigins} from './usage-provenance.js';

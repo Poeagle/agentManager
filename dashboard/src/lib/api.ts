@@ -243,7 +243,7 @@ export interface AgentEnvironmentVariable {
   source: string;
   editable: boolean;
 }
-export interface DetectedAgentModel {
+export interface DetectedAgentModel extends AgentModelMetadata {
   provider?: string;
   model: string;
   name: string;
@@ -254,7 +254,27 @@ export interface DetectedAgentModel {
   service_tiers?: Array<{ id: string; name: string; description: string }>;
 }
 export interface AgentConfigFileContent { path: string; content: string; exists: boolean; format: string; restarted?: boolean; }
-export interface AgentModelConfig {
+export interface AgentModelPricing {
+  currency:string;
+  source:string;
+  reference_only?:boolean;
+  provider_multiplier?:number;
+  peak?:ApiTokenRates;
+  off_peak?:ApiTokenRates;
+  peak_hours?:number[][];
+  timezone?:string;
+  bands?:Array<{label?:string;min_input_tokens?:number;rates:ApiTokenRates}>;
+}
+export interface AgentModelMetadata {
+  release_date?:string|null;
+  api_pricing?:AgentModelPricing;
+  provider_pricing?:AgentModelPricing;
+  context_window?:number|null;
+  input_modalities?:string[];
+  official_context_window?:number;
+  reference_credits?:{input:number;cached:number;output:number;as_of:string}|null;
+}
+export interface AgentModelConfig extends AgentModelMetadata {
   provider?: string;
   model: string;
   name: string;
@@ -1344,7 +1364,7 @@ export interface ConversationControlsData {
   model:string|null;effort:string|null;provider:string|null;cwd:string|null;cli_version:string|null;permission:string|null;approval:string|null;service_tier:string|null;
   usage:{total:Record<string,number|null>;last:Record<string,number|null>;window:number|null}|null;
   limits:Array<{used_percent:number;minutes:number;resets_at:number|null}>;
-  models:Array<{release_date?:string|null;api_pricing?:{currency:string;reference_only?:boolean;provider_multiplier?:number;peak?:ApiTokenRates;off_peak?:ApiTokenRates;timezone?:string;peak_hours?:number[][];bands?:Array<{label?:string;rates:ApiTokenRates}>;source:string};context_window?:number|null;max_output_tokens?:number|null;input_modalities?:string[];reference_credits?:{input:number;cached:number;output:number;as_of:string}|null;default_service_tier?:string|null;service_tiers?:Array<{id:string;name:string;description:string}>;provider?:string;model:string;name:string;description:string;efforts:Array<{value:string;description:string}>;defaultEffort:string}>;
+  models:Array<DetectedAgentModel & {max_output_tokens?:number|null;input_modalities?:string[]}>;
   pending_status?:'saved'|'submitted'|null;can_edit:boolean;loaded:boolean;pending:AgentModelPreference|null;warning:string|null;native_id:string;checked_at:string;usage_observed_at:string|null;
 }
 export interface ConversationPage {
@@ -1369,6 +1389,6 @@ export interface CodexAccountDetails {
   authentication:{status:string;type:string|null;email:string|null;plan:string|null};
   config:{path:string|null;exists:boolean;notice:string|null};
   settings:Record<string,string|null>;
-  models:Array<{model:string;name?:string;description?:string;defaultEffort?:string;efforts?:Array<{value:string;description:string}>;service_tiers?:Array<{id:string;name:string;description:string}>;default_service_tier?:string|null}>;
+  models:Array<AgentModelMetadata & {model:string;name?:string;description?:string;defaultEffort?:string;efforts?:Array<{value:string;description:string}>;service_tiers?:Array<{id:string;name:string;description:string}>;default_service_tier?:string|null}>;
 }
 import type { SessionCacheDrop, SessionMetadata, SessionMetadataDetails, SessionUsageIntervalPage, StatisticsCoverage, StatisticsReason } from './session-metadata';

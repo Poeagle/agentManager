@@ -17,6 +17,7 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await page.route('**/api/agent-management/claude/providers',async route=>{
   if(route.request().method()!=='POST')return route.continue();
   const body=route.request().postDataJSON();
+  expect(JSON.parse(body.fields.modelCapabilities)).toMatchObject({'claude-fable-5-1':{context_window:500000,input_modalities:['text','image']}});
   createdState={
    agent:{id:'claude',label:'Claude'},
    providers:[{
@@ -40,9 +41,13 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await page.route('**/api/agent-management/claude/detect-models',route=>route.fulfill({
   json:{models:[
    {model:'claude-fable-5',name:'Claude Fable 5',description:'由 Claude 兼容网关返回'},
-   {model:'claude-fable-5-1',name:'Claude Fable 5.1',description:'由 Claude 兼容网关返回'},
+   {model:'claude-fable-5-1',name:'Claude Fable 5.1',description:'由 Claude 兼容网关返回',context_window:500000,input_modalities:['text','image']},
   ]},
  }));
+ await page.route('**/api/agent-management/claude/model-configs',route=>route.fulfill({json:{models:[{
+  provider:'xindu-real',model:'claude-fable-5-1',name:'Claude Fable 5.1',release_date:'2026-09-01',official_context_window:1000000,contextWindow:500000,input_modalities:['text','image'],
+  api_pricing:{currency:'USD',reference_only:true,provider_multiplier:1.2,source:'https://platform.claude.com/docs/en/about-claude/pricing',bands:[{rates:{input:8,cached:0.8,output:40}}]},
+ }]}}));
  await page.route('**/api/claude/environments',route=>route.fulfill({json:{
   current:'anthropic',
   environments:[
@@ -84,6 +89,8 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await form.getByLabel('Claude 最大输出 Token').fill('64000');
  await form.getByRole('button',{name:'探测模型目录'}).click();
  await expect(form.getByRole('checkbox',{name:'启用模型 claude-fable-5',exact:true})).toBeChecked();
+ await expect(form.getByRole('row',{name:/claude-fable-5-1/})).toContainText('500,000');
+ await expect(form.getByRole('row',{name:/claude-fable-5-1/}).getByRole('cell',{name:'支持',exact:true})).toBeVisible();
  await expect(form.getByText('grok-4.5',{exact:true})).toHaveCount(0);
  await expect(form.getByText('opus',{exact:true})).toHaveCount(0);
  await form.getByLabel('Claude Provider 默认模型').selectOption('claude-fable-5-1');
@@ -96,6 +103,13 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  const edit=page.getByRole('dialog',{name:'编辑 Provider · Xindu Real'});
  await expect(edit.getByLabel('Claude API 地址')).toHaveValue('https://xindu.example');
  await expect(edit.getByLabel('Claude 模型计费倍率')).toHaveValue('claude-fable-5-1=1.2');
+ const modelRow=edit.getByRole('table',{name:'Provider 模型'}).getByRole('row').filter({hasText:'claude-fable-5-1'});
+ await expect(modelRow).toContainText('2026-09-01');
+ await expect(modelRow).toContainText('1,000,000');
+ await expect(modelRow).toContainText('500,000');
+ await expect(modelRow.getByRole('cell',{name:'支持',exact:true})).toBeVisible();
+ await expect(modelRow).toContainText('输入 8 · 缓存命中 0.8 · 输出 40');
+ await expect(modelRow).toContainText('1.2×');
  await edit.getByRole('button',{name:'关闭编辑 Provider · Xindu Real'}).click();
  await expect(row.getByRole('button',{name:/编辑 Xindu Real/})).toBeFocused();
  await page.setViewportSize({width:390,height:844});

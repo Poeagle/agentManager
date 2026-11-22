@@ -20,7 +20,8 @@ import type {
 import { findExecutable, firstVersion, runCli } from '../management-cli.js';
 import { expandHome } from '../management-common.js';
 import { managedLaunchCommand, openAgentSecret, readAgentManagement, sealAgentSecret, updateAgentManagement, writeAgentManagement, type StoredProvider } from '../management-store.js';
-import {modelRateField,saveModelRates} from '../provider-pricing.js';
+import {detectedModelMetadata,modelRateField,providerModelMetadata,saveModelRates} from '../provider-pricing.js';
+import {saveModelCapabilities,storedModelCapabilities} from '../model-capabilities.js';
 import { configuredCodexEngines } from './engine-context.js';
 import { clearManagedCodexRuntimeSocket, managedCodexSocket, managedCodexRuntimeSocket, setManagedCodexRuntimeSocket } from './provider-config.js';
 import {
@@ -141,6 +142,19 @@ function modelConfigsFromCatalog(content: string, sourceFile: string, provider?:
 export async function readModelConfigsForProvider(providerId: string): Promise<AgentModelConfig[]> {
   const target = await providerCatalogPath(providerId);
   return target ? modelConfigsFromCatalog(target.content, target.path, providerId) : [];
+}
+
+async function readModelSettings(providerId:string,fields?:StoredProvider['fields']):Promise<AgentModelConfig[]> {
+  const catalog=await readModelConfigsForProvider(providerId).catch(()=>[]);
+  const configured=Array.isArray(fields?.models)?fields.models:[];
+  const byModel=new Map(catalog.map(model=>[model.model,model]));
+  return [...new Set([...byModel.keys(),...configured])].map(model=>{
+    const details=providerModelMetadata(model,fields?.baseUrl,fields);
+    return {...details,...(byModel.get(model)??{
+      model,provider:providerId,name:model,contextWindow:null,maxContextWindow:null,effectiveContextWindowPercent:null,
+      inputModalities:[],supportsImages:false,sourceFile:null,
+    })};
+  });
 }
 
 async function updateModelConfigsForProvider(providerId: string, updates: AgentModelConfigUpdate[]): Promise<AgentModelConfig[]> {
@@ -385,6 +399,8 @@ function validateProvider(input: AgentProviderInput, prior?: StoredProvider): St
   const command = normalizeEngineCommand(fields.command, 'codex');
   const launchArgs = normalizeEngineArgs(fields.launchArgs);
   fields.baseUrl=baseUrl;
+  fields.models=models;
+  saveModelCapabilities(fields,prior?.fields,input.fields?.modelCapabilities);
   saveModelRates(fields,prior?.fields);
   return {
     id,
@@ -486,7 +502,7 @@ function providerStartupLog(codexHome: string): string {
 }
 
 /** Persist provider config into its own CODEX_HOME before a restart. */
-async function writeProviderConfigFile(provider: StoredProvider): Promise<void> {
+async function writeProviderConfigFile(provider: StoredProvider, detected?:unknown): Promise<void> {
   const home = providerCodexHome(provider);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const models = listField(provider, 'models');
@@ -498,7 +514,14 @@ async function writeProviderConfigFile(provider: StoredProvider): Promise<void> 
   const previousModels = new Map((previous?.models || []).flatMap(item =>
     typeof item.slug === 'string' ? [[item.slug, item] as const] : []));
   const instructions = await catalogInstructions();
-  const fallback = (model: string) => ({
+  const explicitlyDetected=storedModelCapabilities(detected);
+  const modelConfig = (model: string) => {
+    const details=providerModelMetadata(model,provider.fields.baseUrl,provider.fields);
+    const window=details.context_window??200000;
+    // Codex's catalog accepts its native text and image modalities.
+    const inputs=details.input_modalities?.includes('image')?['text','image']:['text'];
+    const observed=Object.hasOwn(explicitlyDetected,model)?explicitlyDetected[model]:undefined;
+    return {
     slug: model, display_name: model, description: `${model} via ${provider.name}`,
     default_reasoning_level: 'medium',
     supported_reasoning_levels: [
@@ -507,16 +530,20 @@ async function writeProviderConfigFile(provider: StoredProvider): Promise<void> 
       { effort: 'high', description: 'Greater reasoning depth' },
     ],
     shell_type: 'shell_command', visibility: 'list', supported_in_api: true,
-    priority: models.indexOf(model), upgrade: null, context_window: 200000, max_context_window: 200000,
+    priority: models.indexOf(model), upgrade: null, context_window: window, max_context_window: window,
     support_verbosity: true, default_verbosity: 'low',
     truncation_policy: { mode: 'tokens', limit: 10_000 },
     comp_hash: '3000', effective_context_window_percent: 95, experimental_supported_tools: [],
-    input_modalities: ['text'], supports_search_tool: true, supports_image_detail_original: true,
+    input_modalities: inputs, supports_search_tool: true, supports_image_detail_original: true,
     use_responses_lite: false, tool_mode: null, multi_agent_version: 'v2',
     ...instructions,
-  });
+    ...previousModels.get(model),
+    ...(observed?.context_window?{context_window:observed.context_window,max_context_window:observed.context_window}:{}),
+    ...(observed?.input_modalities?{input_modalities:inputs}:{}),
+    };
+  };
   await writeFile(catalogPath, JSON.stringify({
-    models: models.map(model => ({ ...fallback(model), ...previousModels.get(model) })),
+    models: models.map(modelConfig),
   }, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
   await writeFile(join(home, 'config.toml'), [
     `model_provider = ${JSON.stringify(provider.id)}`,
@@ -654,17 +681,17 @@ async function readProviderConfig(provider: StoredProvider, path: string): Promi
   }
 }
 
-async function probeProviderModels(endpoint: string, apiKey: string): Promise<Array<{ model:string; name:string }>> {
+export async function probeProviderModels(endpoint: string, apiKey: string) {
   const base = endpoint.replace(/\/+$/, '');
   const response = await fetch(`${base}/models`, {
     headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
     signal: AbortSignal.timeout(20_000),
   });
   if (!response.ok) throw Error(`模型探测失败 (${response.status})`);
-  const body = await response.json() as { data?: Array<{id?:unknown;name?:unknown}> };
+  const body = await response.json() as { data?: Array<Record<string,unknown>> };
   if (!Array.isArray(body.data)) throw Error('模型列表格式无效');
   return body.data.flatMap(item => typeof item?.id === 'string' && item.id.trim()
-    ? [{ model: item.id.trim(), name: typeof item.name === 'string' ? item.name : item.id.trim() }]
+    ? [{ model: item.id.trim(), name: typeof item.name === 'string' ? item.name : item.id.trim(),...detectedModelMetadata(item.id.trim(),endpoint,item) }]
     : []);
 }
 
@@ -901,7 +928,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       saveProviderApiKey(providerId, input.apiKey);
       if (updated?.enabled) {
         report?.({ stage: 'save', message: '写入 Provider 配置与模型目录', progress: 25 });
-        await writeProviderConfigFile(updated);
+        await writeProviderConfigFile(updated,input.fields?.modelCapabilities);
         report?.({ stage: 'stop', message: '停止现有 Provider Engine', progress: 35 });
         await stopProvider(providerId);
         await startProvider(updated, progress => report?.({ ...progress, progress: 35 + progress.progress * 0.65 }));
@@ -963,10 +990,9 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       return readEngineModelsForProvider(input?.providerId, true);
     },
     readModelConfigs: async () => {
-      const results = await Promise.all(configuredCodexEngines().flatMap(engine => engine.provider
-        ? [readModelConfigsForProvider(engine.provider).catch(() => [])] : []));
-      const native = await readModelConfigsForProvider('native').catch(() => []);
-      return [...native, ...results.flat()];
+      const providers=readAgentManagement('codex').providers;
+      const native=await readModelSettings('native');
+      return [...native,...(await Promise.all(providers.map(provider=>readModelSettings(provider.id,provider.fields)))).flat()];
     },
     updateModelConfigs: async updates => {
       const grouped = new Map<string, AgentModelConfigUpdate[]>();
@@ -986,11 +1012,8 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         grouped.set(providerId, [...(grouped.get(providerId) || []), update]);
       }
       for (const [providerId, values] of grouped) await updateModelConfigsForProvider(providerId, values);
-      return (await Promise.all([
-        readModelConfigsForProvider('native').catch(() => []),
-        ...configuredCodexEngines().flatMap(engine => engine.provider
-          ? [readModelConfigsForProvider(engine.provider).catch(() => [])] : []),
-      ])).flat();
+      const providers=readAgentManagement('codex').providers;
+      return (await Promise.all([readModelSettings('native'),...providers.map(provider=>readModelSettings(provider.id,provider.fields))])).flat();
     },
     readConfigFile: async file => {
       const owner = readAgentManagement('codex').providers.find(item => allowedProviderConfigPath(item, file.path));
