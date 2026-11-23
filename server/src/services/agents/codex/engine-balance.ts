@@ -101,7 +101,14 @@ export async function collectEngineBalance(id:string):Promise<void>{
 export function cachedEngineBalance(id:string):Cached{
  initEngineBalance();
  const row=getDb().prepare('SELECT data FROM codex_engine_balance WHERE id=? AND identity=?').get(id,sourceIdentity(id)) as {data:string}|undefined;
- if(!row)return {auth_mode:null,status:'unavailable',error:'auth_unknown'};
+ if(!row){
+  if(id==='native'){
+   const native=nativeCodexConnectionConfig();
+   if(native.authMode==='api')return {auth_mode:'api',status:'unavailable',error:'auth_unknown'};
+   if(native.authMode==='account')return {auth_mode:'account',status:'unsupported'};
+  }
+  return {auth_mode:null,status:'unavailable',error:'auth_unknown'};
+ }
  const data:Cached=JSON.parse(row.data);
  if(data.status==='available'&&data.checkedAt&&Date.now()-Date.parse(data.checkedAt)>600000)return {...data,status:'stale'};
  return data;
