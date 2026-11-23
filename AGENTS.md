@@ -6,11 +6,11 @@ AgentManager 是管理多个 AI Agent 的本地协作平台，由 React/Vite das
 
 每个新功能、修复或独立验证任务必须从最新 `main` 创建独立 worktree 和功能分支。主工作区与 `main` worktree 只用于同步和合并，不能承载多个任务的并行开发。已有未提交改动必须保留；发现任务混在同一工作区时，先拆分或说明冲突。
 
-功能分支合入 `main` 后（包括 merge、cherry-pick，或把 worktree 改动迁回 `main`），同一轮内立刻清理：删除该功能分支的 git worktree（`git worktree remove <path>`），删除本地功能分支（`git branch -D <branch>`），远程分支存在时一并删除（`git push origin --delete <branch>`）。不要删除 `main` 本身，也不要移除主工作区。典型 worktree 目录：`/Users/ymchen/sources/agentManager-worktrees/`。
+**功能分支合入 `main` 后，必须在同一轮立即清理。** 通过 merge、cherry-pick 或将 worktree 改动迁回 `main` 时均适用。确认本次改动已合入且 worktree 中没有需要保留的内容后，先用 `git worktree remove <path>` 移除任务 worktree，再删除本地功能分支。远程同名分支存在且已获授权时，同一轮一并删除。保留 `main` 和主工作区。典型 worktree 目录为 `/Users/ymchen/sources/agentManager-worktrees/`。
 
 交付以本机运行实例生效为准。运行实例支持动态加载的改动，验证生效即可。需要构建、替换静态产物或重启的改动，在实现与测试通过后，同一轮完成本机部署，并验证服务健康和改动生效。推送或部署到远端仍须用户明确要求。
 
-测试或验证结束后，同一轮内清理本次创建的临时文件、数据库、测试账号与会话、进程、端口及其他测试环境，包括外部平台和服务器上的测试资源。仅清理能确认属于本次任务的资源，保留已有数据；确认清理结果，无法清理时说明残留及原因。详细要求见 [开发流程](docs/development-workflow.md)。
+**开发、测试或验证产生的临时资源也必须在同一轮清理。** 包括临时文件、临时目录、测试数据库、测试账号与会话、进程、端口及其他测试环境。清理范围涵盖任务 worktree 之外的路径、外部平台和服务器。仅清理能确认属于本次任务的资源，保留已有数据。交付前验证清理结果，无法清理时说明残留及原因。详细要求见 [开发流程](docs/development-workflow.md)。
 
 ## 代码区域
 
