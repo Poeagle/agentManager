@@ -29,6 +29,8 @@ import {readConversationPreview,humanSessionTask} from '../services/conversation
 
 import {personalQuestionRuntime,setIgnoredQuestions} from '../services/question-attention.js';
 import {watchSessionRuntime,stopSessionRuntimeWatches} from '../services/session-runtime-watch.js';
+import {createSessionRecordDeletionWorker,sessionRecordDeletionState} from '../services/session-record-deletion.js';
+import {removeSessionTabs} from '../services/session-tabs.js';
 import {broadcastEphemeral} from '../services/event-store.js';
 import {requirePermission,userHasPermission} from '../services/rbac.js';
 import {attachExistingSession} from '../services/session-attachment.js';
@@ -88,6 +90,13 @@ function sqliteUtcToIso(value: string | null | undefined): string | null {
 
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.addContentTypeParser('application/octet-stream', binaryUploadParser);
+  const deletions = createSessionRecordDeletionWorker(
+    id => sessionManager.purgeSessionRecord(id, {background:true}),
+    error => app.log.error({err:error}, 'Background session deletion worker failed'),
+  );
+  app.addHook('onReady', async () => deletions.wake());
+  app.addHook('onClose', () => deletions.close());
+  const stoppingForDeletion = new Map<string, Promise<void>>();
   const deferredReloads=new Map<string,()=>void>();
   app.addHook('onClose',async()=>{for(const stop of deferredReloads.values())stop();deferredReloads.clear();stopSessionRuntimeWatches();detachManagedAgents();});
   function reloadWhenIdle(session:NonNullable<ReturnType<typeof sessionManager.getSession>>,userId:string,keyHash:string|null,onlyTimedOut=false):boolean {
@@ -155,13 +164,14 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       // Enrich with live process-state (busy/idle/waiting_for_input) so tab signal
       // lights are correct on first load, before any WS state_change arrives.
       .map(async (s: any) => {
+        const deletion = sessionRecordDeletionState(s.id);
         const st = getTracker(s.id)?.state;
-        const preview=await readConversationPreview(s);
+        const preview = deletion === 'pending' ? null : await readConversationPreview(s);
         // Runtime/history can be absent before the first message or after a
         // native process exits. One unavailable runtime must not hide the project.
         let native: ReturnType<typeof personalQuestionRuntime> | null = null;
         try {
-          if(nativeConversationId(s))native=personalQuestionRuntime(await readAgentRuntime(s,true),req.user!.id);
+          if(deletion!=='pending'&&nativeConversationId(s))native=personalQuestionRuntime(await readAgentRuntime(s,true),req.user!.id);
           if(native&&['running','pending','launching','detached','released'].includes(s.status))await watchSessionRuntime(s);
         } catch { /* Preserve the record; unknown runtime stays absent. */ }
 
@@ -171,6 +181,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         return {
           ...s,
           ...present(s),...presentAgentSession(s),
+          ...(deletion ? {record_deletion:deletion} : {}),
           last_activity_at: native ? native.last_activity_at : lastActivityAt,
           ...(native ? {agent_runtime:native} : {}),
           content_summary: preview?.text||humanSessionTask(s.task),
@@ -223,7 +234,8 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
   }>('/sessions/:id', async (req, reply) => {
     const session = sessionManager.getSession(req.params.id);
     if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
-    return { session: {...session, ...sessionPresenter(req.user!.id)(session)} };
+    const deletion = sessionRecordDeletionState(session.id);
+    return { session: {...session, ...sessionPresenter(req.user!.id)(session), ...(deletion ? {record_deletion:deletion} : {})} };
   });
 
   app.post<{Params:{id:string};Body:{question_ids:string[];ignored?:boolean}}>('/sessions/:id/questions/ignore',async(req,reply)=>{
@@ -349,9 +361,8 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return {...result,session:sessionManager.getSession(session.id)};
   });
 
-  // Permanently delete an ended session from history: DB row + events + the
-  // Claude JSONL conversation file. Refuses (409) while the session is active.
-  app.delete<{ Params: { id: string };Querystring:{stop?:string} }>('/sessions/:id/record', async (req, reply) => {
+  // The tab-close flow opts into queued cleanup after stopping the session.
+  app.delete<{ Params: { id: string }; Querystring: {stop?: string; background?: string} }>('/sessions/:id/record', async (req, reply) => {
     const { id } = req.params;
     const session = sessionManager.getSession(id);
     // Match the personal session list and close endpoint: monitoring access
@@ -360,6 +371,32 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(404).send({ error: 'Session not found' });
     }
     if(req.query.stop!==undefined&&!['true','false'].includes(req.query.stop))return reply.status(400).send({error:'stop must be true or false'});
+    if (req.query.background !== undefined && (req.query.background !== 'true' || req.query.stop !== 'true')) {
+      return reply.code(400).send({error:'background=true requires stop=true'});
+    }
+    if (req.query.background === 'true') {
+      const accept = () => reply.code(202).send({ok:true,accepted:true});
+      if (sessionRecordDeletionState(id) === 'pending') return accept();
+      let stop = stoppingForDeletion.get(id);
+      if (!stop) {
+        if (stoppingForDeletion.size >= 100) return reply.code(503).send({error:'删除请求较多，请稍后重试'});
+        stop = (async () => {
+          await sessionManager.killSession(id);
+          await sessionManager.waitForStoppedSessionLifecycle(id);
+        })().finally(() => stoppingForDeletion.delete(id));
+        stoppingForDeletion.set(id, stop);
+      }
+      try { await stop; }
+      catch { return reply.code(503).send({error:'停止会话失败，记录已保留，请重试'}); }
+      if (sessionRecordDeletionState(id) === 'pending') return accept();
+      if (!sessionManager.canQueueSessionRecordDeletion(id)) {
+        return reply.code(409).send({error:'会话尚未停止，记录已保留，请重试'});
+      }
+      if (!deletions.enqueue(id)) return reply.code(503).send({error:'删除请求较多，会话记录已保留，请稍后重试'});
+      if (session.project_id) removeSessionTabs(id, {projectId:session.project_id,userId:req.user!.id});
+      return accept();
+    }
+    if (sessionRecordDeletionState(id) === 'pending') return reply.code(409).send({error:'会话正在后台删除'});
     if(req.query.stop==='true') {
       try {await sessionManager.killSession(id);await sessionManager.waitForStoppedSessionLifecycle(id);}
       catch {return reply.status(503).send({error:'停止会话失败，记录已保留，请重试'});}

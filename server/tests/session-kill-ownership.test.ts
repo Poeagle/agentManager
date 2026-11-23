@@ -119,6 +119,54 @@ describe('session kill ownership', () => {
     const result=await app.inject({method:'DELETE',url:'/api/sessions/delete-running/record?stop=true',headers:{cookie:ownerCookie}});
     expect(result.statusCode).toBe(200);expect(kill).toHaveBeenCalledExactlyOnceWith('delete-running');expect(sessionManager.getSession('delete-running')).toBeNull();
   });
+  it('acknowledges a background deletion while native cleanup is still pending', async () => {
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES('queued','project-1','Work','running','session','codex',?)").run(ownerId);
+    const kill = vi.spyOn(sessionManager, 'killSession').mockImplementation(async id => {
+      getDb().prepare("UPDATE sessions SET status='cancelled' WHERE id=?").run(id);
+      return true;
+    });
+    let finish!: (result: {ok:boolean}) => void;
+    const purge = vi.spyOn(sessionManager, 'purgeSessionRecord').mockImplementation((_id, ...options) => options.length ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ok:false}));
+    const request = (cookie: string) => app.inject({method:'DELETE',url:'/api/sessions/queued/record?stop=true&background=true',headers:{cookie}});
+    expect((await request(viewerCookie)).statusCode).toBe(404);
+    try {
+      const accepted = await request(ownerCookie);
+      expect(accepted.statusCode).toBe(202);
+      expect(accepted.json()).toEqual({ok:true,accepted:true});
+      await vi.waitFor(() => expect(purge).toHaveBeenCalledOnce());
+      expect((await request(ownerCookie)).statusCode).toBe(202);
+      expect(kill).toHaveBeenCalledOnce();
+      const record = () => app.inject({method:'GET',url:'/api/sessions/queued',headers:{cookie:ownerCookie}});
+      expect((await record()).json().session.record_deletion).toBe('pending');
+      finish({ok:false});
+      await vi.waitFor(async () => expect((await record()).json().session.record_deletion).toBe('failed'));
+      expect(sessionManager.getSession('queued')?.status).toBe('cancelled');
+    } finally { finish?.({ok:false}); }
+  });
+
+  it.each(['claude','codex'])('resumes pending %s cleanup after startup', async agentId => {
+    const id = 'interrupted-deletion';
+    const native = '019ff001-3434-7434-8434-343434343434';
+    await app.close();
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,native_session_id,created_by_user_id) VALUES(?,'project-1','Work','cancelled',?,?,?)")
+      .run(id,agentId,native,ownerId);
+    getDb().prepare("INSERT INTO session_record_deletions(session_id,state) VALUES(?,'pending')").run(id);
+    expect(await sessionManager.resumeSessionById(id)).toMatchObject({ok:false,error:'会话正在后台删除'});
+
+    const {getAgent}=await import('../src/services/agents/index.js');
+    const adapter=getAgent(agentId);
+    vi.spyOn(adapter.history.file!, 'locate').mockResolvedValue(null);
+    if (adapter.statistics.facts?.preserveAccountUsage) vi.spyOn(adapter.statistics.facts,'preserveAccountUsage').mockResolvedValue();
+    const purgeHistory=vi.spyOn(adapter.identity,'purgeHistory').mockResolvedValue();
+    app = Fastify({logger:false});
+    app.addHook('onRequest', authHook);
+    await app.register(sessionRoutes,{prefix:'/api'});
+    await app.ready();
+    await vi.waitFor(()=>expect(sessionManager.getSession(id)).toBeNull());
+    expect(purgeHistory).toHaveBeenCalledOnce();
+    expect(getDb().prepare('SELECT 1 FROM session_record_deletions WHERE session_id=?').get(id)).toBeUndefined();
+  });
+
   it('checks ownership before stopping, and retains the record if stopping fails',async()=>{
     getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES('delete-running','project-1','Task','running','session','codex',?)").run(ownerId);
     const kill=vi.spyOn(sessionManager,'killSession').mockRejectedValue(new Error('stop unavailable'));

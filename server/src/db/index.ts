@@ -72,6 +72,14 @@ function createCurrentSchema(): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS session_record_deletions (
+      session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+      state TEXT NOT NULL CHECK(state IN ('pending','failed')),
+      requested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_record_deletions_pending
+      ON session_record_deletions(requested_at,session_id) WHERE state='pending';
+
     CREATE TABLE IF NOT EXISTS conversation_attachments (
       session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
       client_id TEXT NOT NULL,

@@ -14,6 +14,10 @@ import { Dialog } from './Dialog';
 const ACTIVE = new Set(['running', 'detached', 'pending', 'launching', 'released']);
 const DELETABLE = new Set(['completed', 'failed', 'cancelled']);
 
+function canDeleteRecord(session: Session): boolean {
+  return session.record_deletion !== 'pending' && DELETABLE.has(session.status);
+}
+
 function fmtDateTime(value: string | null | undefined): string {
   if (!value) return '—';
   const time = tableTime(value);
@@ -94,26 +98,31 @@ function ProjectSessionRow({
 }) {
   const active = ACTIVE.has(session.status);
   const activity = sessionActivity(session);
+  const pending = session.record_deletion === 'pending';
+  const failed = session.record_deletion === 'failed';
   const summary = sessionSummary(session);
 
   return <>
     <tr className="group" style={{ background: isOpen ? 'var(--bg-tertiary)' : 'transparent', boxShadow: isOpen ? 'inset 2px 0 0 var(--accent)' : 'inset 2px 0 0 transparent' }}>
-      <td className="w-8 text-center"><input type="checkbox" aria-label={`选择会话 ${sessionTitle(session,displayName)}`} checked={selected} disabled={deleting||!DELETABLE.has(session.status)} onChange={onSelect}/></td>
+      <td className="w-8 text-center"><input type="checkbox" aria-label={`选择会话 ${sessionTitle(session,displayName)}`} checked={selected} disabled={deleting||!canDeleteRecord(session)} onChange={onSelect}/></td>
       <td className="w-8 text-center">
         <TableExpandButton expanded={expanded} label={`会话 ${sessionTitle(session, displayName)}`} onClick={onToggle} />
       </td>
       <td >
-        <button type="button" onClick={() => onOpen(session)} className="flex min-w-0 max-w-full items-center gap-2 text-left" title={isOpen ? '跳转到该标签页' : '打开该会话标签页'}>
+        <button type="button" disabled={pending} onClick={() => onOpen(session)} className="flex min-w-0 max-w-full items-center gap-2 text-left" title={isOpen ? '跳转到该标签页' : '打开该会话标签页'}>
           <span className="relative flex shrink-0 items-center justify-center"><SessionIcon session={session} /><span className="absolute -right-1 -bottom-0.5 rounded-full" style={{ width: 6, height: 6, background: active ? '#3b82f6' : 'var(--border)', boxShadow: active ? '0 0 5px #3b82f6' : 'none' }} /></span>
           <span className="truncate text-xs font-semibold transition-colors group-hover:text-[var(--accent)]" style={{ color: 'var(--text-primary)' }}>{sessionTitle(session, displayName)}</span>
         </button>
       </td>
-      <td className="text-[11px]" style={{ color: 'var(--text-secondary)' }}><span className="block truncate" title={providerLabel}>{providerLabel}</span><span className="block text-[10px]" style={{ color: active ? 'var(--accent)' : 'var(--text-secondary)' }}>{active ? '运行中' : session.status}</span></td>
+      <td className="text-[11px]" style={{ color: 'var(--text-secondary)' }}><span className="block truncate" title={providerLabel}>{providerLabel}</span><span className="block text-[10px]" style={{ color: active ? 'var(--accent)' : 'var(--text-secondary)' }}>{active ? '运行中' : session.status}</span>
+        {pending&&<span className="block text-[10px]" role="status">后台删除中</span>}
+        {failed&&<span className="block text-[10px]" style={{color:'var(--error)'}}>删除失败，可重试</span>}
+      </td>
       <td className="whitespace-nowrap text-[11px] tabular-nums" style={{ color: 'var(--text-secondary)' }}>{fmtDateTime(session.created_at)}</td>
       <td className="whitespace-nowrap text-[11px] tabular-nums" style={{ color: 'var(--text-secondary)' }}>{fmtDateTime(activity)}</td>
       <td className="text-[11px]" style={{ color: 'var(--text-secondary)' }}><span className="block truncate" title={summary}>{summary}</span></td>
-      <td><TableActions><TableActionButton disabled={deleting || !DELETABLE.has(session.status)}
-        aria-label={`删除会话 ${sessionTitle(session, displayName)}`} title={DELETABLE.has(session.status) ? '删除会话记录' : '请先关闭会话后再删除'}
+      <td><TableActions><TableActionButton disabled={deleting || !canDeleteRecord(session)}
+        aria-label={`删除会话 ${sessionTitle(session, displayName)}`} title={pending ? '后台删除中' : canDeleteRecord(session) ? '删除会话记录' : '请先关闭会话后再删除'}
         style={{ color: 'var(--error)' }} onClick={() => onDelete(session)}><Trash2 className="h-3.5 w-3.5" />删除</TableActionButton></TableActions></td>
     </tr>
     {expanded && <SessionDetails session={session} projectPath={projectPath}/>}
@@ -177,8 +186,8 @@ export function SessionHistoryPanel({
     { key: 'summary', title: '内容摘要', value: sessionSummary },
   ], { key: 'updated', direction: 'desc' });
   const visibleSessions = table.rows;
-  const eligible=visibleSessions.filter(session=>DELETABLE.has(session.status));
-  const selectedIds=sessions.filter(session=>selected.has(session.id)&&DELETABLE.has(session.status)).map(session=>session.id);
+  const eligible=visibleSessions.filter(canDeleteRecord);
+  const selectedIds=sessions.filter(session=>selected.has(session.id)&&canDeleteRecord(session)).map(session=>session.id);
   const allSelected=eligible.length>0&&eligible.every(session=>selected.has(session.id));
   const busy=deletion.isPending||bulkDeletion.isPending;
 
@@ -201,7 +210,7 @@ export function SessionHistoryPanel({
         loading={isLoading} error={isError ? `加载失败: ${(error as Error)?.message || '未知错误'}` : undefined} onRetry={() => { void refetch(); }}
         empty={visibleSessions.length === 0} emptyMessage={sessions.length ? '没有匹配的会话' : '这个项目还没有会话'}>
                 {visibleSessions.map((session) => <ProjectSessionRow key={session.id} session={session} projectPath={projectPath} isOpen={openTabIds.has(session.id)} displayName={displayNames[session.id]} expanded={expandedIds.has(session.id)} onToggle={() => toggleExpanded(session.id)} onOpen={onOpen}
-                  selected={selected.has(session.id)&&DELETABLE.has(session.status)} onSelect={()=>setSelected(current=>{const next=new Set(current);if(next.has(session.id))next.delete(session.id);else next.add(session.id);return next;})} providerLabel={providerLabel(session)} deleting={busy} onDelete={(target) => { deletion.reset(); setDeleteTarget(target); }} />)}
+                  selected={selected.has(session.id)&&canDeleteRecord(session)} onSelect={()=>setSelected(current=>{const next=new Set(current);if(next.has(session.id))next.delete(session.id);else next.add(session.id);return next;})} providerLabel={providerLabel(session)} deleting={busy} onDelete={(target) => { deletion.reset(); setDeleteTarget(target); }} />)}
       </DataTable>
     </div>
     {bulkTargets&&<Dialog title="批量删除会话记录" busy={bulkDeletion.isPending} onClose={()=>setBulkTargets(null)}><p>确定删除选中的 {bulkTargets.length} 条会话记录？</p><p className="mt-2 text-xs">会话记录及已保存输出将被永久删除，无法撤销。</p>{bulkError&&<p role="alert" style={{color:'var(--error)'}}>{bulkError}</p>}<footer className="mt-4 flex justify-end gap-2"><TableActionButton disabled={bulkDeletion.isPending} onClick={()=>setBulkTargets(null)}>取消</TableActionButton><TableActionButton disabled={bulkDeletion.isPending} onClick={()=>bulkDeletion.mutate(bulkTargets)}>{bulkDeletion.isPending?'删除中…':'确认批量删除'}</TableActionButton></footer></Dialog>}

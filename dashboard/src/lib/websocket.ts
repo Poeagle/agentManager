@@ -112,6 +112,7 @@ export function connectStream() {
     useStreamStore.getState().setConnected(true);
     void queryClientRef?.invalidateQueries({ queryKey: SERVER_RESOURCE_QUERY_KEY });
     void queryClientRef?.invalidateQueries({ queryKey: ['notifications'] });
+    void queryClientRef?.invalidateQueries({ queryKey: ['project-sessions'] });
   };
 
   ws.onmessage = (msg) => {
@@ -123,6 +124,12 @@ export function connectStream() {
       if (event.type === 'ping' || event.type === 'connected') return;
       if(event.type==='notification.changed'){
         void queryClientRef?.invalidateQueries({queryKey:['notifications']});return;
+      }
+      if (event.type === 'session.record-deletion') {
+        void queryClientRef?.invalidateQueries({queryKey:['project-sessions']});
+        void queryClientRef?.invalidateQueries({queryKey:['sessions']});
+        void queryClientRef?.invalidateQueries({queryKey:['admin-monitor']});
+        return;
       }
       if(event.type==='session.retry')return;
       if(event.type==='session.runtime'&&event.session_id){

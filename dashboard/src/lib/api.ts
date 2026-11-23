@@ -456,9 +456,10 @@ export const api = {
     newConversation:(id:string,preference?:AgentModelPreference,expectedNativeId?:string,environmentId?:string)=>fetchJSON<{ok:boolean;session:Session;history_id:string;warning?:string}>(`/sessions/${encodeURIComponent(id)}/new-conversation`,{method:'POST',body:JSON.stringify({preference,expected_native_id:expectedNativeId,environment_id:environmentId})}),
     compactConversation:(id:string)=>fetchJSON<{ok:boolean}>(`/sessions/${encodeURIComponent(id)}/compact`,{method:'POST'}),
     reload:(id:string)=>fetchJSON<{ok:boolean;session:Session;client_version?:string}>(`/sessions/${encodeURIComponent(id)}/reload`,{method:'POST'}),
-    // Permanently delete an ended session from history (record + events + JSONL).
-    deleteRecord: (id: string, stop = false) =>
-      fetchJSON<{ ok: boolean }>(`/sessions/${id}/record${stop?'?stop=true':''}`, { method: 'DELETE' }),
+    deleteRecord: (id: string) =>
+      fetchJSON<{ok: boolean}>(`/sessions/${encodeURIComponent(id)}/record`, {method:'DELETE'}),
+    queueRecordDeletion: (id: string) =>
+      fetchJSON<{ok: true; accepted: true}>(`/sessions/${encodeURIComponent(id)}/record?stop=true&background=true`, {method:'DELETE'}),
     // Permanently delete this account's ended records for one project.
     deleteEndedRecords: (projectId: string) =>
       fetchJSON<{ ok: boolean; deleted: number; failed: number }>(`/sessions/records/ended?project_id=${encodeURIComponent(projectId)}`, {
@@ -915,6 +916,7 @@ export interface Session {
   updated_at?: string;
   last_activity_at?: string | null;
   content_summary?: string | null;
+  record_deletion?: 'pending' | 'failed';
   cli_type?: string;
   agent_id?:string|null;native_session_id?:string|null;agent?:AgentDescriptor;
   mode?: 'session' | 'terminal';

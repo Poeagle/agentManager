@@ -7,7 +7,10 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.26.0');
+    expect(contract.version).toBe('3.27.0');
+    for (const path of ['/api/sessions','/api/sessions/:id']) {
+      expect(contract.endpoints.find(endpoint=>endpoint.method==='GET'&&endpoint.path===path)?.description).toContain('record_deletion');
+    }
     expect(contract.endpoints.find(e=>e.path==='/api/files/upload')?.description).toContain('maximum 500 MiB');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request?.attachments?.description).toContain('500 MiB');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/controls')?.response).toMatchObject({models:expect.stringContaining('reference_only')});
