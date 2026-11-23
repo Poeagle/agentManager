@@ -79,7 +79,7 @@ it('keeps existing native models selected and leaves newly detected models disab
   {key:'defaultModel',label:'默认模型',type:'text',value:'stale-model'},
  ]};
  vi.mocked(api.agentManagement.detectModels).mockResolvedValueOnce({models:[{model:'gpt-current',name:'GPT Current',description:'',efforts:[],defaultEffort:''}]});
- fireEvent.click(screen.getByRole('button',{name:'探测模型'}));
+ fireEvent.click(screen.getByRole('button',{name:/探测.*模型/}));
  await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','fixture',expect.objectContaining({fields:expect.objectContaining({models:['gpt-current'],defaultModel:'gpt-current'})})));
  expect(within(table).getByRole('checkbox',{name:'启用 stale-model'})).toBeChecked();
  expect(within(table).getByRole('checkbox',{name:'启用 gpt-current'})).not.toBeChecked();
@@ -137,10 +137,10 @@ it('expands the Provider model table and probes only that Provider',async()=>{
  expect(within(table).queryByRole('spinbutton',{name:'model-a 上下文长度'})).toBeNull();
  expect(within(table).getByRole('row',{name:/model-a/})).toHaveTextContent('200,000');
  expect(within(table).getByRole('row',{name:/model-a/})).toHaveTextContent('不支持');
- fireEvent.click(screen.getByRole('button',{name:'编辑模型'}));
+ fireEvent.click(within(table).getByRole('button',{name:'编辑'}));
  expect(within(table).getByRole('spinbutton',{name:'model-a 上下文长度'})).toHaveValue(200000);
  vi.mocked(api.agentManagement.detectModels).mockResolvedValueOnce({models:[{model:'model-a',name:'Model A',description:'',efforts:[],defaultEffort:'',context_window:300000},{model:'new-model',name:'New',description:'',efforts:[],defaultEffort:'',context_window:500000}]});
- fireEvent.click(screen.getByRole('button',{name:'探测模型'}));await within(table).findByRole('checkbox',{name:'启用 new-model'});
+ fireEvent.click(screen.getByRole('button',{name:/探测.*模型/}));await within(table).findByRole('checkbox',{name:'启用 new-model'});
  await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','fixture',expect.objectContaining({fields:expect.objectContaining({models:['model-a'],defaultModel:'model-a'})})));
  expect(within(table).getByRole('checkbox',{name:'启用 model-a'})).toBeChecked();expect(within(table).getByRole('checkbox',{name:'启用 new-model'})).not.toBeChecked();
 });
@@ -165,21 +165,21 @@ it('rejects an invalid inline multiplier without sending a partial update',async
 it('keeps existing selections when discovery has no overlap and leaves them unchanged on probe failure',async()=>{
  mount();fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});
  vi.mocked(api.agentManagement.detectModels).mockResolvedValueOnce({models:[{model:'fresh-a',name:'Fresh A',description:'',efforts:[],defaultEffort:''},{model:'fresh-b',name:'Fresh B',description:'',efforts:[],defaultEffort:''}]});
- fireEvent.click(screen.getByRole('button',{name:'探测模型'}));await within(table).findByRole('checkbox',{name:'启用 fresh-a'});
+ fireEvent.click(screen.getByRole('button',{name:/探测.*模型/}));await within(table).findByRole('checkbox',{name:'启用 fresh-a'});
  await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','fixture',expect.objectContaining({fields:expect.objectContaining({models:['model-a','model-b'],defaultModel:'model-a'})})));
  expect(within(table).getByRole('checkbox',{name:'启用 model-a'})).toBeChecked();
  expect(within(table).getByRole('checkbox',{name:'启用 fresh-a'})).not.toBeChecked();
  vi.mocked(api.agentManagement.detectModels).mockRejectedValueOnce(Error('探测失败'));vi.mocked(api.agentManagement.updateProvider).mockClear();
- fireEvent.click(screen.getByRole('button',{name:'探测模型'}));await screen.findByRole('alert');expect(api.agentManagement.updateProvider).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:/探测.*模型/}));await screen.findByRole('alert');expect(api.agentManagement.updateProvider).not.toHaveBeenCalled();
 });
 it('isolates model settings by Provider and keeps all editing disabled in read-only mode',async()=>{
- configs.push({...configs[0],provider:'other',model:'private-other'});mount(true);fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});await within(table).findByText('model-a');expect(screen.queryByText('private-other')).toBeNull();expect(within(table).queryByRole('checkbox')).toBeNull();expect(within(table).queryByRole('spinbutton')).toBeNull();expect(screen.getByRole('button',{name:'探测模型'})).toBeDisabled();expect(screen.queryByRole('button',{name:'编辑模型'})).toBeNull();
+ configs.push({...configs[0],provider:'other',model:'private-other'});mount(true);fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});await within(table).findByText('model-a');expect(screen.queryByText('private-other')).toBeNull();expect(within(table).queryByRole('checkbox')).toBeNull();expect(within(table).queryByRole('spinbutton')).toBeNull();expect(screen.getByRole('button',{name:/探测.*模型/})).toBeDisabled();expect(within(table).queryByRole('button',{name:'编辑'})).toBeNull();
 });
 it('shows model capabilities read-only until the explicit model edit action',async()=>{
  mount();fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});await within(table).findByRole('checkbox',{name:'启用 model-a'});
  expect(within(table).queryByRole('spinbutton',{name:'model-a 上下文长度'})).toBeNull();
  expect(within(table).getByRole('row',{name:/model-a/})).toHaveTextContent('200,000');
- fireEvent.click(screen.getByRole('button',{name:'编辑模型'}));
+ fireEvent.click(within(table).getByRole('button',{name:'编辑'}));
  const context=within(table).getByRole('spinbutton',{name:'model-a 上下文长度'});fireEvent.change(context,{target:{value:'300000'}});
  fireEvent.click(screen.getByRole('button',{name:'保存并重启 Engine'}));
  await waitFor(()=>expect(api.agentManagement.updateModelConfigs).toHaveBeenCalledWith('codex',[expect.objectContaining({model:'model-a',contextWindow:300000})]));
@@ -204,8 +204,8 @@ it('discards detected models whenever the endpoint or key changes, including lat
  mount();fireEvent.click(await screen.findByRole('button',{name:'新增 Provider'}));
  expect(screen.getByRole('dialog',{name:'新增 Provider'})).toBeVisible();
  fireEvent.change(screen.getByLabelText('Provider ID'),{target:{value:'new'}});fireEvent.change(screen.getByLabelText('Responses API 地址'),{target:{value:'https://first.invalid/v1'}});fireEvent.change(screen.getByLabelText('API Key'),{target:{value:'fixture'}});
- let finish!:(value:any)=>void;vi.mocked(api.agentManagement.detectModels).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));fireEvent.click(screen.getByRole('button',{name:'探测模型'}));await waitFor(()=>expect(api.agentManagement.detectModels).toHaveBeenCalled());
+ let finish!:(value:any)=>void;vi.mocked(api.agentManagement.detectModels).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));fireEvent.click(screen.getByRole('button',{name:/探测.*模型/}));await waitFor(()=>expect(api.agentManagement.detectModels).toHaveBeenCalled());
  fireEvent.change(screen.getByLabelText('Responses API 地址'),{target:{value:'https://second.invalid/v1'}});await act(async()=>finish({models:[{model:'stale',name:'Stale',description:'',efforts:[],defaultEffort:''}]}));expect(screen.queryByText('Stale')).toBeNull();expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeDisabled();
- vi.mocked(api.agentManagement.detectModels).mockResolvedValueOnce({models:[{model:'fresh',name:'Fresh',description:'',efforts:[],defaultEffort:''}]});await waitFor(()=>expect(screen.getByRole('button',{name:'探测模型'})).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:'探测模型'}));expect((await screen.findAllByText('Fresh')).length).toBeGreaterThan(0);expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeEnabled();
+ vi.mocked(api.agentManagement.detectModels).mockResolvedValueOnce({models:[{model:'fresh',name:'Fresh',description:'',efforts:[],defaultEffort:''}]});await waitFor(()=>expect(screen.getByRole('button',{name:/探测.*模型/})).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:/探测.*模型/}));expect((await screen.findAllByText('Fresh')).length).toBeGreaterThan(0);expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeEnabled();
  fireEvent.change(screen.getByLabelText('API Key'),{target:{value:'another-fixture'}});expect(screen.queryByText('Fresh')).toBeNull();expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeDisabled();
 });
