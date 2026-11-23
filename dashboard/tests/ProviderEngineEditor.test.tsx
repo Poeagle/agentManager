@@ -21,7 +21,7 @@ beforeEach(()=>{
  vi.mocked(api.agentManagement.updateProviderStream).mockImplementation(async(_id,_p,input)=>{provider={...provider,models:input.fields?.models as string[]||provider.models,fields:provider.fields.map(f=>({...f,value:input.fields?.[f.key]??f.value}))};state={...state,providers:[provider]};return {provider,state};});
  vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[],users:[]});vi.mocked(api.codexEnvironments.usage).mockResolvedValue({tabs:[],busy:false,verified:true});
 });
-afterEach(()=>{client.clear();vi.restoreAllMocks();});
+afterEach(()=>{client.clear();vi.restoreAllMocks();vi.unstubAllGlobals();});
 const mount=(readOnly=false)=>render(<QueryClientProvider client={client}><AgentManagementPanel readOnly={readOnly}/></QueryClientProvider>);
 const open=async (name='Fixture API',readOnly=false)=>{
  mount(readOnly);
@@ -79,20 +79,29 @@ it.each(['native','account'] as const)('uses the Provider model table for the %s
  provider={...provider,id:'native',name,kind:'native',models:['model-a'],authentication:{status:'authenticated',method:'ChatGPT',mode:'account'},fields:[]};
  state={...state,providers:kind==='native'?[provider]:[]};
  vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[{id,kind,name,enabled:true,auth_mode:'account',allowed_user_ids:null}],users:[]});
+ vi.mocked(api.codexEnvironments.quota).mockResolvedValueOnce({quota:{remainingPercent:72,usedPercent:28,windowDurationMins:10080,resetsAt:null,planType:'plus',checkedAt:'2026-11-17T00:00:00Z'}});
+ vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({account:{email:'official@example.invalid'}}))));
  const details:CodexAccountDetails={
   id,checked_at:'',executable:null,version:null,home:null,
   engine:{state:'connected',pid:1},authentication:{status:'authenticated',type:'chatgpt',email:null,plan:'plus'},
   config:{path:null,exists:true,notice:null},settings:{model_context_window:'700000'},
-  models:[{model:'model-a'},{model:'model-b',context_window:500000,official_context_window:1050000,input_modalities:['text','image'],release_date:'2026-11-17'}],
+  models:[{model:'model-a'},{model:'model-b',name:'Model B',context_window:500000,official_context_window:1050000,input_modalities:['text','image'],release_date:'2026-11-17'}],
  };
  vi.mocked(api.codexEnvironments.details).mockResolvedValue({details});
  mount();
- fireEvent.click(await screen.findByRole('button',{name:`展开Provider ${name} 的模型`}));
+ const providerTable=within(await screen.findByRole('table',{name:'Agent Provider'}));
+ const providerRow=within(await providerTable.findByRole('row',{name:/Official/}));
+ expect(await providerRow.findByRole('cell',{name:'official@example.invalid'})).toBeVisible();
+ expect(await providerRow.findByRole('cell',{name:'72%'})).toBeVisible();
+ expect(api.codexEnvironments.quota).toHaveBeenCalledWith(id);
+ expect(api.codexEnvironments.details).not.toHaveBeenCalled();
+ fireEvent.click(await providerRow.findByRole('button',{name:`展开Provider ${name} 的模型`}));
  const table=await screen.findByRole('table',{name:'Provider 模型'});
  const model=await within(table).findByRole('row',{name:/model-b/});
- expect(within(table).getAllByRole('columnheader').map(column=>column.getAttribute('aria-label'))).toEqual(['模型 ID','上下文长度','图片输入','发布时间']);
- expect(model).toHaveTextContent('700,000（配置）');
- expect(model).toHaveTextContent('官方 1,050,000');
+ expect(within(table).getAllByRole('columnheader').map(column=>column.getAttribute('aria-label'))).toEqual(['模型 ID','模型名称','上下文长度','官方上下文','图片输入','发布时间']);
+ expect(within(model).getByRole('cell',{name:'Model B'})).toBeVisible();
+ expect(within(model).getByRole('cell',{name:'700,000（配置）'})).toBeVisible();
+ expect(within(model).getByRole('cell',{name:'1,050,000'})).toBeVisible();
  expect(model).toHaveTextContent('支持');
  expect(screen.queryByRole('button',{name:/探测.*模型/})).not.toBeInTheDocument();
  expect(api.codexEnvironments.details).toHaveBeenCalledWith(id);

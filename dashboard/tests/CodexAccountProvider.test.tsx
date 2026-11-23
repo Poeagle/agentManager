@@ -1,5 +1,5 @@
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
-import {render,screen,fireEvent,waitFor} from '@testing-library/react';
+import {render,screen,fireEvent,waitFor,within} from '@testing-library/react';
 import {afterEach,beforeEach,describe,it,expect,vi} from 'vitest';
 import {CodexAccountProvider} from '../src/components/CodexAccountProvider';
 import {api,type CodexEnvironment,type CodexAccountDetails} from '../src/lib/api';
@@ -20,7 +20,13 @@ describe('saved Codex account Provider page',()=>{
   mount();expect(await screen.findByText('fixture@example.invalid')).toBeVisible();expect(screen.getByText('codex-cli 0.fixture')).toBeVisible();expect(screen.getByText('/fixture/.codex')).toBeVisible();expect(screen.getByText('fixture-model')).toBeVisible();expect(screen.queryByText('Fixture model')).not.toBeInTheDocument();expect(api.codexEnvironments.details).toHaveBeenCalledWith(environment.id);expect(screen.queryByRole('textbox',{name:'Codex 命令'})).not.toBeInTheDocument();expect(screen.queryByRole('table',{name:'Provider 占用标签页列表'})).not.toBeInTheDocument();
  });
  it('shows credential file status without requesting or exposing credential contents',async()=>{
-  mount();const credential=await screen.findByRole('button',{name:/Codex 凭据文件/});expect(credential).toHaveTextContent('已存在 · 受保护');fireEvent.click(credential);expect(screen.getByRole('dialog',{name:'Codex 凭据文件'})).toHaveTextContent('凭据内容受保护');expect(api.codexEnvironments.readConfigFile).not.toHaveBeenCalled();
+  mount();const files=within(await screen.findByRole('table',{name:'配置文件'}));
+  expect(files.getAllByRole('row')).toHaveLength(3);
+  const credential=within(files.getByRole('row',{name:/Codex 凭据文件/}));
+  for(const value of ['Codex 凭据文件','/fixture/.codex/auth.json','JSON','已存在 · 受保护','仅显示文件状态']){
+   expect(credential.getByRole('cell',{name:value})).toBeVisible();
+  }
+  fireEvent.click(credential.getByRole('button',{name:/Codex 凭据文件/}));expect(screen.getByRole('dialog',{name:'Codex 凭据文件'})).toHaveTextContent('凭据内容受保护');expect(api.codexEnvironments.readConfigFile).not.toHaveBeenCalled();
  });
  it('uses the same details layout and fields for native and SSH accounts',async()=>{
   const view=mount();await screen.findByText('fixture@example.invalid');const fields=['登录状态','账号身份','登录方式 / 套餐','Codex 引擎','周额度剩余','额度重置时间','执行用户','Codex 版本','默认模型','模型 Provider','默认推理强度','执行确认策略','沙箱模式','本机连接'];

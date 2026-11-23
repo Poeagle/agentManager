@@ -7,6 +7,89 @@ test.beforeEach(async({page})=>{
 });
 const accountDetails=(id:string)=>({id,checked_at:'2026-11-09T00:00:00Z',executable:'/fixture/bin/codex',version:'codex-cli 0.fixture',home:'/fixture/.codex',engine:{state:'connected',pid:123},authentication:{status:'authenticated',type:'chatgpt',email:'fixture@example.invalid',plan:'fixture-plan'},config:{path:'/fixture/.codex/config.toml',exists:true,notice:null},settings:{model:'fixture-model',model_provider:'openai',model_reasoning_effort:'high'},models:[{model:'fixture-model',name:'Fixture model',description:'Selected user model',defaultEffort:'high'}]});
 
+test('keeps Provider actions aligned and models and config files on one line', async ({page}) => {
+ const status=await (await page.request.get('/api/auth/status')).json();
+ expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{
+  data:{username:'e2e-admin',password:'test-password'},
+ })).ok()).toBeTruthy();
+ await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true'}}});
+
+ const agent={id:'codex',label:'Codex',presentation:{icon:'codex',color:'#60a5fa'},capabilities:{}};
+ const gateway={
+  id:'gateway',name:'Fixture Gateway',kind:'compatible',managed:true,enabled:true,status:'ready',
+  models:[],fields:[{key:'baseUrl',value:'https://gateway.example/v1'}],authentication:{mode:'api'},
+ };
+ const state={agent,providers:[gateway],providerManagement:{create:true}};
+ const id='account:fixture';
+ const account={id,name:'Fixture Account',kind:'account',enabled:true,auth_mode:'account',allowed_user_ids:null};
+ const details={
+  ...accountDetails(id),
+  settings:{model_context_window:'700000'},
+  models:[
+   {model:'fixture-model',name:'Fixture model',official_context_window:1050000,input_modalities:['text','image']},
+   {model:'fixture-light'},
+  ],
+ };
+ await page.route('**/api/agent-management',route=>route.fulfill({json:{agents:[{agent,state}]}}));
+ await page.route('**/api/agent-management/codex',route=>route.fulfill({json:{state}}));
+ await page.route('**/api/agent-management/codex/providers/gateway',route=>route.fulfill({json:{provider:gateway}}));
+ await page.route(/\/api\/codex\/environments(?:\?|$)/,route=>route.fulfill({json:{environments:[account],users:[]}}));
+ await page.route('**/api/codex/environments/*/details',route=>route.fulfill({json:{details}}));
+ await page.route('**/api/codex/environments/*/reset-credits',route=>route.fulfill({json:{account:details.authentication}}));
+ await page.route('**/api/codex/environments/*/quota',route=>route.fulfill({
+  json:{quota:{remainingPercent:72,usedPercent:28,checkedAt:'2026-11-17T00:00:00Z'}},
+ }));
+ await page.route('**/api/codex/environments/*/balance',route=>route.fulfill({
+  json:{amount:12,status:'available',currency:'USD'},
+ }));
+
+ await page.setViewportSize({width:1500,height:1000});
+ await page.goto('/');
+ await page.getByTitle('My account').click();
+ await page.getByRole('button',{name:'Agent 配置'}).click();
+ const providers=page.getByRole('table',{name:'Agent Provider'});
+ const accountRow=providers.getByRole('row',{name:/Fixture Account/});
+ await expect(accountRow.getByRole('cell',{name:'fixture@example.invalid'})).toBeVisible();
+ await expect(accountRow.getByRole('cell',{name:'72%'})).toBeVisible();
+ const apiRow=providers.getByRole('row',{name:/Fixture Gateway/});
+ await expect(apiRow.getByRole('cell',{name:'12.00'})).toBeVisible();
+
+ const accountEdit=accountRow.getByRole('button',{name:'编辑 Fixture Account · Codex'});
+ const apiEdit=apiRow.getByRole('button',{name:'编辑 Fixture Gateway · Codex'});
+ const probe=apiRow.getByRole('button',{name:'探测 Fixture Gateway 模型'});
+ const providerRegion=page.getByRole('region',{name:/Agent Provider，/});
+ for(const width of [1500,390]){
+  await page.setViewportSize({width,height:1000});
+  await expect.poll(async()=>{
+   const [accountBox,apiBox,probeBox]=await Promise.all([accountEdit.boundingBox(),apiEdit.boundingBox(),probe.boundingBox()]);
+   return accountBox&&apiBox&&probeBox&&Math.abs(accountBox.x-apiBox.x)<1&&Math.abs(apiBox.y-probeBox.y)<1;
+  }).toBe(true);
+ }
+ await expect.poll(()=>providerRegion.evaluate(el=>el.scrollWidth>el.clientWidth)).toBe(true);
+
+ await accountRow.getByRole('button',{name:'展开Provider Fixture Account 的模型'}).click();
+ const models=page.getByRole('table',{name:'Provider 模型'});
+ const fullModel=models.getByRole('row',{name:/fixture-model/});
+ const lightModel=models.getByRole('row',{name:/fixture-light/});
+ await expect(fullModel.getByRole('cell',{name:'Fixture model',exact:true})).toBeVisible();
+ await expect(fullModel.getByRole('cell',{name:'700,000（配置）'})).toBeVisible();
+ await expect(fullModel.getByRole('cell',{name:'1,050,000'})).toBeVisible();
+ const singleLineHeight=(el:HTMLElement)=>el.getBoundingClientRect().height;
+ expect(await fullModel.evaluate(singleLineHeight)).toBe(await lightModel.evaluate(singleLineHeight));
+ expect(await fullModel.evaluate(singleLineHeight)).toBeLessThan(40);
+
+ await accountEdit.click();
+ const dialog=page.getByRole('dialog',{name:'编辑 Provider · Fixture Account'});
+ const files=dialog.getByRole('table',{name:'配置文件'});
+ const config=files.getByRole('row',{name:/Codex 配置/});
+ const credentials=files.getByRole('row',{name:/Codex 凭据文件/});
+ await expect(config.getByRole('cell',{name:'/fixture/.codex/config.toml'})).toBeVisible();
+ await expect(credentials.getByRole('cell',{name:'已存在 · 受保护'})).toBeVisible();
+ expect(await config.evaluate(singleLineHeight)).toBe(await credentials.evaluate(singleLineHeight));
+ expect(await config.evaluate(singleLineHeight)).toBeLessThan(40);
+ await expect.poll(()=>dialog.getByRole('region',{name:/配置文件，/}).evaluate(el=>el.scrollWidth>el.clientWidth)).toBe(true);
+});
+
 test('edits the Provider multiplier directly in the row and applies it immediately',async({page})=>{
  const status=await(await page.request.get('/api/auth/status')).json();
  expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
@@ -98,7 +181,16 @@ test('configures a private same-machine account and enforces visibility in brows
  await dialog.getByRole('textbox',{name:'Codex 命令',exact:true}).fill('codex --dangerously-bypass-approvals-and-sandbox');await expect(dialog.getByRole('alert')).toContainText('例如填写 codex');await expect(dialog.getByRole('button',{name:'预检连接、已有登录、模型与项目'})).toBeDisabled();await dialog.getByRole('textbox',{name:'Codex 命令',exact:true}).fill('codex');
  await dialog.getByRole('button',{name:'预检连接、已有登录、模型与项目'}).click();await expect(dialog.getByRole('alert')).toContainText('codex login');
  await page.screenshot({path:testInfo.outputPath('missing-login-preflight.png'),fullPage:true});
- await dialog.getByRole('button',{name:'保存账号 Provider'}).click();await expect(dialog).toHaveCount(0);await page.getByRole('button',{name:/编辑 ymchen private fixture/}).click();const edit=page.getByRole('dialog',{name:'编辑 Provider · ymchen private fixture'});await edit.getByRole('button',{name:'账号详情'}).click();await expect(page.getByText('1 个 Provider',{exact:true})).toBeVisible();await expect(edit.getByText('fixture@example.invalid')).toBeVisible();await expect(edit.getByText('Fixture model')).toBeVisible();await expect(edit.getByRole('textbox',{name:'Codex 命令'})).toHaveCount(0);await page.screenshot({path:testInfo.outputPath('saved-account-details.png'),fullPage:true});
+ await dialog.getByRole('button',{name:'保存账号 Provider'}).click();
+ await expect(dialog).toHaveCount(0);
+ await expect(page.getByText('1 个 Provider',{exact:true})).toBeVisible();
+ await page.getByRole('button',{name:'展开Provider ymchen private fixture 的模型'}).click();
+ await expect(page.getByRole('table',{name:'Provider 模型'}).getByRole('cell',{name:'Fixture model',exact:true})).toBeVisible();
+ await page.getByRole('button',{name:/编辑 ymchen private fixture/}).click();
+ const edit=page.getByRole('dialog',{name:'编辑 Provider · ymchen private fixture'});
+ await expect(edit.getByText('fixture@example.invalid')).toBeVisible();
+ await expect(edit.getByRole('textbox',{name:'Codex 命令'})).toHaveCount(0);
+ await page.screenshot({path:testInfo.outputPath('saved-account-details.png'),fullPage:true});
  await edit.getByRole('button',{name:/Codex 配置/}).click();const fileDialog=page.getByRole('dialog',{name:'Codex 配置'});await fileDialog.getByRole('textbox',{name:'Codex 配置 内容'}).fill('model = "updated"');await fileDialog.getByRole('button',{name:'保存文件'}).click();await expect(fileDialog.getByRole('status')).toHaveText('已保存');await fileDialog.getByRole('button',{name:'关闭Codex 配置'}).click();await edit.getByRole('button',{name:/Codex 凭据文件/}).click();const credential=page.getByRole('dialog',{name:'Codex 凭据文件'});await expect(credential).toContainText('凭据内容受保护');await expect(credential.locator('textarea')).toHaveCount(0);await credential.getByRole('button',{name:'关闭Codex 凭据文件'}).click();
  const visible=await (await page.request.get('/api/codex/environments')).json();const account=visible.environments.find((e:any)=>e.name==='ymchen private fixture');expect(account).toBeTruthy();expect(account.connection).toBeUndefined();
  const username='environment-member';expect((await page.request.post('/api/users',{data:{username,password:'test-password',role:'user'}})).ok()).toBeTruthy();
@@ -144,6 +236,7 @@ test('idle tabs appear in the Provider deletion dialog until removed',async({pag
   await page.getByRole('button',{name:/编辑 Occupancy account/}).click();const form=page.getByRole('region',{name:'Codex 账号 Provider'});
   await expect(form.getByRole('table',{name:'Provider 占用标签页列表'})).toHaveCount(0);
   await expect(form.getByRole('button',{name:'删除账号 Provider'})).toBeEnabled();
+  await form.getByRole('button',{name:'编辑配置'}).click();
   await form.getByRole('textbox',{name:'账号 Provider 名称',exact:true}).fill('Adjusted occupancy account');await form.getByRole('button',{name:'保存账号 Provider'}).click();await expect(form).toHaveCount(0);await page.getByRole('button',{name:/编辑 Adjusted occupancy account/}).click();
   await form.getByRole('button',{name:'删除账号 Provider'}).click();const deletion=page.getByRole('dialog',{name:'删除 Provider · Adjusted occupancy account'}),table=deletion.getByRole('table',{name:'Provider 占用标签页列表'});
   await expect(table.getByText('Tab '+owner.username,{exact:true})).toBeVisible();await expect(table.getByText('Tab '+member.username,{exact:true})).toBeVisible();await expect(deletion.getByRole('button',{name:'确认删除 Provider'})).toBeDisabled();
@@ -192,22 +285,21 @@ test('switches from account Providers to native and API Providers without becomi
  await close(gateway);
  expect(unexpectedDialogs).toBe(0);
  const account=await open('账号 A');
- await account.getByRole('button',{name:'账号详情'}).click();
  await expect(account.getByText('fixture@example.invalid')).toBeVisible();
  const commonFields=['登录状态','账号身份','登录方式 / 套餐','Codex 引擎','周额度剩余','额度重置时间','执行用户','Codex 版本','默认模型','模型 Provider','默认推理强度','执行确认策略','沙箱模式','本机连接'];
  for(const field of commonFields)await expect(account.getByText(field,{exact:true})).toBeVisible();
  await page.screenshot({path:testInfo.outputPath('ssh-account-details.png'),fullPage:true});
  await close(account);
  const native=await open('原生测试 Provider');
- await native.getByRole('button',{name:'账号详情'}).click();
+ await native.getByRole('button',{name:'配置文件与状态'}).click();
  for(const field of commonFields)await expect(native.getByText(field,{exact:true})).toBeVisible();
  await native.getByRole('button',{name:/Codex 凭据文件/}).click();
  const credential=page.getByRole('dialog',{name:'Codex 凭据文件'});
  await expect(credential).toContainText('凭据内容受保护');
  await credential.getByRole('button',{name:'关闭Codex 凭据文件'}).click();
  await native.getByRole('button',{name:'编辑配置'}).click();
- await expect(native.getByRole('button',{name:'账号详情'})).toBeVisible();
- await native.getByRole('button',{name:'账号详情'}).click();
+ await expect(native.getByRole('button',{name:'配置文件与状态'})).toBeVisible();
+ await native.getByRole('button',{name:'配置文件与状态'}).click();
  await expect(native.getByText('fixture@example.invalid')).toBeVisible();
  await close(native);
  expect(unexpectedDialogs).toBe(0);

@@ -12,6 +12,17 @@ function useAccountDetails(id:string,enabled=true) {
   return useQuery({queryKey:['codex-account-details',id],queryFn:()=>api.codexEnvironments.details(id),enabled,retry:false,staleTime:10000});
 }
 
+export function useCodexAccountQuota(id:string,enabled=true) {
+  return useQuery({
+    queryKey:['agent-weekly-quota','codex',id],
+    queryFn:()=>api.codexEnvironments.quota(id),
+    enabled,
+    retry:false,
+    staleTime:300_000,
+    refetchInterval:300_000,
+  });
+}
+
 export function CodexAccountModelExpansion({id,enabled}:{id:string;enabled:boolean}) {
   const query=useAccountDetails(id,enabled);
   const details=query.data?.details;
@@ -44,7 +55,7 @@ export function CodexAccountProvider({environment,readOnly=false,onDirtyChange,o
   const native=environment.kind==='native';
   const apiMode=details?.authentication.type==='apiKey'||environment.auth_mode==='api'||nativeInfo?.authentication.mode==='api';
   const balance=useEngineBalance(environment.id,apiMode&&!readOnly&&environment.enabled);
-  const quota=useQuery({queryKey:['agent-weekly-quota','codex',environment.id],queryFn:()=>api.codexEnvironments.quota(environment.id),enabled:environment.enabled&&!editing&&!apiMode,retry:false,staleTime:300000});
+  const quota=useCodexAccountQuota(environment.id,environment.enabled&&!editing&&!apiMode);
   const changed=useCallback((value:boolean)=>{setDirty(value);onDirtyChange?.(value);},[onDirtyChange]);
   function cancelEdit(){if(dirty&&!window.confirm('放弃未保存的账号配置修改吗？'))return;changed(false);setEditing(false);}
   async function remove(){await api.codexEnvironments.remove(environment.id);await client.invalidateQueries({queryKey:['codex-environment-management']});}

@@ -5,7 +5,8 @@ import {ModelCatalogTable,ProviderModelActions} from './ModelCatalogTable';
 import {modelCapabilitiesPayload} from './ModelPricing';
 import {ProviderAdvancedSettings,ProviderConnectionFields} from './ProviderConnectionFields';
 import {useProviderUsage} from '../lib/use-provider-usage';
-import {CodexAccountModelExpansion,CodexAccountProvider} from './CodexAccountProvider';
+import {CodexAccountModelExpansion,CodexAccountProvider,useCodexAccountQuota} from './CodexAccountProvider';
+import {ConfigFileTable} from './ConfigFileTable';
 import {BalanceSummary,useEngineBalance} from './CodexEngineBalance';
 import {CodexAccountProviderEditor} from './CodexAccountProviderEditor';
 import {ClaudeProviderEditor} from './ClaudeProviderEditor';
@@ -28,6 +29,7 @@ import {
 } from "lucide-react";
 import {
   api,
+  fetchJSON,
   type AgentConfigFile,
   type AgentManagementField,
   type AgentManagementState,
@@ -530,33 +532,16 @@ function ConfigFiles({
   const selected = files.find((file) => file.path === selectedPath);
   return (
     <>
-      <div className="agent-management-file-list">
-        {files.map((file) => (
-          <button
-            key={file.path}
-            type="button"
-            className="agent-management-file-list-item"
-            title={file.purpose || file.description}
-            onClick={() => {
-              onDirtyChange(false);
-              setSelectedPath(file.path);
-            }}
-          >
-            {file.sensitive ? (
-              <ShieldCheck size={15} />
-            ) : (
-              <FileCode2 size={15} />
-            )}
-            <span>
-              <strong>{file.description}</strong>
-              <code>{file.path}</code>
-              <em>{file.purpose || "查看详细配置内容"}</em>
-            </span>
-            <small>{file.writable === false ? "只读" : file.format}</small>
-            <ChevronRight size={14} />
-          </button>
-        ))}
-      </div>
+      <ConfigFileTable rows={files.map(file=>({
+        label:file.description,
+        path:file.path,
+        format:file.format,
+        status:`${file.exists?'已存在':'未创建'}${file.sensitive?' · 受保护':file.writable===false?' · 只读':''}`,
+        description:file.purpose,
+      }))} onOpen={file=>{
+        onDirtyChange(false);
+        setSelectedPath(file.path);
+      }}/>
       {selected && (
         <Dialog appearance="manager"
           title={selected.description}
@@ -1308,6 +1293,7 @@ interface ProviderRow {
   connection: string | undefined;
   auth: string;
   authMode?: 'api'|'account'|null;
+  accountEmail?: string;
   balanceId?: string;
   provider?: AgentProviderState;
   environment?: CodexEnvironment;
@@ -1323,6 +1309,7 @@ const providerColumns: TableColumn<ProviderRow>[] = [
   {key:'name',title:'Provider',value:row=>row.name},
   {key:'agent',title:'Agent',value:row=>row.state.agent.label},
   {key:'auth',title:'接入方式',value:row=>row.auth},
+  {key:'account',title:'账号',value:row=>row.accountEmail},
   {key:'connection',title:'连接',value:row=>row.connection},
   {key:'rate',title:'倍率',kind:'number',interactive:false,value:row=>providerRate(row.provider,row.environment)},
   {key:'status',title:'状态',value:row=>rowStatus(row)},
@@ -1391,6 +1378,17 @@ function InlineProviderRate({row,readOnly,onError}:{row:ProviderRow;readOnly:boo
   </div></td>;
 }
 
+function CodexQuotaSummary({id}:{id:string}) {
+  const query=useCodexAccountQuota(id);
+  const quota=query.data?.quota;
+  if(!quota) return <span>{query.isPending?'读取中…':'暂不可用'}</span>;
+  const stale=quota.stale||query.isError||(quota.resetsAt!=null&&quota.resetsAt*1000<=Date.now());
+  const reset=quota.resetsAt?new Date(quota.resetsAt*1000).toLocaleString():null;
+  return <span title={`周额度剩余${reset?` · 重置于 ${reset}`:''}`}>
+    {quota.remainingPercent}%{stale?'（上次）':''}
+  </span>;
+}
+
 function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, onChanged}: {
   row: ProviderRow;
   readOnly: boolean;
@@ -1440,18 +1438,21 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
   const enabled = provider?.enabled ?? row.environment?.enabled;
   const status = rowStatus(row, provider);
   const codexEnvironmentCatalog=agentId==='codex'&&(row.authMode==='account'||row.environment?.kind==='account');
+  const quotaId=agentId==='codex'&&row.authMode==='account'?(row.environment?.id??'native'):undefined;
   return <Fragment><tr>
     <td><TableExpandButton expanded={expanded} label={`Provider ${row.name} 的模型`} onClick={onToggle}/></td>
     <td><strong title={provider?.name ?? row.name}>{provider?.name ?? row.name}</strong></td>
     <td><span className="agent-provider-agent"><AgentIcon id={row.state.agent.id}/>{row.state.agent.label}</span></td>
     <td>{row.auth}</td>
+    <td title={row.accountEmail}>{row.accountEmail || '—'}</td>
     <td title={row.connection}>{row.connection || '—'}</td>
     <InlineProviderRate row={row} readOnly={readOnly} onError={onError}/>
     <td><span className="agent-provider-status" title={enabled ? provider?.statusText : undefined}>
       <span className={`agent-management-dot ${enabled ? statusTone(provider?.status ?? (row.environment?.auth_mode ? 'ready' : 'unknown')) : 'unknown'}`} />{status}
     </span></td>
-    <td className="agent-provider-balance">{!readOnly && row.balanceId && enabled ? <BalanceSummary id={row.balanceId}/> : '—'}</td>
-    <td><TableActions>
+    <td className="agent-provider-balance">{enabled && quotaId ? <CodexQuotaSummary id={quotaId}/>
+      : !readOnly && enabled && row.balanceId ? <BalanceSummary id={row.balanceId}/> : '—'}</td>
+    <td className="agent-provider-actions"><TableActions>
       {provider&&!codexEnvironmentCatalog&&<TableActionButton onClick={()=>detect.mutate()} disabled={readOnly||detect.isPending||save.isPending} aria-label={`探测 ${provider.name} 模型`}><RefreshCw size={12} className={detect.isPending?'animate-spin':undefined}/>探测模型</TableActionButton>}
       <TableActionButton onClick={onOpen} disabled={save.isPending||detect.isPending} aria-label={`${readOnly ? '查看' : '编辑'} ${provider?.name ?? row.name}${row.state.agent.label ? ` · ${row.state.agent.label}` : ''}`}>
         {readOnly ? '查看' : <><Pencil size={12}/>编辑</>}
@@ -1500,7 +1501,7 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
   const codex = allStates.find(state=>state.agent.id==='codex');
   const liveProviders = useQueries({queries:(codex?.providers ?? []).map(provider=>liveProviderQuery('codex',provider))});
   const providerStates = new Map(liveProviders.flatMap(query=>query.data ? [[query.data.id,query.data] as const] : []));
-  const rows: ProviderRow[] = allStates.flatMap(state=>{
+  const providerRows: ProviderRow[] = allStates.flatMap(state=>{
     const codex = state.agent.id==='codex';
     const providers: ProviderRow[] = state.providers.map(provider=>{
       const environment = codex ? environments.find(item=>item.id===(provider.id==='native'?'native':`provider:${provider.id}`)) : undefined;
@@ -1524,6 +1525,20 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
     });
     return providers;
   });
+  const accountRows = readOnly || settingsPage!=='providers' ? [] : providerRows.filter(row=>row.state.agent.id==='codex'&&row.authMode==='account'
+    && (row.environment?.enabled ?? row.provider?.enabled));
+  const accountIdentities = useQueries({queries:accountRows.map(row=>{
+    const id=row.environment?.id??'native';
+    return {
+      queryKey:['codex-reset-credits',id],
+      queryFn:()=>fetchJSON<{account:{email:string|null}}>('/codex/environments/'+encodeURIComponent(id)+'/reset-credits'),
+      staleTime:300_000,
+      refetchInterval:300_000,
+      retry:false,
+    };
+  })});
+  const emailByRow = new Map(accountRows.map((row,index)=>[row.key,accountIdentities[index].data?.account?.email]));
+  const rows = providerRows.map(row=>({...row,accountEmail:emailByRow.get(row.key)??undefined}));
   const table = useTableModel(rows, providerColumns);
   const creatable = allStates.filter(state=>state.providerManagement?.create);
   const confirmDiscard = () => !dirty && !fileDirty || window.confirm('有未保存的 Provider 修改，确定丢弃吗？');
@@ -1547,6 +1562,8 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
     void client.invalidateQueries({queryKey:['agent-provider']});
     void client.invalidateQueries({queryKey:['codex-account-details']});
     void client.invalidateQueries({queryKey:['codex-engine-balance']});
+    void client.invalidateQueries({queryKey:['codex-reset-credits']});
+    void client.invalidateQueries({queryKey:['agent-weekly-quota','codex']});
   };
   const editRow = dialog?.type === 'edit' ? rows.find(row=>row.key===dialog.row.key) ?? dialog.row : null;
   const editProvider = editRow?.state.providers.find(provider=>provider.id===editRow.provider?.id);
@@ -1582,7 +1599,7 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
       <TableActionButton onClick={()=>void accounts.refetch()}>重试</TableActionButton>
     </div>}
     {rowError&&<div className="agent-management-error-box" role="alert"><CircleAlert size={14}/>{rowError}</div>}
-    <DataTable label="Agent Provider" model={table} actions expandable minWidth={930} className="agent-provider-table"
+    <DataTable label="Agent Provider" model={table} actions actionsWidth={168} expandable minWidth={1040} className="agent-provider-table"
       loading={catalog.isPending} error={catalog.isError ? catalog.error.message : undefined} onRetry={refresh}
       empty={!table.rows.length} emptyMessage={rows.length ? '没有符合筛选条件的 Provider' : '暂无 Provider'}>
       {table.rows.map(row=><ProviderTableRow key={row.key} row={row} readOnly={readOnly} expanded={expandedProviders.has(row.key)}

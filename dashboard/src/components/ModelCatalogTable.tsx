@@ -30,8 +30,10 @@ export function ModelCatalogTable<Row extends ModelCatalogRow>({rows,selected=[]
  const chosen=new Set(selected);
  const table=useTableModel(rows,[
   ...onSelectedChange?[{key:'selected',title:'启用',value:(row:Row)=>chosen.has(row.model),interactive:false}]:[],
-  {key:'model',title:'模型 ID',value:row=>`${row.model} ${row.name??''}`.trim()},
+  {key:'model',title:'模型 ID',value:row=>row.model},
+  {key:'name',title:'模型名称',value:row=>row.name},
   {key:'context',title:'上下文长度',value:row=>row.context,kind:'number'},
+  {key:'officialContext',title:'官方上下文',value:row=>row.metadata?.official_context_window,kind:'number'},
   {key:'images',title:'图片输入',value:row=>row.images??(row.metadata?.input_modalities?.length?row.metadata.input_modalities.includes('image'):undefined)},
   {key:'released',title:'发布时间',value:row=>row.metadata?.release_date},
   ...extraColumns,
@@ -44,12 +46,14 @@ export function ModelCatalogTable<Row extends ModelCatalogRow>({rows,selected=[]
      const next=event.target.checked?[...selected,row.model]:selected.filter(model=>model!==row.model);
      onSelectedChange(next);
     }}/></td>}
-    <td><code>{row.model}</code>{row.name&&row.name!==row.model&&<small className="provider-model-subtitle">{row.name}</small>}</td>
-    <td>{renderContext?.(row)??row.context?.toLocaleString()??'未提供'}{officialWindow!=null&&officialWindow!==row.context&&<small className="provider-model-subtitle">官方 {officialWindow.toLocaleString()}</small>}</td>
+    <td title={row.model}><code>{row.model}</code></td>
+    <td title={row.name}>{row.name || '—'}</td>
+    <td>{renderContext?.(row)??row.context?.toLocaleString()??'未提供'}</td>
+    <td>{officialWindow?.toLocaleString()??'—'}</td>
     <td>{renderImages?.(row)??(row.images===true?'支持':row.images===false?'不支持':'未提供')}</td>
     <td>{row.metadata?.release_date??'未提供'}</td>
     {renderExtra?.(row)}
-    {renderActions&&<td className="table-actions-cell">{renderActions(row)}</td>}
+    {renderActions&&<td>{renderActions(row)}</td>}
    </tr>;
   })}
  </DataTable>;
