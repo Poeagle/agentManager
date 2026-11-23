@@ -9,7 +9,7 @@ import { recordedPricingSettings } from './statistics-settings.js';
 import { codexMessagePhase, codexUserText } from './text.js';
 import { codexCompactionSummaryBody } from './compaction.js';
 import { cacheInputPricing } from '../cache-read-pricing.js';
-import { estimateUsageBreakdown } from './usage-credits.js';
+import { estimateUsageUsdBreakdown } from './usage-credits.js';
 import { conversationImagePaths } from '../../conversation-attachments.js';
 import { codexApiEstimate, codexApiPricing, costSnapshot, emptyCostTotals, recordCost } from './statistics-cost.js';
 import { cachedEngineBalance } from './engine-balance.js';
@@ -51,7 +51,7 @@ const itemText = (content: unknown, types: string[]) => Array.isArray(content)
   : '';
 
 export const codexSessionFacts: AgentSessionFactsPort = {
-  revision: 6,
+  revision: 7,
   async *discover() {
     const { allCodexEnvironments } = await import('./environments.js');
     const { localHome } = await import('./account-files.js');
@@ -346,7 +346,7 @@ function receipt(
   const cost=pricing?codexApiEstimate(pricing,provider,dimensions.model,dimensions.speed,at,pricedTokens):credits?costSnapshot(total):null;
   const inputPricing=cost?.complete ? cacheInputPricing(pricedTokens,usage=>pricing
     ? codexApiEstimate(pricing,provider,dimensions.model,dimensions.speed,at,usage).breakdown
-    : credits ? estimateUsageBreakdown(dimensions.model,dimensions.speed,usage,'subscription') : null) : undefined;
+    : credits ? estimateUsageUsdBreakdown(dimensions.model,dimensions.speed,usage) : null) : undefined;
   return {id, turn_id: turn, at, tokens, evidence, dimensions, ...(inherited ? {inherited} : {}), cost,
     cache_write_tokens:[0,0], ...(inputPricing ? {cache_input_pricing:inputPricing} : {})};
 }

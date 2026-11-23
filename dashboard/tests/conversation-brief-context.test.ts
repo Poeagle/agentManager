@@ -226,6 +226,24 @@ it('retains the newest turns when even short excerpts cannot fit',async()=>{
   expect(parsed.input).toBe('当前需求');
 });
 
+it('keeps the same history cursor through empty pages and stops on a repeated message cursor',async()=>{
+  const read=vi.spyOn(api.agent,'conversation')
+    .mockResolvedValueOnce(page([],{has_more:true}))
+    .mockResolvedValueOnce(page([message('u','user','history')],{has_more:true}))
+    .mockResolvedValueOnce(page([],{has_more:true}))
+    .mockResolvedValueOnce(page([message('u','user','history')]));
+  await expect(prepareBriefSend('session','native',{input:'draft'},new AbortController().signal))
+    .rejects.toThrow('会话历史分页不完整');
+  expect(read.mock.calls.map(([,query])=>query?.before)).toEqual([undefined,undefined,'u','u']);
+});
+
+it('bounds reads when history keeps returning empty pages',async()=>{
+  const read=vi.spyOn(api.agent,'conversation').mockResolvedValue(page([],{has_more:true}));
+  await expect(prepareBriefSend('session','native',{input:'draft'},new AbortController().signal))
+    .rejects.toThrow('会话历史分页不完整');
+  expect(read).toHaveBeenCalledTimes(13);
+});
+
 it('rejects a replaced or changing history before starting a new conversation',async()=>{
   const read=vi.spyOn(api.agent,'conversation').mockResolvedValueOnce(page([message('u','user','history')],{native_id:'other'}));
   await expect(prepareBriefSend('session','native',{input:'draft'},new AbortController().signal)).rejects.toThrow('无法读取原会话历史');

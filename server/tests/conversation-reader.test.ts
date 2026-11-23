@@ -394,6 +394,45 @@ describe('public conversation pages',()=>{
     expect(result.input).not.toContain(bytes.toString('base64'));
     expect(result.attachments).toBeUndefined();
   });
+  it('continues brief pagination when an older window reveals the original user message behind an echo',async()=>{
+    const turn='cursor-turn',text='paired user input';
+    const recent=final('paired answer')+Array.from({length:39},(_,i)=>user(`recent request ${i}`)+final(`recent reply ${i}`)).join('');
+    const original=line('response_item',{type:'message',id:'cursor-original',role:'user',
+      internal_chat_message_metadata_passthrough:{turn_id:turn},content:[{type:'input_text',text}]});
+    const echo=line('event_msg',{type:'item_completed',turn_id:turn,item:{type:'UserMessage',id:'cursor-echo',content:[{type:'text',text}]}});
+    const tools=line('response_item',{type:'function_call_output',output:'x'.repeat(3*1024*1024)});
+    writeFileSync(file,user('older request')+final('older reply')+original+tools+echo+recent);
+    const result=await prepareBriefSend('chat',id,{input:'new draft'},async query=>{
+      const params=new URLSearchParams(query);
+      const response=await app.inject({url:`/api/sessions/chat/conversation?${params}`,headers:{cookie}});
+      expect(response.statusCode).toBe(200);
+      return response.json();
+    });
+    const brief=parseBriefContext(result.input);
+    expect(brief?.context.older_omitted).toBe(false);
+    expect(brief?.context.turns).toHaveLength(41);
+    const [old,paired]=brief!.context.turns;
+    expect(old).toMatchObject({input:'older request',conclusion:'older reply'});
+    expect(paired).toMatchObject({input:text,conclusion:'paired answer'});
+    expect(brief?.context.turns.filter(turn=>turn.input===text)).toHaveLength(1);
+  });
+  it('prepares brief context across empty history pages containing oversized tool results',async()=>{
+    const toolOutput=line('response_item',{type:'function_call_output',output:'x'.repeat(3*1024*1024)});
+    const recent=Array.from({length:40},(_,i)=>user(`recent question ${i}`)+final(`recent answer ${i}`)).join('');
+    writeFileSync(file,user('older question')+final('older answer')+toolOutput.repeat(3)+recent);
+    const result=await prepareBriefSend('chat',id,{input:'new draft'},async query=>{
+      const params=new URLSearchParams(query);
+      const response=await app.inject({url:`/api/sessions/chat/conversation?${params}`,headers:{cookie}});
+      expect(response.statusCode).toBe(200);
+      return response.json();
+    });
+    const brief=parseBriefContext(result.input);
+    expect(brief?.context.older_omitted).toBe(false);
+    expect(brief?.context.turns).toHaveLength(41);
+    expect(brief?.context.turns[0]).toMatchObject({input:'older question',conclusion:'older answer'});
+    expect(brief?.context.turns.at(-1)).toMatchObject({input:'recent question 39',conclusion:'recent answer 39'});
+    expect(brief?.input).toBe('new draft');
+  });
   it('pages old messages on demand without tool output displacing conversation',async()=>{
     writeFileSync(file,Array.from({length:80},(_,i)=>user(`q${i}`)+final(`a${i}`)).join(''));
     const latest=await readConversation(binding,{limit:20});expect(latest.messages).toHaveLength(20);expect(latest.has_more).toBe(true);

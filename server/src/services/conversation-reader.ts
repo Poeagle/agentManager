@@ -23,6 +23,7 @@ interface IndexedMessage extends Omit<ConversationMessage, "phase"> {
   order: number;
   length: number;
   recordType: string;
+  userEchoIds?: Set<string>;
   nativeItem: boolean;
   itemId?: string;
   declaredTurnId?: string;
@@ -597,6 +598,8 @@ function dedupe(messages: IndexedMessage[]): IndexedMessage[] {
       });
       if(!native)continue;
       matched.add(native);native.client_id ||= event.client_id;
+      // A newer page may already have used this echo as its history cursor.
+      (native.userEchoIds ??= new Set()).add(event.id);
       if(!native.image_paths?.length&&event.image_paths?.length)native.image_paths=event.image_paths;
       omit.add(event);
     }
@@ -868,15 +871,14 @@ export async function readConversation(
           scan++
         )
           await prependWindow();
-        let before = query.before
-          ? index.messages.findIndex((message) => message.id === query.before)
-          : index.messages.length;
+        const olderBoundary = (id: string) => index!.messages.findIndex(
+          (message) => message.id === id || message.userEchoIds?.has(id),
+        );
+        let before = query.before ? olderBoundary(query.before) : index.messages.length;
         // Older pages expand the index backwards only on explicit demand.
         if (query.before && before < limit && index.start > 0) {
           await prependWindow();
-          before = index.messages.findIndex(
-            (message) => message.id === query.before,
-          );
+          before = olderBoundary(query.before);
         }
         let selected: IndexedMessage[];
         if (before < 0) {
