@@ -844,9 +844,11 @@ async function writeProviderConfigFile(provider: StoredProvider, detected?:unkno
     input_modalities: inputs, supports_search_tool: true, supports_image_detail_original: true,
     use_responses_lite: false, tool_mode: null, multi_agent_version: 'v2',
     ...instructions,
-    ...previousModels.get(model),
     ...(observed?.context_window?{context_window:observed.context_window,max_context_window:observed.context_window}:{}),
     ...(observed?.input_modalities?{input_modalities:inputs}:{}),
+    // A saved catalog may contain a user-edited capability. Keep it when a
+    // restart reuses an older detection snapshot.
+    ...previousModels.get(model),
     };
   };
   await writeFile(catalogPath, JSON.stringify({
