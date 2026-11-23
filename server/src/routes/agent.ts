@@ -112,7 +112,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.32.0',
+    version:'3.33.0',
     updatedAt:'2026-11-23',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -542,7 +542,7 @@ export function getAgentApiContract() {
         category: 'Scheduled tasks',
         method: 'POST',
         path: '/api/scheduled-tasks/:id/run',
-        description: 'Run an owned scheduled task immediately and return its run record.',
+        description: 'Run an owned scheduled task immediately and return its run record. For an existing Agent conversation with history, dispatch first prepares brief context and opens a fresh conversation in the same tab. The previous conversation stays in project history.',
       },
       {
         category: 'Scheduled tasks', method: 'GET', path: '/api/scheduled-tasks/codex-models?project_id=:projectId&environment_id=:environmentId',

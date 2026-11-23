@@ -1,4 +1,4 @@
-import {assertEnvironmentUse} from './agents/environment-access.js';
+import {assertEnvironmentUse,canUseSessionEnvironment} from './agents/environment-access.js';
 import {readEngineModelsForEnvironment} from './agents/codex/controls.js';
 import {saveModelPreference} from './agents/model-preferences.js';
 import {getAgent,agentForSession} from './agents/index.js';
@@ -10,7 +10,10 @@ import {getDb} from '../db/index.js';
 import {getUserTabUsage,userCanUseToolForProject} from '../auth.js';
 import * as sessionManager from './session-manager.js';
 import {isWithinDailyWindow,nextScheduledAt,type ScheduleKind} from './schedule.js';
-import {rememberConversationInput,rememberInputSource,bindInputSourceMessage} from './conversation-input-links.js';
+import {rememberConversationInput,rememberInputSource,bindInputSourceMessage,linkConversationInputs} from './conversation-input-links.js';
+import {decorateConversationAttachments} from './conversation-attachments.js';
+import {readConversation} from './conversation-reader.js';
+import {prepareBriefSend} from '../shared/conversation-brief.js';
 import {sessionAgentContext} from './agents/session.js';
 import {withTerminalInput} from './agents/terminal-input.js';
 import {nativeConversationId} from './session-identity.js';
@@ -75,12 +78,14 @@ export interface ScheduledRunResult {
 }
 
 const inFlight = new Set<string>();
+const dispatchingSessions = new Set<string>();
 const evaluatingConditions = new Set<string>();
 let schedulerTimer: ReturnType<typeof setInterval> | null = null;
 
 class TargetUnavailableError extends Error {}
 class ExecutionWindowClosedError extends Error {}
 class StartConditionsNotMetError extends Error {}
+class ScheduledTargetBusyError extends Error {}
 
 interface ConditionDecision { allowed: boolean; reason?: string; pausedUntil?: string }
 
@@ -313,9 +318,8 @@ async function restoreExistingSession(task: ScheduledTaskRow, session: sessionMa
   if (!restored || !sessionManager.isSessionActive(session.id)) throw new Error('目标标签页恢复失败');
 }
 
-async function sendToExistingSession(task: ScheduledTaskRow): Promise<string> {
-  if (!task.target_session_id) throw new TargetUnavailableError('未设置目标标签页');
-  const session = sessionManager.getSession(task.target_session_id);
+async function sendToExistingSession(task: ScheduledTaskRow, sessionId:string): Promise<string> {
+  const session = sessionManager.getSession(sessionId);
   if (!session
     || session.created_by_user_id !== task.user_id
     || session.project_id !== task.project_id) {
@@ -333,8 +337,56 @@ async function sendToExistingSession(task: ScheduledTaskRow): Promise<string> {
   }
   assertExecutionWindow(task);
   await assertStartConditions(task);
+  let current=sessionManager.getSession(session.id);
+  if(!current||current.created_by_user_id!==task.user_id||current.project_id!==task.project_id||agentForSession(current).descriptor.id!==cliType)
+    throw new TargetUnavailableError('目标标签页已变化，本次提示词未发送');
+  if(!canUseSessionEnvironment(current,task.user_id))throw Error('用户已无权使用目标标签页的 Agent 环境');
+  let prompt=task.prompt;
+  const nativeId=nativeConversationId(current);
+  if(nativeId){
+    const tracker=getTracker(session.id);
+    if(tracker?.hasPendingExecute||tracker?.state.processState==='busy'||tracker?.state.isPermission||
+      ['confirmation','choice'].includes(tracker?.state.promptType||''))throw new ScheduledTargetBusyError('目标标签页正在执行或等待交互，跳过本次发送');
+    const adapter=agentForSession(current);
+    const binding={...current,cli_type:current.cli_type??null,codex_session_id:current.codex_session_id??null,claude_session_id:current.claude_session_id??null,project_path:sessionAgentContext(current).projectPath??null};
+    const prepared=await prepareBriefSend(session.id,nativeId,{input:prompt},async({before,limit})=>{
+      const page=await readConversation(binding,{before,limit:Number(limit)});
+      return {...page,session_id:session.id,native_id:nativeId,messages:decorateConversationAttachments(session.id,linkConversationInputs(session.id,nativeId,page.messages))};
+    },{allowEmpty:true});
+    if(prepared.input!==prompt){
+      if(!adapter.descriptor.capabilities.newConversation)throw Error('此 Agent 不支持在新会话中发送简要历史');
+      await assertStartConditions(task);
+      assertExecutionWindow(task);
+      const fresh=await sessionManager.newSessionConversation(session.id,undefined,undefined,nativeId,undefined,{preserveHistory:true});
+      if(!fresh.ok)throw Error(fresh.error||'无法开启简要压缩后的会话');
+      const next=sessionManager.getSession(session.id), nextId=next&&nativeConversationId(next);
+      if(!next||!nextId||nextId===nativeId||next.created_by_user_id!==task.user_id||next.project_id!==task.project_id||
+        next.agent_environment_id!==current.agent_environment_id||agentForSession(next)!==adapter){
+        throw new TargetUnavailableError('目标标签页已变化，本次提示词未发送');
+      }
+      current=next;
+      prompt=prepared.input;
+    }
+    assertExecutionWindow(task);
+  }
+  const expected=current;
+  const assertCurrentTarget=(clientId?:string)=>{
+    try{
+      const latest=sessionManager.getSession(session.id);
+      if(!latest||nativeConversationId(latest)!==nativeConversationId(expected)||latest.created_by_user_id!==task.user_id||
+        latest.project_id!==task.project_id||latest.agent_environment_id!==expected.agent_environment_id||agentForSession(latest).descriptor.id!==cliType){
+        throw new TargetUnavailableError('目标标签页已变化，本次提示词未发送');
+      }
+      if(!canUseSessionEnvironment(latest,task.user_id)||!userCanUseToolForProject(task.user_id,task.project_id,mode,mode==='terminal'?'claude':cliType)){
+        throw Error('用户已无权操作该目标标签页');
+      }
+      assertExecutionWindow(task);
+    }catch(error){
+      if(clientId)discardScheduledInput(session.id,clientId);
+      throw error;
+    }
+  };
   let fallback:{clientId:string;binding:Parameters<typeof rememberConversationInput>[1]}|undefined;
-  const current=sessionManager.getSession(session.id)!;
   if(mode==='session'||!!nativeConversationId(current)) {
     const context=sessionAgentContext(current),adapter=agentForSession(current);
     const clientId=randomUUID();
@@ -342,28 +394,32 @@ async function sendToExistingSession(task: ScheduledTaskRow): Promise<string> {
     const messageId=adapter.input.messageId?.(clientId);
     if(messageId)bindInputSourceMessage(session.id,clientId,messageId);
     const binding={...current,cli_type:current.cli_type||'claude',codex_session_id:current.codex_session_id||null,claude_session_id:current.claude_session_id||null,project_path:context.projectPath};
-    if(context.nativeId && adapter.input.supportsClientIdentity)await rememberConversationInput(session.id,binding,clientId,task.prompt).catch(()=>false);
+    if(context.nativeId && adapter.input.supportsClientIdentity)await rememberConversationInput(session.id,binding,clientId,prompt).catch(()=>false);
     if(context.nativeId && adapter.input.supportsClientIdentity) {
-      const result=await adapter.input.submit(context,task.prompt,clientId);
+      assertCurrentTarget(clientId);
+      const result=await adapter.input.submit(context,prompt,clientId);
       if(result)return session.id;
       if(adapter.descriptor.sessionHost==='managed'){
-        getDb().prepare('DELETE FROM conversation_input_sources WHERE session_id=? AND client_id=?').run(session.id,clientId);
+        discardScheduledInput(session.id,clientId);
         throw new TargetUnavailableError('目标 Agent 未接受提示词');
       }
     }
     if(adapter.descriptor.sessionHost==='managed'){
-      getDb().prepare('DELETE FROM conversation_input_sources WHERE session_id=? AND client_id=?').run(session.id,clientId);
+      discardScheduledInput(session.id,clientId);
       throw new TargetUnavailableError('此 Agent 不支持关联定时输入');
     }
     fallback={clientId,binding};
   }
   await withTerminalInput(session.id,async()=>{
+    assertCurrentTarget(fallback?.clientId);
     if(fallback){
       getDb().prepare('DELETE FROM conversation_input_links WHERE session_id=? AND client_id=? AND message_id IS NULL').run(session.id,fallback.clientId);
-      const linked=await rememberConversationInput(session.id,fallback.binding,fallback.clientId,task.prompt).catch(()=>false);
-      if(!linked){getDb().prepare('DELETE FROM conversation_input_sources WHERE session_id=? AND client_id=?').run(session.id,fallback.clientId);throw new TargetUnavailableError('无法关联定时消息的原生记录，提示词未发送');}
+      const linked=await rememberConversationInput(session.id,fallback.binding,fallback.clientId,prompt).catch(()=>false);
+      if(!linked){discardScheduledInput(session.id,fallback.clientId);throw new TargetUnavailableError('无法关联定时消息的原生记录，提示词未发送');}
+      assertCurrentTarget(fallback.clientId);
     }
-    if (!sessionManager.writeToSession(session.id, task.prompt, true)) {
+    if (!sessionManager.writeToSession(session.id, prompt, true)) {
+      if(fallback)discardScheduledInput(session.id,fallback.clientId);
       throw new TargetUnavailableError('目标标签页提示词发送失败');
     }
     await new Promise(resolve=>setTimeout(resolve,50));
@@ -372,14 +428,25 @@ async function sendToExistingSession(task: ScheduledTaskRow): Promise<string> {
   return session.id;
 }
 
+function discardScheduledInput(sessionId:string,clientId:string) {
+  const db=getDb();
+  db.transaction(()=>{
+    db.prepare('DELETE FROM conversation_input_sources WHERE session_id=? AND client_id=?').run(sessionId,clientId);
+    db.prepare('DELETE FROM conversation_input_links WHERE session_id=? AND client_id=? AND message_id IS NULL').run(sessionId,clientId);
+  })();
+}
+
 async function executeTask(task: ScheduledTaskRow): Promise<string> {
   const project = getDb().prepare('SELECT path FROM projects WHERE id = ?').get(task.project_id) as { path: string } | undefined;
   if (!project?.path) throw new Error('项目不存在');
   const user = getDb().prepare('SELECT disabled FROM users WHERE id = ?').get(task.user_id) as { disabled: number } | undefined;
   if (!user || user.disabled) throw new Error('任务创建者不存在或已停用');
-  return task.target_type === 'existing'
-    ? sendToExistingSession(task)
-    : createScheduledSession(task, project.path);
+  if(task.target_type==='new')return createScheduledSession(task,project.path);
+  if(!task.target_session_id)throw new TargetUnavailableError('未设置目标标签页');
+  if(dispatchingSessions.has(task.target_session_id))throw new ScheduledTargetBusyError('目标标签页正在接收另一个定时任务，跳过本次发送');
+  dispatchingSessions.add(task.target_session_id);
+  try{return await sendToExistingSession(task,task.target_session_id);}
+  finally{dispatchingSessions.delete(task.target_session_id);}
 }
 
 export async function runScheduledTask(
@@ -442,7 +509,7 @@ export async function runScheduledTask(
     return { runId, status: 'success', sessionId };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (error instanceof ExecutionWindowClosedError || error instanceof StartConditionsNotMetError || error instanceof PlatformAiScheduleBusyError) {
+    if (error instanceof ExecutionWindowClosedError || error instanceof StartConditionsNotMetError || error instanceof PlatformAiScheduleBusyError || error instanceof ScheduledTargetBusyError) {
       getDb().prepare(`
         UPDATE scheduled_task_runs SET status = 'skipped', error = ?, completed_at = datetime('now') WHERE id = ?
       `).run(message, runId);

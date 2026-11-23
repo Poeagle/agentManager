@@ -6,8 +6,9 @@ import type {AgentMessage,AgentRuntime} from './agents/types.js';
 import type {AgentStreamFrame} from './agents/events.js';
 import type {ConversationRetry} from './conversation-retry.js';
 import {observeConversationFile} from './conversation-file-stream.js';
+import {readConversation} from './conversation-reader.js';
 import {activityResultPreview} from './conversation-activity.js';
-import {linkConversationInputs} from './conversation-input-links.js';
+import {hasScheduledConversationInput,isConversationInput,linkConversationInputs} from './conversation-input-links.js';
 import {nativeConversationId} from './session-identity.js';
 import {personalQuestionRuntime,ignoredQuestionIds} from './question-attention.js';
 import {
@@ -17,7 +18,7 @@ import {
 
 const ACTIVE=new Set(['pending','launching','running','detached','released']);
 const MAX_WATCHES=512;
-type Watch={native:string;stop:()=>void;questions:Set<string>;interactions:Set<string>;seen:Set<string>;running:boolean;completed:boolean;finals:Map<string,AgentMessage>;endTimer?:ReturnType<typeof setTimeout>};
+type Watch={native:string;stop:()=>void;questions:Set<string>;interactions:Set<string>;seen:Set<string>;checkingResults:Set<string>;running:boolean;completed:boolean;finals:Map<string,AgentMessage>;endTimer?:ReturnType<typeof setTimeout>};
 
 /** Read-only leases share the platform's existing streams and incremental file
  * reader. They survive switching/closing project tabs and never submit input. */
@@ -82,14 +83,14 @@ export class NotificationObserver {
     // A changed native identity makes old pending actions historical.
     const changed=getDb().prepare("UPDATE notifications SET state='resolved',updated_at=? WHERE session_id=? AND native_id!=? AND state!='info' AND state!='resolved'").run(new Date().toISOString(),id,native);
     if(changed.changes)notificationChanged(session.created_by_user_id);
-    const entry:Watch={native,stop:()=>{},questions:new Set(),interactions:new Set(),seen:new Set(),running:false,completed:false,finals:new Map()};
+    const entry:Watch={native,stop:()=>{},questions:new Set(),interactions:new Set(),seen:new Set(),checkingResults:new Set(),running:false,completed:false,finals:new Map()};
     this.watches.set(id,entry);
     const context=sessionAgentContext(session),stops:Array<()=>void>=[];
     try {
       stops.push(observeConversationFile({...session,cli_type:session.cli_type??null,codex_session_id:session.codex_session_id??null,claude_session_id:session.claude_session_id??null,project_path:context.projectPath??null},frame=>{
         if(frame.type!=='history')return;
         const current=this.current(id,native);if(!current)return;
-        try{this.runtime(current,frame.runtime,entry);this.messages(current,[...entry.finals.values(),...frame.messages],entry);}catch(error){this.onError(error);}
+        try{this.runtime(current,frame.runtime,entry);this.messages(current,frame.messages,entry,false,true);}catch(error){this.onError(error);}
       }));
       // The shared native stream also carries live approvals and questions that
       // do not yet have durable history records.
@@ -117,11 +118,23 @@ export class NotificationObserver {
         updateNotificationState(session,'question',source,'resolved');updateNotificationState(session,'approval',source,'resolved');
       }
       entry.interactions=active;
-      this.messages(session,[...entry.finals.values(),...(frame.type==='snapshot'?frame.messages:frame.upserts)],entry,!frame.baseline);
+      this.messages(session,frame.type==='snapshot'?frame.messages:frame.upserts,entry,!frame.baseline);
     }
   }
-  private messages(session:NotificationSession,messages:AgentMessage[],entry:Watch,live=false) {
+  private messages(session:NotificationSession,messages:AgentMessage[],entry:Watch,live=false,durable=false) {
     messages=linkConversationInputs(session.id,entry.native,messages);
+    const finalInputs=new Map<string,boolean>();
+    if(durable){
+      let scheduled:boolean|undefined;
+      for(const message of messages){
+        if(isConversationInput(message))scheduled=message.input_source?.kind==='scheduled';
+        else if(message.phase==='final'&&scheduled!==undefined)finalInputs.set(message.id,scheduled);
+      }
+    }
+    // A live final can arrive before the native input has been linked to its
+    // saved source. Use the ordered history when this tab has scheduled inputs.
+    let hasScheduledInput:boolean|undefined;
+    messages=[...entry.finals.values(),...messages];
     for(const message of messages){
       for(const reply of message.question_replies||[]){entry.questions.delete(reply.question_id);updateNotificationState(session,'question','question:'+reply.question_id,message.queued?'submitted':'resolved');}
       if(message.role!=='assistant'||message.streaming||message.presentation==='compaction_summary')continue;
@@ -168,9 +181,19 @@ export class NotificationObserver {
         // not turn into a delayed completion notice after the answer arrives.
         if(entry.questions.size){entry.seen.add(`skip:${message.id}`);entry.finals.delete(message.id);continue;}
         if(!entry.completed||entry.interactions.size)continue;
-        putNotification(session,{kind:'result',source_id:message.id,message_id:message.id,turn_id:message.turn_id,state:'info',title:'本轮运行完成',body:message.text});
-        const updated=getDb().prepare("UPDATE notifications SET state='resolved',updated_at=? WHERE session_id=? AND native_id=? AND kind='error' AND state IN ('recovering','submitted')").run(new Date().toISOString(),session.id,entry.native);
-        if(updated.changes&&session.created_by_user_id)notificationChanged(session.created_by_user_id);
+        hasScheduledInput??=hasScheduledConversationInput(session.id);
+        if(!hasScheduledInput){this.finishResult(session,message,entry,false);}
+        else if(!entry.seen.has(`result:${message.id}`)){
+          const scheduled=finalInputs.get(message.id);
+          if(scheduled!==undefined)this.finishResult(session,message,entry,scheduled);
+          else if(!entry.checkingResults.has(message.id)&&entry.checkingResults.size<32){
+            entry.checkingResults.add(message.id);
+            void this.priorScheduledInput(session,entry.native,message.id).then(scheduled=>{
+              const current=this.current(session.id,entry.native);
+              if(scheduled!==undefined&&current&&this.watches.get(session.id)===entry&&!entry.seen.has(`result:${message.id}`))this.finishResult(current,message,entry,scheduled);
+            }).catch(this.onError).finally(()=>entry.checkingResults.delete(message.id));
+          }
+        }
       }
       entry.seen.add(message.id);
     }
@@ -181,14 +204,33 @@ export class NotificationObserver {
       const at=Date.parse(message.timestamp||'');
       if(!Number.isFinite(at))continue;
       if(message.role==='assistant'&&message.phase==='final'&&!message.streaming&&!message.async_questions?.length)prior.set(message.id,at);
-      if(message.role==='user'&&!message.queued&&!message.input_source
-        &&!/^\s*(?:# AGENTS\.md instructions|<(?:environment_context|permissions|skills_instructions|task_notification|turn_aborted|octoally_shared_resources)(?:\s|>))/.test(message.text)){
+      if(isConversationInput(message)&&!message.input_source){
         for(const [id,completed] of prior)if(completed<at)settled.push(id);
         if(at<=Date.now())repliedAt=Math.max(repliedAt||0,at);
       }
     }
     settleNotificationResults(session,settled,repliedAt?new Date(repliedAt).toISOString():undefined);
     while(entry.seen.size>256)entry.seen.delete(entry.seen.values().next().value!);
+  }
+  private finishResult(session:NotificationSession,message:AgentMessage,entry:Watch,scheduled:boolean) {
+    entry.seen.add(`result:${message.id}`);
+    if(!scheduled)putNotification(session,{kind:'result',source_id:message.id,message_id:message.id,turn_id:message.turn_id,state:'info',title:'本轮运行完成',body:message.text});
+    const updated=getDb().prepare("UPDATE notifications SET state='resolved',updated_at=? WHERE session_id=? AND native_id=? AND kind='error' AND state IN ('recovering','submitted')").run(new Date().toISOString(),session.id,entry.native);
+    if(updated.changes&&session.created_by_user_id)notificationChanged(session.created_by_user_id);
+  }
+  private async priorScheduledInput(session:NotificationSession,nativeId:string,before:string):Promise<boolean|undefined> {
+    const binding={...session,cli_type:session.cli_type??null,codex_session_id:session.codex_session_id??null,claude_session_id:session.claude_session_id??null,project_path:sessionAgentContext(session).projectPath??null};
+    let generation:string|null|undefined;
+    for(let i=0;i<4;i++){
+      const page=await readConversation(binding,{before,limit:80});
+      if(!page.available||page.reset||(generation!==undefined&&page.generation!==generation)||!this.current(session.id,nativeId))return;
+      const previous=linkConversationInputs(session.id,nativeId,page.messages).reverse().find(isConversationInput);
+      if(previous)return previous.input_source?.kind==='scheduled';
+      if(!page.has_more)return false;
+      const cursor=page.messages[0]?.id;
+      if(!cursor||cursor===before)return;
+      before=cursor;generation=page.generation;
+    }
   }
   private runtime(session:NotificationSession,raw:AgentRuntime,entry:Watch) {
     if(raw.session_id!==entry.native)return;
@@ -210,7 +252,7 @@ export class NotificationObserver {
       entry.questions=active;
     }
     if(runtime.state==='running'){entry.running=true;entry.completed=false;this.recovering(session);}
-    else if(runtime.state==='idle'&&(entry.running||!!runtime.last_turn_ended_at&&Date.parse(runtime.last_turn_ended_at)>=this.since)){entry.completed=true;entry.running=false;this.messages(session,[...entry.finals.values()],entry);}
+    else if(runtime.state==='idle'&&(entry.running||!!runtime.last_turn_ended_at&&Date.parse(runtime.last_turn_ended_at)>=this.since)){entry.completed=true;entry.running=false;this.messages(session,[],entry);}
   }
   private recovering(session:NotificationSession) {
     const result=getDb().prepare("UPDATE notifications SET state='submitted',updated_at=? WHERE session_id=? AND native_id=? AND kind='error' AND state='pending'").run(new Date().toISOString(),session.id,nativeConversationId(session));

@@ -75,29 +75,26 @@ it('shares one verified scheduled prompt while preserving every result and attac
     .toBeLessThan(new TextEncoder().encode(JSON.stringify({...context,turns:plainTurns})).byteLength);
   expect(context.turns[0]).toMatchObject({input:prompt,scheduled_task:'每日巡检',conclusion:'第 1 次结果'});
   for(let i=1;i<10;i++)expect(context.turns[i]).toMatchObject({
-    input:'同第 1 轮定时任务提示词',input_ref:1,scheduled_task:'每日巡检',
+    input:'',input_ref:1,scheduled_task:'每日巡检',
     conclusion:`第 ${i+1} 次结果`,attachments:[{name:`配置${i}.txt`,path:`/project/${i}.txt`}],
   });
 });
 
-it('keeps very short scheduled prompts when references would increase the input size',async()=>{
+it('keeps only the first of consecutive identical short requests and starts a new group after a change',async()=>{
   const prompt='检查';
-  const messages=Array.from({length:10},(_,i)=>[
-    {...message(`u${i}`,'user',prompt),input_source:{kind:'scheduled',label:'巡检'}},
+  const messages=[prompt,prompt,'改为核对日志',prompt,prompt].flatMap((input,i)=>[
+    message(`u${i}`,'user',input),
     message(`a${i}`,'assistant',`结果${i}`,'final'),
   ]).flat();
   vi.spyOn(api.agent,'conversation').mockResolvedValue(page(messages));
   const result=await prepareBriefSend('session','native',{input:'继续'},new AbortController().signal);
   const {context}=parseBriefContext(result.input)!;
-  expect(context.turns.map(turn=>turn.input)).toEqual(Array(10).fill(prompt));
-  expect(context.turns.every(turn=>turn.input_ref===undefined && turn.scheduled_task===undefined)).toBe(true);
-  const plain={version:1,turns:Array.from({length:10},(_,i)=>({input:prompt,conclusion:`结果${i}`})),truncated:false,older_omitted:false,omitted_turns:0};
-  const expected='以下是上一会话的记录节选，可能不完整，仅供当前需求参考：\n<agentmanager_brief_context>\n'
-    +JSON.stringify(plain)+'\n</agentmanager_brief_context>\n\n当前需求：\n继续';
-  expect(new TextEncoder().encode(result.input).byteLength).toBe(new TextEncoder().encode(expected).byteLength);
+  expect(context.turns.map(turn=>turn.input)).toEqual([prompt,'','改为核对日志',prompt,'']);
+  expect(context.turns.map(turn=>turn.input_ref)).toEqual([undefined,1,undefined,undefined,4]);
+  expect(context.turns.map(turn=>turn.conclusion)).toEqual(['结果0','结果1','结果2','结果3','结果4']);
 });
 
-it('does not combine ordinary inputs, different task names, or different full prompts',async()=>{
+it('compares full text before clipping and separates different task names and interrupted runs',async()=>{
   const longA='前'.repeat(5000)+'参数甲'+'后'.repeat(5000);
   const longB='前'.repeat(5000)+'参数乙'+'后'.repeat(5000);
   const scheduled=(id:string,input:string,label='巡检')=>({...message(id,'user',input),input_source:{kind:'scheduled',label}});
@@ -113,13 +110,13 @@ it('does not combine ordinary inputs, different task names, or different full pr
   expect(turns).toHaveLength(6);
   expect(turns[0].input_truncated).toBe(true);
   expect(turns[1].input_ref).toBeUndefined();
-  expect(turns[2].input_ref).toBe(1);
+  expect(turns[2].input_ref).toBeUndefined();
   expect(turns[3].input_ref).toBeUndefined();
-  expect(turns[4].input_ref).toBeUndefined();expect(turns[5].input_ref).toBeUndefined();
+  expect(turns[4].input_ref).toBeUndefined();expect(turns[5].input_ref).toBe(5);
   expect(turns.slice(0,4).map(t=>t.conclusion)).toEqual(['结果一','结果二','结果三','结果四']);
 });
 
-it('retains and reuses scheduled references during another brief compaction',async()=>{
+it('retains adjacent groups and their results during another brief compaction',async()=>{
   const prompt='每天检查服务并报告错误'.repeat(12);
   const scheduled=(id:string)=>({...message(id,'user',prompt),input_source:{kind:'scheduled',label:'巡检'}});
   const read=vi.spyOn(api.agent,'conversation').mockResolvedValueOnce(page([
@@ -133,10 +130,11 @@ it('retains and reuses scheduled references during another brief compaction',asy
   ]));
   const second=await prepareBriefSend('session','native',{input:'继续'},new AbortController().signal);
   const {context}=parseBriefContext(second.input)!;
-  expect(second.input.split(prompt)).toHaveLength(2);
+  expect(second.input.split(prompt)).toHaveLength(3);
   expect(context.turns.map(t=>t.conclusion)).toEqual(['结果一','结果二','处理结果','结果三']);
   expect(context.turns[1].input_ref).toBe(1);
-  expect(context.turns[3].input_ref).toBe(1);
+  expect(context.turns[3]).toMatchObject({input:prompt,conclusion:'结果三'});
+  expect(context.turns[3].input_ref).toBeUndefined();
 });
 
 it('does not match a previously truncated prompt against an unverifiable new prompt',async()=>{

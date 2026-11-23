@@ -124,6 +124,19 @@ describe('fresh conversation in the same tab',()=>{
    expect(existsSync(newFile)).toBe(true);
   }finally{await worker.close();}
  });
+ it('keeps the old conversation and its attachments in project history after scheduled compaction',async()=>{
+  writeFileSync(rollout(native),'{}\n');
+  const reader=vi.spyOn(getAgent('codex').runtime,'read').mockResolvedValue({state:'idle'} as any);
+  try{
+   const result=await newSessionConversation('new-test',undefined,undefined,native,undefined,{preserveHistory:true});
+   expect(result).toMatchObject({ok:true,history_id:expect.any(String)});
+   expect(getSession('new-test')).toMatchObject({status:'running',codex_session_id:defaultFresh});
+   expect(getSession(result.history_id!)).toMatchObject({status:'cancelled',codex_session_id:native});
+   expect(sessionRecordDeletionState(result.history_id!)).toBeUndefined();
+   expect(getDb().prepare('SELECT session_id FROM conversation_attachments').get()).toEqual({session_id:result.history_id});
+   expect(existsSync(rollout(native))).toBe(true);
+  }finally{reader.mockRestore();}
+ });
  it('restores the original thread, file and attachments if the replacement worker fails',async()=>{
   writeFileSync(rollout(native),'{}\n');
   vi.mocked(fork).mockImplementationOnce(()=>{throw Error('worker failed');});

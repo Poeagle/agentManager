@@ -77,6 +77,10 @@ function reply(quote:string,text='使用独立环境',messageId='reply',external
  return acceptChannelMessage(channel,{externalUserId:external,chatId:chat,messageId,content:text,replyContext:{bot_message_id:messageId,direct_route:quotedReplyRoute(quote)}});
 }
 async function process(){worker.tick();await worker.drain();}
+async function deliverAfterGrace(){
+ const clock=vi.spyOn(Date,'now').mockReturnValue(Date.now()+11_000);
+ try{await process();}finally{clock.mockRestore();}
+}
 function response(){return (getDb().prepare("SELECT content FROM platform_ai_messages WHERE role='assistant' ORDER BY rowid DESC LIMIT 1").get() as {content:string}|undefined)?.content||'';}
 
 describe('quoted notification quick replies',()=>{
@@ -159,7 +163,7 @@ describe('quoted notification quick replies',()=>{
   const original=await notice(),received=reply(original,'不用');await process();
   const task=getDb().prepare("SELECT * FROM platform_ai_tasks WHERE session_id='a' AND status='running'").get() as any;
   currentRef.a='quoted_'+received.message_id;finalText='好的。';
-  await worker.observe(task,readAiConfig());await process();
+  await worker.observe(task,readAiConfig());await deliverAfterGrace();
   expect(delivered.at(-1)).toBe('**Project / a**\n\n好的。');
   expect(fetch).not.toHaveBeenCalled();
  });
@@ -190,7 +194,7 @@ describe('quoted notification quick replies',()=>{
   await process();expect(inputs).toHaveLength(2);expect(newCalls).toBe(1);
   const task=getDb().prepare("SELECT * FROM platform_ai_tasks WHERE session_id='a' AND status='running'").get() as any;
   currentRef.a='quoted_'+received.message_id;finalText='新的答复。';
-  await worker.observe(task,readAiConfig());await process();
+  await worker.observe(task,readAiConfig());await deliverAfterGrace();
   const next=delivered.at(-1)!;expect(next).toContain('新的答复。');
   finalText=null;reply(next,'再继续','next-reply');await process();
   expect(inputs).toHaveLength(3);expect(inputs[2].body.expected_native_id).toBe('fresh-a');
@@ -264,7 +268,7 @@ describe('quoted notification quick replies',()=>{
   currentRef.a='quoted_'+received.message_id;finalText='处理完成，已使用独立环境。';
   vi.mocked(fetch).mockImplementation(async()=>new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({status:'reported_complete',summary:'处理完成',evidence:'处理完成'})}}]}),{status:200}));
   await worker.observe(task,readAiConfig());expect(getDb().prepare('SELECT status FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'reported_complete'});
-  await process();const next=delivered.at(-1)!;expect(next).toContain(finalText);expect(quotedReplyRoute(next)).not.toBe(quotedReplyRoute(original));
+  await deliverAfterGrace();const next=delivered.at(-1)!;expect(next).toContain(finalText);expect(quotedReplyRoute(next)).not.toBe(quotedReplyRoute(original));
   finalText=null;reply(next,'再补充测试','second-reply');await process();expect(inputs).toHaveLength(2);expect(inputs[1].id).toBe('a');expect(inputs[1].body.input).toMatch(/^再补充测试/);
  });
  it.each(['native','environment','turn','expired','cancelled','permission','choice','other-user','other-chat','revoked-binding','unknown-token'])('fails closed for %s without dispatch or model fallback',async kind=>{

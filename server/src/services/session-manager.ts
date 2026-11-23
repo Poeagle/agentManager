@@ -2958,7 +2958,7 @@ export function compactSessionConversation(sessionId:string,expectedNativeId?:st
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
 }
 
-export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference,replacement?:{environmentId:string;prepare:(context:import('./agents/types.js').AgentContext)=>Promise<string>},expectedNativeId?:string,targetEnvironmentId?:string):Promise<SessionReloadResult&{history_id?:string;previous_conversation_deletion?:'pending'|'failed'}> {
+export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference,replacement?:{environmentId:string;prepare:(context:import('./agents/types.js').AgentContext)=>Promise<string>},expectedNativeId?:string,targetEnvironmentId?:string,options?:{preserveHistory?:boolean}):Promise<SessionReloadResult&{history_id?:string;previous_conversation_deletion?:'pending'|'failed'}> {
   if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'});
   return runSessionLifecycle(sessionId,async()=>{
     const session=getSession(sessionId);
@@ -3032,6 +3032,11 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
       getDb().transaction(()=>{
         activateFreshConversation(sessionId,history!,fresh!);
         if(environmentChange)getDb().prepare('UPDATE sessions SET agent_environment_id=? WHERE id=?').run(targetEnvironmentId==='native'?null:targetEnvironmentId,sessionId);
+        if(options?.preserveHistory){
+          getDb().prepare('UPDATE sessions SET task=? WHERE id=?').run(session.task,sessionId);
+          getDb().prepare(`INSERT OR IGNORE INTO user_ui_state(user_id,key,value,updated_at)
+            SELECT user_id,?,value,updated_at FROM user_ui_state WHERE key=?`).run(`session-control:${sessionId}`,`session-control:${history}`);
+        }
         if(replacement){
           if(replacement.environmentId)getDb().prepare('UPDATE sessions SET agent_environment_id=?,task=?,created_at=? WHERE id=?').run(replacement.environmentId,session.task,session.created_at,sessionId);
           else getDb().prepare('UPDATE sessions SET agent_environment_id=NULL,task=?,created_at=? WHERE id=?').run(session.task,session.created_at,sessionId);
@@ -3078,12 +3083,14 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
       }
     }
 
-    // The old row retains its original native binding for background cleanup.
-    if(replacement){
+    // An automated replacement leaves the original conversation accessible.
+    if(replacement||options?.preserveHistory){
+      if(!replacement)getDb().prepare('DELETE FROM conversation_input_links WHERE session_id=? AND native_id=?').run(sessionId,context.nativeId);
       let warning:string|undefined;
       try{await adapter.lifecycle.release(context);}catch{warning='新会话已打开，旧会话后台终端回收未确认，请在历史中检查。';}
       return {ok:true,history_id:history,...warning?{warning}:{}};
     }
+    // The old row retains its original native binding for background cleanup.
     try {
       const db=getDb();
       const queued=db.transaction(()=>{

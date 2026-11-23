@@ -105,8 +105,8 @@ export function NotificationCenter({userId,projects,onOpen,onDetailChange}:{user
   },[summary.data,read]);
   useEffect(()=>{if(!toast)return;const timer=setTimeout(()=>setToast(null),10000);return()=>clearTimeout(timer);},[toast]);
   useEffect(()=>{onDetailChange(open);return()=>onDetailChange(false);},[open,onDetailChange]);
-  const select=(n:Notification)=>{setFilter(n.state==='pending'?'pending':'all');setSelected(n);setOpen(true);setToast(null);};
-  const jump=(n:Notification,raw=false)=>{setOpen(false);setToast(null);if(raw)onOpen(n,true);else onOpen(n);};
+  const select=(n:Notification)=>{if(n.kind==='result'&&!n.read_at)read([n.id]);setFilter(n.state==='pending'?'pending':'all');setSelected(n);setOpen(true);setToast(null);};
+  const jump=(n:Notification,raw=false)=>{if(n.kind==='result'&&!n.read_at)read([n.id]);setOpen(false);setToast(null);if(raw)onOpen(n,true);else onOpen(n);};
   async function mute(){if(!project||!summary.data)return;setBusy(true);setError('');const muted=summary.data.preferences.muted_project_ids;try{await notificationApi.preferences(muted.includes(project)?muted.filter(id=>id!==project):[...muted,project]);await refresh();}catch(failure){setError(failure instanceof Error?failure.message:'保存失败');}finally{setBusy(false);}}
   if(!canRead)return null;
   const unread=summary.data?.unread||0,pending=summary.data?.pending||0;

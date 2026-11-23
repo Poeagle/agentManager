@@ -64,22 +64,22 @@ export function receiveMessage(input: {
   })();
 }
 
-export function enqueueNotice(conversationId: string, dedupeKey: string, content: string, replyContext?: Record<string,unknown>): void {
+export function enqueueNotice(conversationId: string, dedupeKey: string, content: string, replyContext?: Record<string,unknown>, externalAvailableAt=0): void {
   const conversation = getConversation(conversationId);
   if (!conversation) return;
   getDb().prepare(`INSERT OR IGNORE INTO platform_ai_messages
     (id,conversation_id,external_id,role,content,status) VALUES (?,?,?,'notice',?,'done')`)
     .run(nanoid(16), conversationId, dedupeKey, content);
   getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox
-    (id,conversation_id,dedupe_key,content,reply_context) VALUES (?,?,?,?,?)`)
-    .run(nanoid(16), conversationId, dedupeKey, content, replyContext?JSON.stringify(replyContext):conversation.reply_context);
+    (id,conversation_id,dedupe_key,content,reply_context,available_at) VALUES (?,?,?,?,?,?)`)
+    .run(nanoid(16), conversationId, dedupeKey, content, replyContext?JSON.stringify(replyContext):conversation.reply_context,conversation.channel_id?externalAvailableAt:0);
   if (dedupeKey.startsWith('task:') || dedupeKey.startsWith('observation-error:') || dedupeKey.startsWith('schedule:')) {
     const targets = getDb().prepare(`SELECT n.channel_id FROM platform_ai_notification_targets n JOIN platform_ai_channels ch ON ch.id=n.channel_id
       WHERE n.user_id=? AND ch.kind='wecom_webhook' AND ch.enabled=1`).all(conversation.user_id) as Array<{channel_id: string}>;
     for (const target of targets) {
       getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox
-        (id,conversation_id,dedupe_key,content,destination_channel_id,reply_context) VALUES (?,?,?,?,?,?)`)
-        .run(nanoid(16), conversationId, `${dedupeKey}:target:${target.channel_id}`, content, target.channel_id, replyContext?JSON.stringify(replyContext):conversation.reply_context);
+        (id,conversation_id,dedupe_key,content,destination_channel_id,reply_context,available_at) VALUES (?,?,?,?,?,?,?)`)
+        .run(nanoid(16), conversationId, `${dedupeKey}:target:${target.channel_id}`, content, target.channel_id, replyContext?JSON.stringify(replyContext):conversation.reply_context,externalAvailableAt);
     }
   }
 }

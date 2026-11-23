@@ -18,6 +18,7 @@ import {notificationReplyTarget,replyTurnKey} from './quoted-replies.js';
 import {formatTaskNotification} from './store.js';
 import {nativeConversationId} from '../session-identity.js';
 import {readConversation} from '../conversation-reader.js';
+import {isConversationInput,linkConversationInputs} from '../conversation-input-links.js';
 
 export interface NotificationRecipient {
   id: string; name: string; channel_id: string; external_user_id: string; chat_id: string; group: boolean;
@@ -128,18 +129,47 @@ export function authorizeProjectNotice(key: string, conversationId: string) {
   return recipient;
 }
 
-/** Suppress only when the public reply matches one unique native message ID. */
-export async function matchPersonalResult(userId:string,sessionId:string,message:AgentTextMessage):Promise<number|null>{
- const session=getSession(sessionId),nativeId=session&&nativeConversationId(session);
- if(!session||!nativeId||!message.timestamp)return null;
- const candidates=getDb().prepare(`SELECT id,message_id FROM notifications WHERE user_id=? AND session_id=? AND native_id=? AND ((kind='result' AND body=?) OR kind='question') AND message_id IS NOT NULL ORDER BY id DESC LIMIT 200`).all(userId,sessionId,nativeId,message.text) as Array<{id:number;message_id:string}>;
- if(!candidates.length)return null;
- const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
- try {const page=await readConversation({...session,cli_type:session.cli_type||'codex',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},{limit:100});
-  const matches=page.messages.filter(item=>item.role==='assistant'&&item.phase==='final'&&item.timestamp===message.timestamp&&item.text===message.text);
-  if(matches.length===1){const rows=candidates.filter(row=>row.message_id===matches[0].id);if(rows.length===1)return rows[0].id;}
- }catch{/* Identity unknown: retain the notification. */}
- return null;
+export interface CompletionNotice {
+  session_id:string;
+  native_id:string;
+  timestamp:string|null;
+  text_length:number;
+  text_hash:string;
+}
+
+export function completionNotice(sessionId:string,text:string,timestamp:string|null):CompletionNotice|undefined {
+  const session=getSession(sessionId),nativeId=session&&nativeConversationId(session);
+  if(nativeId&&text)return {session_id:sessionId,native_id:nativeId,timestamp,text_length:text.length,text_hash:hash(text)};
+}
+
+export function completionAvailableAt(personalId:number|null,now=Date.now()):number {
+  const row=personalId&&getDb().prepare('SELECT created_at FROM notifications WHERE id=?').get(personalId) as {created_at:string}|undefined;
+  const created=row?Date.parse(row.created_at):NaN;
+  return (Number.isFinite(created)?created:now)+10_000;
+}
+
+/** The public excerpt may be clipped. Require a unique native final before
+ * linking it to a web read receipt or to the preceding scheduled input. */
+export async function resolveCompletionNotice(userId:string,notice:CompletionNotice|undefined):Promise<{personalId:number|null;scheduled?:boolean}> {
+  const session=notice&&getSession(notice.session_id);
+  if(!notice||!session||session.created_by_user_id!==userId||nativeConversationId(session)!==notice.native_id)return {personalId:null};
+  const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
+  const binding={...session,cli_type:session.cli_type??null,codex_session_id:session.codex_session_id??null,claude_session_id:session.claude_session_id??null,project_path:project?.path??null};
+  try {
+    const page=await readConversation(binding,{limit:80});
+    const matches=page.messages.filter(item=>item.role==='assistant'&&item.phase==='final'&&
+      (!notice.timestamp||item.timestamp===notice.timestamp)&&hash(item.text.slice(-notice.text_length))===notice.text_hash);
+    if(matches.length!==1)return {personalId:null};
+    const final=matches[0],index=page.messages.indexOf(final);
+    const personal=getDb().prepare(`SELECT id FROM notifications WHERE user_id=? AND session_id=? AND native_id=?
+      AND message_id=? AND kind IN ('result','question') ORDER BY kind='result' DESC LIMIT 1`).get(userId,session.id,notice.native_id,final.id) as {id:number}|undefined;
+    let previous=linkConversationInputs(session.id,notice.native_id,page.messages.slice(0,index)).reverse().find(isConversationInput);
+    if(!previous&&page.has_more){
+      const older=await readConversation(binding,{before:final.id,limit:80});
+      if(older.available&&!older.reset&&older.generation===page.generation)previous=linkConversationInputs(session.id,notice.native_id,older.messages).reverse().find(isConversationInput);
+    }
+    return {personalId:personal?.id??null,...(previous?{scheduled:previous.input_source?.kind==='scheduled'}:{})};
+  }catch{return {personalId:null};}
 }
 
 /** Event-driven observation; durable watches recover delayed native logs/restarts. */
@@ -193,7 +223,7 @@ export class ProjectNotifications {
     return !!recipient && tasks.some(task => recipient.group || (task.channel_id === recipient.channel_id && task.external_user_id === recipient.external_user_id));
   }
 
-  private record(watch: Watch, key: string, kind?: 'complete' | 'input' | 'error', body = '', turnKey:string|null=null, personalId:number|null=null): void {
+  private record(watch: Watch, key: string, kind?: 'complete' | 'input' | 'error', body = '', turnKey:string|null=null, personalId:number|null=null, completion?:CompletionNotice): void {
     getDb().transaction(() => {
       // Settings/permissions may have changed while the model/API call was pending.
       const rule = getDb().prepare('SELECT * FROM platform_ai_project_notifications WHERE id=?').get(watch.id) as ProjectNotificationRule | undefined;
@@ -212,8 +242,10 @@ export class ProjectNotifications {
       const content = formatTaskNotification(`${label.project_name} / ${label.tab_name}`, body);
       getDb().prepare(`INSERT OR IGNORE INTO platform_ai_messages (id,conversation_id,external_id,role,content,status) VALUES (?,?,?,'notice',?,'done')`)
         .run(nanoid(16), rule.conversation_id, dedupe, content);
-      getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox (id,conversation_id,dedupe_key,content,destination_channel_id,reply_context)
-        VALUES (?,?,?,?,?,?)`).run(nanoid(16), rule.conversation_id, dedupe, content, recipient.group ? recipient.channel_id : null,JSON.stringify({notification_target:notificationReplyTarget(watch.session_id,turnKey),...(personalId?{personal_notification_id:personalId}:{})}));
+      getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox (id,conversation_id,dedupe_key,content,destination_channel_id,reply_context,available_at)
+        VALUES (?,?,?,?,?,?,?)`).run(nanoid(16), rule.conversation_id, dedupe, content, recipient.group ? recipient.channel_id : null,
+        JSON.stringify({notification_target:notificationReplyTarget(watch.session_id,turnKey),...(personalId?{personal_notification_id:personalId}:{}),...(completion?{completion}:{})}),
+        kind==='complete'?completionAvailableAt(personalId):0);
     })();
     refreshConversation(watch.conversation_id);
   }
@@ -292,8 +324,10 @@ export class ProjectNotifications {
           }
         }
         if (this.alreadyTracked(watch, message.task_reference ? message : owningUser)) { this.record(watch, key); continue; }
-        const personalId=await matchPersonalResult(watch.user_id,watch.session_id,message);
-        this.record(watch, key, 'complete', message.text,message.task_reference?'ref:'+message.task_reference:replyTurnKey(owningUser),personalId);
+        const completion=completionNotice(watch.session_id,message.text,message.timestamp);
+        const {personalId,scheduled}=await resolveCompletionNotice(watch.user_id,completion);
+        if(scheduled){this.record(watch,key);continue;}
+        this.record(watch, key, 'complete', message.text,message.task_reference?'ref:'+message.task_reference:replyTurnKey(owningUser),personalId,completion);
       }
       if (watch.rechecks > 0) {
         getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=MIN(next_check_at,?),rechecks=rechecks-1 WHERE rule_id=? AND session_id=? AND rechecks>0')

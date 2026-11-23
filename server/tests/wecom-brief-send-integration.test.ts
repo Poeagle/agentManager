@@ -71,7 +71,7 @@ it('uses the real guard and input routes when a WeCom quote needs a fresh brief 
  const brief=parseBriefContext(submit.mock.calls[0][1])!;
  expect(brief.context.turns).toEqual([
   {input:scheduledPrompt,scheduled_task:'巡检',conclusion:'第一次结果'},
-  {input:'同第 1 轮定时任务提示词',input_ref:1,scheduled_task:'巡检',conclusion:'第二次结果'},
+  {input:'',input_ref:1,scheduled_task:'巡检',conclusion:'第二次结果'},
   {input:'原需求',conclusion:'原结论'},
  ]);
  expect(brief.input).toContain('继续处理');expect(fetch).not.toHaveBeenCalled();

@@ -7,8 +7,18 @@ import {nativeConversationFile,type PromptContextSession} from './prompt-context
 import {formatConversationInput,nativeConversationInput,type ConversationAttachment} from './conversation-attachments.js';
 import {conversationQuestionReply} from './conversation-question-reply.js';
 import type {ConversationMessage} from './conversation-reader.js';
+import {automaticConversationContext} from '../shared/conversation-context.js';
 
 function inputHash(text:string){return createHash('sha256').update(text.replace(/\r\n?/g,'\n').trim()).digest('hex');}
+
+export function isConversationInput(message:ConversationMessage):boolean {
+  return message.role==='user'&&!message.queued&&!message.streaming&&
+    (!!message.input_source||!automaticConversationContext(message.text));
+}
+
+export function hasScheduledConversationInput(sessionId:string):boolean {
+  return !!getDb().prepare("SELECT 1 FROM conversation_input_sources WHERE session_id=? AND kind='scheduled' LIMIT 1").get(sessionId);
+}
 
 export function rememberInputSource(sessionId:string,clientId:string,source:{kind:string;label:string}) {
   getDb().prepare('INSERT INTO conversation_input_sources(session_id,client_id,kind,label) VALUES(?,?,?,?)').run(sessionId,clientId,source.kind,source.label);
@@ -32,12 +42,15 @@ function decorateInputSources(sessionId:string,messages:ConversationMessage[]):C
   return decorateBatches(sessionId,messages.map(message=>{
     const {input_source:_source,...visible}=message;
     if(message.role!=='user')return visible;
-    // Hide only the reserved suffix bound to this exact quoted submission.
+    const source=lookup.get(sessionId,message.client_id||'',message.id) as {kind:string;label:string}|undefined;
     // Keep the native record and input fingerprint intact for correlation.
-    const suffix=message.client_id?.startsWith('quoted_')?`\n\n[Platform task reference: ${message.client_id}]`:null;
+    let suffix=message.client_id?.startsWith('quoted_')?`\n\n[Platform task reference: ${message.client_id}]`:null;
+    const run=source?.kind==='scheduled'?/\n\n\[Platform task reference: ([a-zA-Z0-9_-]{12})\]$/.exec(visible.text):null;
+    if(run&&getDb().prepare(`SELECT 1 FROM platform_ai_schedule_receipts receipt
+      JOIN scheduled_task_runs r ON r.id=receipt.run_id JOIN scheduled_tasks t ON t.id=r.task_id
+      WHERE r.id=? AND r.session_id=? AND t.name=?`).get(run[1],sessionId,source!.label))suffix=run[0];
     const projected=suffix&&visible.text.endsWith(suffix)?{...visible,text:visible.text.slice(0,-suffix.length),
       ...(visible.content_blocks?{content_blocks:visible.content_blocks.map(block=>block.type==='text'&&block.text.endsWith(suffix)?{...block,text:block.text.slice(0,-suffix.length)}:block)}:{})}:visible;
-    const source=lookup.get(sessionId,message.client_id||'',message.id) as {kind:string;label:string}|undefined;
     if(source&&message.client_id&&!message.queued)bind.run(message.id,sessionId,message.client_id);
     return source?{...projected,input_source:source}:projected;
   }));

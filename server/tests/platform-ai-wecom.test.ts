@@ -259,7 +259,11 @@ describe('project notification classification through the native adapter and WeC
     });`);
     updateAiConfig({enabled:true,model:'fixture',source:{kind:'command',executable:process.execPath,arguments_json:JSON.stringify([adapter])}});
     vi.stubGlobal('fetch', vi.fn(() => {throw Error('No external HTTP expected');}));
-    worker.tick(); await worker.drain(); worker.tick(); await worker.drain();
+    const deliverAfterGrace=async()=>{
+      const clock=vi.spyOn(Date,'now').mockReturnValue(Date.now()+11_000);
+      try{worker.tick();await worker.drain();}finally{clock.mockRestore();}
+    };
+    worker.tick(); await worker.drain(); await deliverAfterGrace();
     expect(getDb().prepare('SELECT failures,error FROM platform_ai_project_notification_watches WHERE rule_id=?').get(rule.id)).toEqual({failures:0,error:null});
     expect(getDb().prepare('SELECT status,error FROM platform_ai_outbox').all()).toEqual([expect.objectContaining({status:'sent',error:null})]);
     const sent = frames.filter(frame => frame.cmd === 'aibot_send_msg');
@@ -291,6 +295,7 @@ describe('project notification classification through the native adapter and WeC
     send({...inbound('project-reply'),body:{...inbound('project-reply').body,text:{content:'不用'},quote:{msgtype:'text',text:{content:renderedQuote}}}} as any);
     await expect.poll(() => getDb().prepare("SELECT count(*) n FROM platform_ai_messages WHERE external_id='project-reply'").get()).toEqual({n:1});
     for(let tick=0;tick<4;tick++){worker.tick();await worker.drain();}
+    await deliverAfterGrace();
     expect(api.mock.calls.filter(call=>call[2]==='POST')).toHaveLength(1);
     expect(api.mock.calls.find(call=>call[2]==='POST')![4]?.input).toMatch(/^不用\n\n\[Platform task reference: quoted_/);
     const followups = frames.filter(frame=>frame.cmd==='aibot_send_msg');

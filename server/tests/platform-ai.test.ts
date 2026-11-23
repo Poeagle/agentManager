@@ -119,7 +119,12 @@ describe('project-wide automatic notifications', () => {
     vi.stubGlobal('fetch', fetchMock);
     return fetchMock;
   }
-  async function checkAndDeliver() { worker.tick(); await worker.drain(); worker.tick(); await worker.drain(); }
+  async function deliverAfterGrace() {
+    const clock=vi.spyOn(Date,'now').mockReturnValue(Date.now()+11_000);
+    try{worker.tick();await worker.drain();}
+    finally{clock.mockRestore();}
+  }
+  async function checkAndDeliver() { worker.tick(); await worker.drain(); await deliverAfterGrace(); }
   function notices() { return getDb().prepare("SELECT * FROM platform_ai_outbox WHERE dedupe_key LIKE 'project-notice:%'").all() as Array<{status: string; content: string; error: string}>; }
 
   it('exposes only current-user projects and authorized recipients and rejects invalid or duplicate rules', async () => {
@@ -185,13 +190,42 @@ describe('project-wide automatic notifications', () => {
   it('cancels a queued result if its exact web message was read before delivery', async () => {
     configure();subscription();seedSession();
     getDb().prepare("UPDATE sessions SET codex_session_id='native-read' WHERE id='session-1'").run();
-    const message=finalMessage('本轮已完成');nativeMessages=[message];const now=new Date(Date.now()+1000).toISOString();
-    getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,message_id,kind,state,title,body,created_at,updated_at) VALUES (?,'session-1','native-read','msg-1','msg-1','result','info','完成',?,?,?)").run(member,message.text,now,now);
+    let time=Date.now();vi.spyOn(Date,'now').mockImplementation(()=>time);
+    const message=finalMessage('本轮已完成');nativeMessages=[message];const now=new Date(time).toISOString();
     vi.spyOn(conversationReader,'readConversation').mockResolvedValue({messages:[{id:'msg-1',role:'assistant',phase:'final',text:message.text,timestamp:message.timestamp}],statistics:[],has_more:false,reset:false,available:true,generation:'test'} as any);
     const fetchMock=provider();worker.tick();await worker.drain();expect(notices()).toHaveLength(1);
+    time+=9999;
+    worker.tick();await worker.drain();expect(notices()[0].status).toBe('pending');
+    getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,message_id,kind,state,title,body,created_at,updated_at) VALUES (?,'session-1','native-read','msg-1','msg-1','result','info','完成',?,?,?)").run(member,message.text,now,now);
     getDb().prepare("UPDATE notifications SET read_at=? WHERE message_id='msg-1'").run(now);
+    time+=1;
     worker.tick();await worker.drain();expect(notices()[0].status).toBe('cancelled');
     expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://notify.example'))).toHaveLength(0);
+  });
+
+  it('sends an unread manual result once at the deadline and skips the scheduled result above it',async()=>{
+    configure();subscription();seedSession();
+    getDb().prepare("UPDATE sessions SET codex_session_id='native-schedule' WHERE id='session-1'").run();
+    getDb().prepare("INSERT INTO conversation_input_sources(session_id,client_id,kind,label,message_id) VALUES ('session-1','scheduled-client','scheduled','巡检','scheduled-input')").run();
+    let time=Date.now();vi.spyOn(Date,'now').mockImplementation(()=>time);
+    const scheduled=finalMessage('定时结果','scheduled'),manual=finalMessage('人工结果','manual');
+    nativeMessages=[scheduled,manual];
+    vi.spyOn(conversationReader,'readConversation').mockResolvedValue({messages:[
+      {id:'scheduled-input',role:'user',text:'定时巡检',timestamp:scheduled.timestamp,client_id:'scheduled-client'},
+      {...scheduled,id:'scheduled-final'},
+      {id:'manual-input',role:'user',text:'核对结果',timestamp:manual.timestamp},
+      {...manual,id:'manual-final'},
+    ],statistics:[],has_more:false,reset:false,available:true,generation:'test'} as any);
+    const fetchMock=provider();
+    const sent=()=>fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://notify.example'));
+    worker.tick();await worker.drain();
+    expect(notices()).toEqual([expect.objectContaining({status:'pending',content:expect.stringContaining('人工结果')})]);
+    time+=9999;
+    worker.tick();await worker.drain();expect(sent()).toHaveLength(0);
+    time+=1;
+    worker.tick();await worker.drain();expect(sent()).toHaveLength(1);
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    worker.tick();await worker.drain();expect(sent()).toHaveLength(1);
   });
 
   it('does not enqueue a result already read in the web', async () => {
@@ -336,7 +370,7 @@ describe('project-wide automatic notifications', () => {
     saveProjectNotification(member,{...value,enabled:true},rule.id);
     // Deliver the queued old notice directly; new observation is intentionally not run.
     getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=?').run(Date.now()+60000);
-    worker.tick(); await worker.drain(); expect(notices()[0].status).toBe('failed');
+    await deliverAfterGrace(); expect(notices()[0].status).toBe('failed');
   });
 
   it('preserves deduplication through worker recreation', async () => {

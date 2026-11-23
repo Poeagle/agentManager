@@ -11,6 +11,7 @@ const manager = vi.hoisted(() => ({
   reconnectSession: vi.fn(),
   recoverSessionOnAttach: vi.fn(),
   resumeSessionById: vi.fn(),
+  newSessionConversation: vi.fn(),
 }));
 const quota = vi.hoisted(() => ({
   readCodexWeeklyQuota: vi.fn(),
@@ -18,6 +19,8 @@ const quota = vi.hoisted(() => ({
 const tracker = vi.hoisted(() => ({ getTracker: vi.fn() }));
 
 const catalog = vi.hoisted(() => vi.fn());
+const readHistory = vi.hoisted(() => vi.fn());
+vi.mock('../src/services/conversation-reader.js', async original => ({...(await original<typeof import('../src/services/conversation-reader.js')>()),readConversation:readHistory}));
 vi.mock('../src/services/agents/codex/controls.js', async (original) => ({ ...(await original<typeof import('../src/services/agents/codex/controls.js')>()), readEngineModelsForEnvironment: catalog }));
 vi.mock('../src/services/session-manager.js', () => manager);
 vi.mock('../src/services/agents/codex/quota.js', () => quota);
@@ -30,6 +33,8 @@ import { scheduledTaskRoutes } from '../src/routes/scheduled-tasks.js';
 import { tickScheduledTasks } from '../src/services/scheduled-task-runner.js';
 import {getAgent} from '../src/services/agents/index.js';
 import { createTestDatabase } from './helpers/database.js';
+import {parseBriefContext} from '../src/shared/conversation-brief.js';
+import {rememberInputSource} from '../src/services/conversation-input-links.js';
 
 describe('scheduled task API', () => {
   let app: FastifyInstance;
@@ -41,6 +46,8 @@ describe('scheduled task API', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     manager.spawnSession.mockReset();
+    manager.newSessionConversation.mockReset();
+    readHistory.mockReset().mockResolvedValue({available:true,messages:[],has_more:false,reset:false,generation:'fixture'});
     manager.isSessionActive.mockReturnValue(true);
     manager.writeToSession.mockReturnValue(true);
     tracker.getTracker.mockReturnValue({ state: { processState: 'idle', promptType: null, isPermission: false }, hasPendingExecute: false });
@@ -169,6 +176,47 @@ describe('scheduled task API', () => {
     expect(result.statusCode).toBe(200);expect(submit).toHaveBeenCalledOnce();expect(manager.writeToSession).not.toHaveBeenCalled();
     const source=getDb().prepare("SELECT client_id,kind,label FROM conversation_input_sources WHERE session_id='bound-terminal'").get() as {client_id:string;kind:string;label:string};
     expect(source).toMatchObject({kind:'scheduled',label:'终端巡检'});expect(submit.mock.calls[0][2]).toBe(source.client_id);
+  });
+
+  it.each(['codex','claude'])('starts a fresh %s conversation with brief history before submitting a scheduled input',async(agent)=>{
+    const native='019ff001-1111-7111-8111-111111111111',fresh='019ff001-2222-7222-8222-222222222222';
+    const session={id:'brief-tab',project_id:'project-1',created_by_user_id:ownerId,status:'running',mode:'session',cli_type:agent,native_session_id:native};
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,native_session_id,created_by_user_id) VALUES ('brief-tab','project-1','Work','running','session',?,?,?)").run(agent,native,ownerId);
+    manager.getSession.mockReturnValue(session);
+    rememberInputSource(session.id,'prior-schedule',{kind:'scheduled',label:'巡检'});
+    readHistory.mockResolvedValue({available:true,has_more:false,reset:false,generation:'fixture',messages:[
+      {id:'user',role:'user',text:'开始本次巡检',client_id:'prior-schedule',timestamp:null},{id:'final',role:'assistant',phase:'final',text:'上次结论',timestamp:null},
+    ]});
+    let nextNative=fresh;
+    manager.newSessionConversation.mockImplementation(async()=>{
+      manager.getSession.mockReturnValue({...session,native_session_id:nextNative});
+      return {ok:true};
+    });
+    const submit=vi.spyOn(getAgent(agent).input,'submit').mockResolvedValue(true);
+    const created=await app.inject({method:'POST',url:'/api/scheduled-tasks',headers:{cookie},payload:{project_id:'project-1',name:'巡检',prompt:'开始本次巡检',schedule_kind:'daily',schedule_value:'09:00',target_type:'existing',target_session_id:'brief-tab'}});
+    const run=()=>app.inject({method:'POST',url:`/api/scheduled-tasks/${created.json().task.id}/run`,headers:{cookie}});
+    const result=await run();
+    expect(result.json().run).toMatchObject({status:'success',sessionId:'brief-tab'});
+    expect(manager.newSessionConversation).toHaveBeenCalledOnce();
+    expect(submit).toHaveBeenCalledOnce();
+    expect(submit.mock.calls[0][0].nativeId).toBe(fresh);
+    expect(parseBriefContext(submit.mock.calls[0][1])).toMatchObject({input:'开始本次巡检',context:{turns:[{input:'开始本次巡检',conclusion:'上次结论'}]}});
+    readHistory.mockResolvedValue({available:true,has_more:false,reset:false,generation:'second',messages:[
+      {id:'current',role:'user',text:submit.mock.calls[0][1],client_id:submit.mock.calls[0][2],timestamp:null},
+      {id:'result',role:'assistant',phase:'final',text:'本次结论',timestamp:null},
+    ]});
+    nextNative='019ff001-3333-7333-8333-333333333333';
+    expect((await run()).json().run.status).toBe('success');
+    expect(submit.mock.calls[1][0].nativeId).toBe(nextNative);
+    expect(parseBriefContext(submit.mock.calls[1][1])).toMatchObject({input:'开始本次巡检',context:{turns:[
+      {input:'开始本次巡检',conclusion:'上次结论'},
+      {input:'',input_ref:1,conclusion:'本次结论'},
+    ]}});
+    readHistory.mockResolvedValueOnce({available:false,messages:[],has_more:false,reset:false,generation:null});
+    expect((await run()).json().run.status).toBe('failed');
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(manager.newSessionConversation).toHaveBeenCalledTimes(2);
+    expect(manager.writeToSession).not.toHaveBeenCalled();
   });
 
   it('pauses only the current day and resumes the next day without re-enabling', async () => {

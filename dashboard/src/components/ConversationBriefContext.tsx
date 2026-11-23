@@ -21,7 +21,7 @@ export function ConversationBriefContext({context,messageId,active,projectId,pro
         <ol>
           {context.turns.map((turn,index)=><li key={index}>
             <h3>第 {index+1} 轮{turn.scheduled_task ? ` · 定时任务：${turn.scheduled_task}` : ''}</h3>
-            <div className="conversation-brief-section"><strong>用户输入</strong><ConversationMarkdown content={turn.input || '（附件）'} messageId={`${messageId}-brief-${index}-input`} projectId={projectId} projectPath={projectPath} onNavigate={onNavigate}/></div>
+            {(turn.input||!turn.input_ref)&&<div className="conversation-brief-section"><strong>用户输入</strong><ConversationMarkdown content={turn.input || '（附件）'} messageId={`${messageId}-brief-${index}-input`} projectId={projectId} projectPath={projectPath} onNavigate={onNavigate}/></div>}
             {!!turn.attachments?.length&&<div className="conversation-brief-section"><strong>历史附件</strong>
               {projectId ? <ConversationMessageAttachments items={turn.attachments} projectId={projectId} projectPath={projectPath}/> :
                 <ul>{turn.attachments.map((item,i)=><li key={i}>{item.name} <code>{item.path}</code></li>)}</ul>}

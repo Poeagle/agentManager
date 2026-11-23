@@ -225,6 +225,20 @@ it('settles older stored results from a confirmed human reply while excluding pl
   history(runtime(),[{...reply,id:'human-receipt',client_id:'human-input'}]);expect(listNotifications(owner).notifications).toEqual([]);
 });
 
+it('uses the nearest preceding input for each final in a mixed scheduled and manual conversation',()=>{
+  rememberInputSource('s','scheduler',{kind:'scheduled',label:'定时巡检'});
+  const scheduled=message('scheduled-input',{role:'user',phase:undefined,client_id:'scheduler',text:'开始定时巡检'});
+  const manual=message('manual-input',{role:'user',phase:undefined,text:'请补充核对这项'});
+  const queued=message('queued-input',{role:'user',phase:undefined,queued:true,text:'下一轮'});
+  const metadata=message('metadata',{role:'user',phase:undefined,text:'<task_notification>background</task_notification>'});
+  history(runtime({last_turn_ended_at:now()}),[scheduled,queued,metadata,message('scheduled-final'),manual,message('manual-final')]);
+  expect(stored('result').map(row=>row.source_id)).toEqual(['manual-final']);
+  history(runtime({last_turn_ended_at:now()}),[scheduled,message('scheduled-final')]);
+  expect(stored('result').map(row=>row.source_id)).toEqual(['manual-final']);
+  history(runtime(),[scheduled,message('schedule-error',{phase:'error'})]);
+  expect(stored('error').map(row=>row.source_id)).toEqual(['turn']);
+});
+
 it('dismisses notices explicitly without submitting input, preserves dismissal on replay and isolates users and boundaries',async()=>{
   const q={id:'q-dismiss',title:'无需回答',options:['是','否']};
   const raw=runtime({pending_questions:[{id:'g',questions:[q],timestamp:now()}]});history(raw);

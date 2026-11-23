@@ -21,7 +21,7 @@ import {subscribe,type Event as PlatformEvent} from '../event-store.js';
 import {getSession} from '../session-manager.js';
 import {sessionPresenter} from '../session-labels.js';
 import type {AgentTextMessage} from '../prompt-context.js';
-import {authorizeProjectNotice,ProjectNotifications,matchPersonalResult} from './project-notifications.js';
+import {authorizeProjectNotice,ProjectNotifications,completionAvailableAt,completionNotice,resolveCompletionNotice,type CompletionNotice} from './project-notifications.js';
 
 import {notificationReplyTarget,prepareReplyNotification,dispatchQuotedReply,quotedReplyOperationId} from './quoted-replies.js';
 import {prepareOutboundImages,readOutboundImage,assertOutboundImageAccess,type OutboundImage} from './outbound-images.js';
@@ -483,15 +483,12 @@ export class PlatformAiWorker {
       const finalMessage = task.source_ref ? [...replies].reverse().find(message => message.phase === 'final') : undefined;
       const latestFinal = finalMessage?.text || '';
       const nativeFinal = latestFinal || (task.source_ref ? await readFinal() : '');
-      // A quoted chat reply needs its answer even when it is only “好的。”.
-      // The exact request reference proves correlation, not business success.
-      if (nativeFinal && task.source_ref.startsWith('quoted_')) {
-        this.saveAssessment(task, {status:'reported_complete',summary:'Agent 已回复',evidence:nativeFinal.slice(0,3000)}, now, true, nativeFinal, finalMessage?await matchPersonalResult(task.user_id,task.session_id,finalMessage):null);
-        return;
-      }
       // A native final closes this request; its content needs no model classification.
       if (nativeFinal) {
-        this.saveAssessment(task, {status:'reported_complete',summary:'Agent 已回复',evidence:nativeFinal.slice(0,3000)}, now, true, nativeFinal, finalMessage?await matchPersonalResult(task.user_id,task.session_id,finalMessage):null);
+        const completion=completionNotice(task.session_id,nativeFinal,finalMessage?.timestamp??null);
+        const {personalId,scheduled}=await resolveCompletionNotice(task.user_id,completion);
+        const scheduledRun=scheduled===undefined&&getDb().prepare('SELECT 1 FROM platform_ai_schedule_receipts WHERE task_id=? LIMIT 1').get(task.id);
+        this.saveAssessment(task, {status:'reported_complete',summary:'Agent 已回复',evidence:nativeFinal.slice(0,3000)}, now, !scheduled&&!scheduledRun, nativeFinal,personalId,completion);
         return;
       }
       const missingCommand = ended ? output.split('\n').find((line:string)=>agentDescriptors().some(agent=>line.includes(`command not found: ${agent.id}`)||line.includes(`${agent.id}: command not found`))) : undefined;
@@ -568,7 +565,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
     }
   }
 
-  private saveAssessment(task: TrackedTask, assessment: Assessment, now: number, notify: boolean, finalAnswer = '', personalId:number|null=null): void {
+  private saveAssessment(task: TrackedTask, assessment: Assessment, now: number, notify: boolean, finalAnswer = '', personalId:number|null=null,completion?:CompletionNotice): void {
     getDb().transaction(() => {
       const updated = getDb().prepare(`UPDATE platform_ai_tasks SET status=?,summary=?,evidence=?,last_notified_at=?,updated_at=datetime('now') WHERE id=? AND status IN ('running','blocked','uncertain')`)
         .run(assessment.status, assessment.summary, assessment.evidence, notify ? now : task.last_notified_at, task.id);
@@ -576,7 +573,9 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         const key = createHash('sha256').update(JSON.stringify([assessment.status, assessment.summary.replace(/\s+/g, ' ').trim()])).digest('hex').slice(0, 24);
         const question = assessment.status === 'blocked' && assessment.evidence && !finalAnswer ? `\n\n### 需要你处理的内容\n\n${assessment.evidence}\n` : '';
         const body = finalAnswer || `${assessment.summary}${question}`;
-        enqueueNotice(task.conversation_id, `task:${task.id}:${key}`, formatTaskNotification(taskLocation(task), body),{notification_target:notificationReplyTarget(task.session_id,task.source_ref?'ref:'+task.source_ref:null),...(personalId?{personal_notification_id:personalId}:{})});
+        enqueueNotice(task.conversation_id, `task:${task.id}:${key}`, formatTaskNotification(taskLocation(task), body),
+          {notification_target:notificationReplyTarget(task.session_id,task.source_ref?'ref:'+task.source_ref:null),...(personalId?{personal_notification_id:personalId}:{}),...(completion?{completion}:{})},
+          assessment.status==='reported_complete'?completionAvailableAt(personalId,now):0);
       }
     })();
     if (notify) refreshConversation(task.conversation_id);
@@ -619,8 +618,24 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
     try {
       let destination=this.deliveryDestination(item);
       const metadata=JSON.parse(item.reply_context);
-      const isHandled=()=>{if(!Number.isSafeInteger(metadata.personal_notification_id))return false;const n=getDb().prepare('SELECT read_at,dismissed_at,state FROM notifications WHERE id=? AND user_id=?').get(metadata.personal_notification_id,destination.conversation.user_id) as {read_at:string|null;dismissed_at:string|null;state:string}|undefined;return !!n&&(!!n.read_at||!!n.dismissed_at||['submitted','resolved'].includes(n.state));};
-      if(isHandled()){getDb().prepare("UPDATE platform_ai_outbox SET status='cancelled',error='已在网页查看或处理',lease_until=0 WHERE id=?").run(item.id);return;}
+      const cancel=(reason:string)=>getDb().prepare("UPDATE platform_ai_outbox SET status='cancelled',error=?,lease_until=0 WHERE id=?").run(reason,item.id);
+      let personalId=Number.isSafeInteger(metadata.personal_notification_id)?metadata.personal_notification_id as number:null;
+      if(destination.channel&&metadata.completion&&!personalId){
+        const resolved=await resolveCompletionNotice(destination.conversation.user_id,metadata.completion);
+        if(resolved.scheduled){cancel('本轮来源为定时任务');return;}
+        personalId=resolved.personalId;
+        destination=this.deliveryDestination(item);
+      }
+      const isHandled=()=>{if(!personalId)return false;const n=getDb().prepare('SELECT read_at,dismissed_at,state FROM notifications WHERE id=? AND user_id=?').get(personalId,destination.conversation.user_id) as {read_at:string|null;dismissed_at:string|null;state:string}|undefined;return !!n&&(!!n.read_at||!!n.dismissed_at||['submitted','resolved'].includes(n.state));};
+      if(isHandled()){cancel('已在网页查看或处理');return;}
+      if(destination.channel&&metadata.completion&&personalId){
+        const eligibleAt=completionAvailableAt(personalId,item.available_at-10_000);
+        if(eligibleAt>Date.now()){
+          getDb().prepare("UPDATE platform_ai_outbox SET status='pending',available_at=?,attempts=attempts-1,lease_until=0,reply_context=json_set(reply_context,'$.personal_notification_id',?) WHERE id=?")
+            .run(eligibleAt,personalId,item.id);
+          return;
+        }
+      }
       image=metadata.outbound_image as OutboundImage|undefined;
       if(image){
         if(destination.channel?.kind!=='wecom_bot')throw new ChannelError('此渠道不支持图片主动发送',400,true);
@@ -671,7 +686,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         const context = channel.kind === 'wecom_bot' && !item.dedupe_key.startsWith('reply:') ? {} : JSON.parse(item.reply_context);
         const target=metadata.notification_target;
         const content=channel.kind==='wecom_bot'&&target?prepareReplyNotification({noticeId:item.id,noticeKey:item.dedupe_key,target,userId:conversation.user_id,channelId:channel.id,externalUserId:projectRecipient?.external_user_id||conversation.external_user_id,chatId:projectRecipient?.chat_id||conversation.external_chat_id,content:body}):body;
-        if(isHandled()){getDb().prepare("UPDATE platform_ai_outbox SET status='cancelled',error='已在网页查看或处理',lease_until=0 WHERE id=?").run(item.id);return;}
+        if(isHandled()){cancel('已在网页查看或处理');return;}
         await deliverMessage(channel, projectRecipient?.chat_id || conversation.external_chat_id, projectRecipient?.external_user_id || conversation.external_user_id, content, context, item.id, this.abort.signal);
       }
       getDb().prepare("UPDATE platform_ai_outbox SET status='sent',error=NULL,lease_until=0 WHERE id=?").run(item.id);

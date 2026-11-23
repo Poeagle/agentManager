@@ -57,6 +57,16 @@ it('opens the compact notification list and marks read only once the selected co
   expect(detail).toHaveBeenCalledWith(true);
 });
 
+it('records opening a result immediately while the conversation detail is still loading',async()=>{
+  page={...page,pending:0,notifications:[row(1,{kind:'result',state:'info',title:'本轮运行完成'})]};
+  vi.mocked(api.sessions.get).mockImplementation(()=>new Promise(()=>{}));
+  mount();
+  const drawer=await open();
+  fireEvent.click(await within(drawer).findByRole('button',{name:'项目 A · 标签 1'}));
+  expect(notificationApi.read).toHaveBeenCalledWith({ids:[1]});
+  expect(within(drawer).getByText('正在打开会话…')).toBeVisible();
+});
+
 it('waits until the browser is in the foreground before clearing the displayed message',async()=>{
   const focused=vi.spyOn(document,'hasFocus').mockReturnValue(false);
   mount();const drawer=await open();fireEvent.click(await within(drawer).findByRole('button',{name:'项目 A · 标签 1'}));
