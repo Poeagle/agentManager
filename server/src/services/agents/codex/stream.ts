@@ -9,6 +9,7 @@ import {nativeInteraction,nativeInteractionAnswer,conversationAsyncQuestions,con
 import {homedir} from 'os';
 import {join} from 'path';
 import {randomUUID,createHash} from 'crypto';
+import {setTimeout as delay} from 'timers/promises';
 import {conversationImagePaths,nativeConversationInput,type ConversationAttachment} from '../../conversation-attachments.js';
 import {extractAgentMessages} from '../../prompt-context.js';
 import {conversationMessageId,type ConversationMessage} from '../../conversation-reader.js';
@@ -32,6 +33,11 @@ export function publicCodexRpcMessage(value:string):string {
   .replace(/sk-[A-Za-z0-9_-]{12,}/g,'[redacted]').slice(0,1000)) || '原生 Codex 暂未接受此操作，请稍后重试';
 }
 export class CodexRpcError extends Error {readonly submission='rejected';constructor(readonly nativeMessage:string){super(publicCodexRpcMessage(nativeMessage));}}
+class CodexConnectionLost extends Error {}
+const interruptedSocketCodes = new Set(['ECONNREFUSED','ECONNRESET','EPIPE','ENOENT','ETIMEDOUT']);
+function socketFailure(cause: NodeJS.ErrnoException, message: string): Error {
+  return interruptedSocketCodes.has(cause.code ?? '') ? new CodexConnectionLost(message) : new Error(message);
+}
 type CodexRequest = (method:string,params:unknown)=>Promise<any>;
 type ReasoningParts={summary:string[];content:string[]};
 type StreamItem={message:ConversationMessage;phase:string|null;reasoning?:ReasoningParts};
@@ -43,23 +49,43 @@ export async function withCodexConnection<T>(action:(request:CodexRequest,server
   const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   let next=0;
   const request:CodexRequest=(method,params)=>new Promise((resolve,reject)=>{
+    if (socket.readyState !== WebSocket.OPEN) { reject(new CodexConnectionLost('Codex 连接已关闭')); return; }
     const id=++next;const timer=setTimeout(()=>{pending.delete(id);reject(new Error('Codex 会话请求超时'));},10000);
     pending.set(id,{resolve,reject,timer});socket.send(JSON.stringify({id,method,params}));
   });
-  const opened=new Promise<void>((resolve,reject)=>{socket.once('open',resolve);socket.once('error',()=>reject(new Error('无法连接独立 Codex 服务')));});
+  const rejectPending = (error: Error) => {
+    for (const waiting of pending.values()) {
+      clearTimeout(waiting.timer);
+      waiting.reject(error);
+    }
+    pending.clear();
+  };
+  const opened = new Promise<void>((resolve, reject) => {
+    socket.once('open', resolve);
+    socket.on('error', (cause) => {
+      const error = socketFailure(cause, '无法连接独立 Codex 服务');
+      reject(error);
+      rejectPending(error);
+    });
+    socket.once('close', (code) => {
+      const error = [1000, 1001, 1005, 1006, 1012, 1013].includes(code)
+        ? new CodexConnectionLost('Codex 连接已关闭')
+        : new Error('Codex 连接已关闭');
+      reject(error);
+      rejectPending(error);
+    });
+  });
   socket.on('message',bytes=>{
     let frame:any;try{frame=JSON.parse(bytes.toString());}catch{return;}
     const waiting=!frame.method?pending.get(frame.id):undefined;if(!waiting)return;pending.delete(frame.id);clearTimeout(waiting.timer);
     if(frame.error) waiting.reject(new CodexRpcError(typeof frame.error.message==='string'?frame.error.message.slice(0,1000):''));else {if(frame.result?.thread)rememberCodexThread(frame.result.thread);waiting.resolve(frame.result);}
   });
-  const rejectPending=()=>{for(const waiting of pending.values()){clearTimeout(waiting.timer);waiting.reject(new Error('Codex 连接已关闭'));}pending.clear();};
-  socket.on('close',rejectPending);socket.on('error',rejectPending);
   try {
     await opened;
     const initialized=await request('initialize',{clientInfo:{name:'octoally-terminal',version:'1.0.0'},capabilities:{experimentalApi:true,optOutNotificationMethods:['item/commandExecution/outputDelta','item/fileChange/outputDelta','item/reasoning/textDelta','item/reasoning/summaryTextDelta','item/reasoning/summaryPartAdded']}});
     socket.send(JSON.stringify({method:'initialized'}));
     return await action(request,{userAgent:typeof initialized?.userAgent==='string'?initialized.userAgent:null});
-  } finally {rejectPending();if(socket.readyState===WebSocket.CONNECTING)socket.terminate();else socket.close();}
+  } finally {rejectPending(new Error('Codex 连接已关闭'));if(socket.readyState===WebSocket.CONNECTING)socket.terminate();else socket.close();}
 }
 
 /** Flush native storage without a user message or a model turn so the TUI
@@ -146,19 +172,25 @@ export async function stopStreamingCodexTurn(threadId:string,turnId:string):Prom
  * menus, focus, and transport suspension. Embedded CLIs retain their PTY path. */
 type SubmissionResult=boolean|'queued';
 const acceptedInputs=new Map<string,{promise:Promise<SubmissionResult>;fingerprint:string}>();
-export function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[]=[]):Promise<SubmissionResult> {
+export function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[] = [], confirmReconnect?: () => void):Promise<SubmissionResult> {
   const identity=clientId||randomUUID(),key=JSON.stringify([currentCodexEngine().socket,threadId,identity]),fingerprint=JSON.stringify([text,attachments]);
   const existing=acceptedInputs.get(key);if(existing)return existing.fingerprint===fingerprint?existing.promise:Promise.reject(new CodexRpcError('Client input identity has different contents'));
   let dispatched=false;
-  const operation=withCodexConnection(async request=>{
+  const attempt = (confirmTarget?: () => void) => withCodexConnection(async request => {
+    const dispatch: CodexRequest = (method, params) => {
+      confirmTarget?.();
+      dispatched = true;
+      return request(method, params);
+    };
     const live=liveCodexInput(threadId);
     if(live?.clients.has(identity))return true;
     const current=live?.turnId?{thread:{status:{type:'active'}}}:await request('thread/read',{threadId});
-    if(current.thread?.status?.type==='notLoaded')return false;
+    if(current.thread?.status?.type==='notLoaded'){confirmTarget?.();return false;}
     const input=nativeConversationInput(text,attachments);
     const queue=async()=>{
       const existing=await readCodexQueue(request,threadId);
       if(existing.data?.some((entry:any)=>entry.clientUserMessageId===identity))return 'queued' as const;
+      confirmTarget?.();
       ownCodexQueuedInput(threadId,identity);
       dispatched=true;
       try{await request('thread/queue/add',{threadId,clientUserMessageId:identity,input});}
@@ -167,7 +199,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
       const started=await startOwnedCodexQueue(request,threadId).catch(()=>null);
       return started===identity?true:'queued' as const;
     };
-    const submit=async()=>{dispatched=true;await request('turn/start',{threadId,clientUserMessageId:identity,input});return true;};
+    const submit=async()=>{await dispatch('turn/start',{threadId,clientUserMessageId:identity,input});return true;};
     try {
       if(current.thread?.status?.type==='active'){
         // A summary retains user receipts but excludes unbounded tool output.
@@ -176,8 +208,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
         const turn=latest.data?.[0];
         if(turn?.items?.some((item:any)=>item.type==='userMessage'&&item.clientId===identity))return true;
         if(turn?.status==='inProgress'&&typeof turn.id==='string'){
-          dispatched=true;
-          try{const receipt=await request('turn/steer',{threadId,expectedTurnId:turn.id,clientUserMessageId:identity,input});if(typeof receipt.turnId!=='string')throw Error('原生追加结果尚未确认');return true;}
+          try{const receipt=await dispatch('turn/steer',{threadId,expectedTurnId:turn.id,clientUserMessageId:identity,input});if(typeof receipt.turnId!=='string')throw Error('原生追加结果尚未确认');return true;}
           catch(error){
             if(!(error instanceof CodexRpcError))throw error;
             dispatched=false;
@@ -197,7 +228,15 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
       }
       throw error;
     }
-  }).catch(error=>{throw submissionFailure(error,dispatched);});
+  });
+  const operation = attempt().catch(async (error) => {
+    // A new account/thread can lose its first socket before any input goes out.
+    // Keep the same native target and identity. A lost receipt stays unknown.
+    if (dispatched || !(error instanceof CodexConnectionLost)) throw error;
+    await delay(100);
+    confirmReconnect?.();
+    return attempt(confirmReconnect);
+  }).catch(error => { throw submissionFailure(error, dispatched); });
   acceptedInputs.set(key,{promise:operation,fingerprint});
   void operation.then(result=>{if(!result)acceptedInputs.delete(key);else rememberCodexQuestionReply(threadId,identity,text,result==='queued');},()=>acceptedInputs.delete(key));
   if(acceptedInputs.size>512)acceptedInputs.delete(acceptedInputs.keys().next().value!);

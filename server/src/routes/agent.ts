@@ -112,7 +112,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.33.0',
+    version:'3.33.1',
     updatedAt:'2026-11-23',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -381,7 +381,7 @@ export function getAgentApiContract() {
         description: 'Submit a follow-up immediately, including while busy or another execute request is waiting. Uses bracketed paste plus Enter, like typing in the dashboard. Does not cancel the current operation, reset output, or wait for an agent reply. Session ownership and project write access are required.',
         request: {
           input: {type:'string',required:true,description:'Text, at most 64 KiB; may be empty when attachments are present.'},
-          source: {type:'string',required:false,description:'Use conversation to submit directly to the bound native engine when available.'},
+          source: {type:'string',required:false,description:'Use conversation to submit directly to the bound native engine when available. Codex may reconnect once before dispatch. A lost receipt after dispatch remains unknown without automatic replay.'},
           client_id: {type:'string',required:false,description:'Client correlation ID for matching the native user-message echo. IDs already reserved by platform submissions are rejected with 409.'},
           expected_environment_id:{type:'string',required:false,description:'Expected Agent environment ID; defaults on existing sessions are native. A changed environment is rejected with 409 submission=rejected.'},
           expected_native_id:{type:'string',required:false,description:'Opaque native conversation ID expected by a notification reply. A changed or missing binding is rejected before input submission with 409 submission=rejected.'},

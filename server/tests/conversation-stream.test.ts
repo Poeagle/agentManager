@@ -10,18 +10,19 @@ import {conversationMessageId} from '../src/services/conversation-reader.js';
 let server:Server,wss:WebSocketServer,peer:WebSocket,dir:string,stop:(()=>void)|undefined;
 let submissions:any[],requests:string[],frames:ConversationStreamFrame[],loaded:boolean;
 let active=false,oversizedSummary=false,dropDispatch=false;
-let missingThread=false,persistFailure=false;
+let missingThread=false,persistFailure=false,preparationDisconnects=0;
 let humanRequests:any[]=[],humanResponses:any[]=[];
 let baselineItems:any[]=[];
 let baselineFailure:any=null;
 let queueEntries:any[]=[],turnStartFailure:string|null=null;
 let requestParams: Array<{method:string;params:any}> = [];
 beforeEach(async()=>{
-  missingThread=false;persistFailure=false;dir=mkdtempSync(join(tmpdir(),'chat-stream-'));const path=join(dir,'sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',path);
+  missingThread=false;persistFailure=false;preparationDisconnects=0;dir=mkdtempSync(join(tmpdir(),'chat-stream-'));const path=join(dir,'sock');vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET',path);
   server=createServer();wss=new WebSocketServer({server});submissions=[];requests=[];frames=[];loaded=true;active=false;baselineItems=[];baselineFailure=null;queueEntries=[];turnStartFailure=null;humanRequests=[];humanResponses=[];requestParams=[];oversizedSummary=false;dropDispatch=false;
   wss.on('connection',socket=>{
     peer=socket;socket.on('message',bytes=>{
       const frame=JSON.parse(bytes.toString());const {id,method,params}=frame;if(!method){humanResponses.push(frame);return;}requests.push(method);requestParams.push({method,params});if(method==='thread/resume')for(const request of humanRequests)socket.send(JSON.stringify(request));if(method==='turn/start'||method==='turn/steer')submissions.push(params);if(!id) return;
+      if(method==='thread/read'&&preparationDisconnects>0){preparationDisconnects--;socket.terminate();return;}
       if(method==='thread/read'&&missingThread){socket.send(JSON.stringify({id,error:{message:`thread not loaded: ${params.threadId}`,code:-32600}}));return;}
       if(method==='thread/inject_items'&&persistFailure){socket.send(JSON.stringify({id,error:{message:'Storage unavailable',code:-32600}}));return;}
       if(method==='turn/steer'&&active&&baselineItems.some(item=>item.type==='contextCompaction'&&item.status!=='completed')){socket.send(JSON.stringify({id,error:{message:'cannot steer a compact turn',code:-32600}}));return;}
@@ -112,11 +113,29 @@ describe('native Codex conversation streaming',()=>{
     requestParams=[];requests=[];expect(await submitStreamingCodexInput('thread','right now','live-insert')).toBe(true);
     expect(requestParams.find(p=>p.method==='turn/steer')?.params.expectedTurnId).toBe('running-now');expect(requests).not.toContain('thread/turns/list');expect(requests).not.toContain('thread/read');
   });
+  it('recovers the first brief send on a fresh native thread after a preparation disconnect',async()=>{
+    const id=await createStreamingCodexThread('/project','');
+    requests=[];preparationDisconnects=1;
+    const results=await Promise.all([
+      submitStreamingCodexInput(id,'brief context','brief-first'),
+      submitStreamingCodexInput(id,'brief context','brief-first'),
+    ]);
+    expect(results).toEqual([true,true]);
+    expect(requests.filter(method=>method==='thread/read')).toHaveLength(2);
+    expect(requests).not.toContain('thread/start');
+    expect(submissions).toEqual([{threadId:id,clientUserMessageId:'brief-first',input:[{type:'text',text:'brief context',text_elements:[]}]}]);
+  });
+  it('stops after one preparation reconnect if the engine is still unavailable',async()=>{
+    preparationDisconnects=3;
+    await expect(submitStreamingCodexInput('thread','draft','prep-unreachable')).rejects.toMatchObject({submission:'rejected'});
+    expect(requests.filter(method=>method==='thread/read')).toHaveLength(2);
+    expect(submissions).toEqual([]);
+  });
   it('reports a preparation disconnect as unsent and a post-dispatch disconnect as unknown',async()=>{
     active=true;oversizedSummary=true;baselineItems=[{type:'commandExecution',id:'large',aggregatedOutput:'x'.repeat(3*1024*1024)}];
     await expect(submitStreamingCodexInput('thread','not sent','prep-client')).rejects.toMatchObject({submission:'rejected'});expect(submissions).toHaveLength(0);
-    oversizedSummary=false;baselineItems=[];dropDispatch=true;
-    await expect(submitStreamingCodexInput('thread','ambiguous','dispatch-client')).rejects.toMatchObject({submission:'unknown'});expect(submissions).toHaveLength(1);expect(requests).not.toContain('thread/queue/add');
+    requests=[];oversizedSummary=false;baselineItems=[];dropDispatch=true;
+    await expect(submitStreamingCodexInput('thread','ambiguous','dispatch-client')).rejects.toMatchObject({submission:'unknown'});expect(submissions).toHaveLength(1);expect(requests.filter(method=>method==='initialize')).toHaveLength(1);expect(requests).not.toContain('thread/queue/add');
   });
   it('streams compaction start, real token usage and completion without model text or extra requests',async()=>{
     stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));

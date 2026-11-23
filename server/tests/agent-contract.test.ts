@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.33.0');
+    expect(contract.version).toBe('3.33.1');
     for (const path of ['/api/sessions','/api/sessions/:id']) {
       expect(contract.endpoints.find(endpoint=>endpoint.method==='GET'&&endpoint.path===path)?.description).toContain('record_deletion');
     }
@@ -35,6 +35,7 @@ describe('Agent API contract', () => {
     });
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/compact')?.request).toHaveProperty('expected_native_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request).toHaveProperty('guard_token');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request?.source?.description).toContain('reconnect once before dispatch');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request).toHaveProperty('expected_native_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request).toHaveProperty('expected_environment_id');
     expect(contract.scope).toContain('scheduled tasks');

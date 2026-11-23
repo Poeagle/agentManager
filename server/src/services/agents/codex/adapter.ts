@@ -3,6 +3,7 @@ import {createHash} from 'crypto';
 import {join,dirname} from 'path';
 import {tmpdir} from 'os';
 import {config} from '../../../config.js';
+import {AgentSubmissionError} from '../submission.js';
 import {assertSessionEnvironment,engineForEnvironment} from './environments.js';
 import {canControlEnvironment} from '../environment-access.js';
 import {runInCodexEngine,inCodexThread,engineForThread,currentCodexEngine} from './engine-context.js';
@@ -77,9 +78,25 @@ export const codexAdapter: AgentAdapter = {
         submit: async (context, text, clientId, attachments) => {
             assertSessionEnvironment(context.session,context.actorUserId);
             const stream = await import('./stream.js');
-            const submit = () => inCodexThread(requireNative(context),()=>attachments?.length ? stream.submitStreamingCodexInput(requireNative(context), text, clientId, attachments) : clientId ? stream.submitStreamingCodexInput(requireNative(context), text, clientId) : stream.submitStreamingCodexInput(requireNative(context), text));
+            const manager = await import('../../session-manager.js');
+            const threadId = requireNative(context);
+            const session = context.session;
+            const confirmReconnect = () => {
+                if (!session.id) return;
+                const current = manager.getSession(session.id);
+                if (!current || (current.native_session_id ?? current.codex_session_id) !== threadId ||
+                    current.agent_environment_id !== session.agent_environment_id ||
+                    current.created_by_user_id !== session.created_by_user_id ||
+                    current.project_id !== session.project_id ||
+                    !['running', 'detached', 'released'].includes(current.status)) {
+                    throw new AgentSubmissionError('会话或账号已变化，消息尚未发送，请重新检查后发送', 'rejected');
+                }
+                assertSessionEnvironment(current, context.actorUserId);
+            };
+            const submit = () => inCodexThread(threadId,
+                () => stream.submitStreamingCodexInput(threadId, text, clientId, attachments, confirmReconnect));
             let result = process.env.AGENTMANAGER_CODEX_STREAM_SOCKET ? await submit() : false;
-            if (!result && context.session.id && (await import('../../session-manager.js')).ensureCodexConversationStreaming && await (await import('../../session-manager.js')).ensureCodexConversationStreaming(context.session.id))
+            if (!result && session.id && await manager.ensureCodexConversationStreaming(session.id))
                 result = await submit();
             return result;
         },

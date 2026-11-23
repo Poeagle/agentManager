@@ -15,6 +15,11 @@ import {createTestDatabase} from './helpers/database.js';
 import {mkdirSync,realpathSync,writeFileSync} from 'fs';
 import {join} from 'path';
 import {createHash} from 'crypto';
+import {createServer} from 'http';
+import {WebSocketServer} from 'ws';
+import * as environments from '../src/services/agents/codex/environments.js';
+import * as inputLinks from '../src/services/conversation-input-links.js';
+import {SEND_GUARD_KEY} from '../src/services/send-guard-policy.js';
 import {notificationSession,putNotification,listNotifications} from '../src/services/notifications.js';
 
 describe('immediate session input',()=>{
@@ -182,7 +187,72 @@ describe('immediate session input',()=>{
     getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
     const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue(true);
     const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'能否再详细一下',source:'conversation'}});
-    expect(result.statusCode).toBe(202);expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','能否再详细一下');expect(manager.writeToSession).not.toHaveBeenCalled();
+    expect(result.statusCode).toBe(202);expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','能否再详细一下',undefined,[],expect.any(Function));expect(manager.writeToSession).not.toHaveBeenCalled();
+  });
+  it.each(['unchanged', 'before reconnect', 'during reconnect'] as const)('handles a first brief send disconnect on the selected account (binding: %s)', async (binding) => {
+    const db = getDb();
+    const nativeId = '019ff001-2525-7888-8888-888888888888';
+    const account = 'account:brief';
+    db.prepare('INSERT INTO settings (key,value) VALUES (?,?)').run(SEND_GUARD_KEY, JSON.stringify({enabled: false, rules: []}));
+    const {id: owner} = db.prepare("SELECT id FROM users WHERE username='owner'").get() as {id: string};
+    db.prepare("INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES (?,'codex','Brief account','account',1,?,?)")
+      .run(account, JSON.stringify({username: 'fixture'}), JSON.stringify([owner]));
+    db.prepare("UPDATE sessions SET native_session_id=?,codex_session_id=?,agent_environment_id=? WHERE id='own'").run(nativeId, nativeId, account);
+
+    const engineSocket = join(fixtureDir, 'target-engine.sock');
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET', join(fixtureDir, 'different-engine.sock'));
+    vi.spyOn(environments, 'engineForEnvironment').mockResolvedValue({socket: engineSocket, environmentId: account});
+    vi.spyOn(inputLinks, 'rememberConversationInput').mockResolvedValue(undefined);
+    const engine = createServer();
+    const ws = new WebSocketServer({server: engine});
+    const turns: unknown[] = [];
+    let reads = 0;
+    ws.on('connection', (socket) => {
+      socket.on('message', (bytes) => {
+        const {id, method, params} = JSON.parse(bytes.toString());
+        if (!id) return;
+        if (method === 'thread/read') {
+          reads++;
+          if ((reads === 1 && binding === 'before reconnect') || (reads === 2 && binding === 'during reconnect')) {
+            db.prepare("UPDATE sessions SET agent_environment_id=NULL WHERE id='own'").run();
+          }
+          if (reads === 1) {
+            socket.terminate();
+            return;
+          }
+        }
+        if (method === 'turn/start') turns.push(params);
+        socket.send(JSON.stringify({id, result: method === 'thread/read' ? {thread: {id: nativeId, status: {type: 'idle'}}} : {}}));
+      });
+    });
+    await new Promise<void>((resolve) => engine.listen(engineSocket, resolve));
+    const input = '简要历史与当前草稿';
+    const clientId = 'brief-account-draft';
+    try {
+      const check = await app.inject({method: 'POST', url: '/api/sessions/own/input-check', headers: {cookie}, payload: {input}});
+      expect(check.statusCode).toBe(200);
+      expect(check.json().native_id).toBe(nativeId);
+      const result = await app.inject({
+        method: 'POST', url: '/api/sessions/own/input', headers: {cookie},
+        payload: {input, source: 'conversation', client_id: clientId, guard_token: check.json().token},
+      });
+      expect(manager.writeToSession).not.toHaveBeenCalled();
+      if (binding !== 'unchanged') {
+        expect(result.statusCode).toBe(409);
+        expect(result.json()).toMatchObject({submission: 'rejected', error: expect.stringContaining('账号已变化')});
+        expect(reads).toBe(binding === 'before reconnect' ? 1 : 2);
+        expect(turns).toEqual([]);
+      } else {
+        expect(result.statusCode).toBe(202);
+        expect(result.json()).toMatchObject({status: 'submitted'});
+        expect(reads).toBe(2);
+        expect(turns).toEqual([expect.objectContaining({threadId: nativeId, clientUserMessageId: clientId, input: [expect.objectContaining({text: input})]})]);
+      }
+    } finally {
+      for (const client of ws.clients) client.terminate();
+      await new Promise<void>((resolve) => ws.close(() => resolve()));
+      await new Promise<void>((resolve) => engine.close(() => resolve()));
+    }
   });
   it('acknowledges native queued input without falling through to terminal paste',async()=>{
     vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
@@ -194,7 +264,7 @@ describe('immediate session input',()=>{
     const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue(true);
     const post=(client_id:unknown)=>app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'继续',source:'conversation',client_id}});
     expect((await post('client-one')).statusCode).toBe(202);
-    expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','继续','client-one');
+    expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','继续','client-one',[],expect.any(Function));
     for(const value of ['',42,'x'.repeat(101)])expect((await post(value)).statusCode).toBe(400);
     expect(submit).toHaveBeenCalledTimes(1);expect(manager.writeToSession).not.toHaveBeenCalled();
   });
@@ -207,7 +277,7 @@ describe('immediate session input',()=>{
     const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue(true);
     const attachments=[{kind:'file',name:'note.txt',path}];
     const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'',source:'conversation',client_id:'file-only',attachments}});
-    expect(result.statusCode).toBe(202);expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','', 'file-only',[{...attachments[0],path:realpathSync(path)}]);
+    expect(result.statusCode).toBe(202);expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','', 'file-only',[{...attachments[0],path:realpathSync(path)}],expect.any(Function));
     const rejected=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'read',source:'conversation',attachments:[{kind:'file',name:'private',path:'/etc/passwd'}]}});
     expect(rejected.statusCode).toBe(400);expect(submit).toHaveBeenCalledTimes(1);expect(manager.writeToSession).not.toHaveBeenCalled();
   });
@@ -222,7 +292,7 @@ describe('immediate session input',()=>{
     vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
     const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValueOnce(false).mockResolvedValueOnce(true),upgrade=vi.spyOn(manager,'ensureCodexConversationStreaming').mockResolvedValue(true);
     const response=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'实时输出检查',source:'conversation',client_id:'same-client'}});
-    expect(response.statusCode).toBe(202);expect(upgrade).toHaveBeenCalledOnce();expect(submit.mock.calls).toEqual([['019ff001-8888-7888-8888-888888888888','实时输出检查','same-client'],['019ff001-8888-7888-8888-888888888888','实时输出检查','same-client']]);expect(manager.writeToSession).not.toHaveBeenCalled();
+    expect(response.statusCode).toBe(202);expect(upgrade).toHaveBeenCalledOnce();expect(submit.mock.calls.map(call=>call.slice(0,3))).toEqual([['019ff001-8888-7888-8888-888888888888','实时输出检查','same-client'],['019ff001-8888-7888-8888-888888888888','实时输出检查','same-client']]);expect(manager.writeToSession).not.toHaveBeenCalled();
   });
   it('reports a failed upgrade as not submitted and never pastes into a half-reloaded terminal',async()=>{
     vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/tmp/test-preview.sock');getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
