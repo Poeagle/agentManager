@@ -217,6 +217,8 @@ export interface AgentModelDetectionInput {
   useEncrypted?: boolean;
 }
 export interface AgentManagementPort {
+  /** A Provider ID from this adapter's management catalog, resolved from the persisted session binding. */
+  providerForSession?(session: AgentSession): string | null;
   inspect(force?: boolean): Promise<AgentManagementState>;
   inspectProvider?(providerId: string): Promise<AgentProviderState | null>;
   update(input: AgentManagementUpdate): Promise<AgentManagementState>;

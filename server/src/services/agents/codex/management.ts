@@ -1191,6 +1191,11 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
   };
 
   return {
+    providerForSession(session) {
+      const id=session.agent_environment_id;
+      if(!id||id==='native')return 'native';
+      return id.startsWith('provider:')?id.slice('provider:'.length):null;
+    },
     inspect,
     inspectProvider: async providerId => {
       if (providerId === 'native') return nativeProviders()[0];

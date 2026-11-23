@@ -8,6 +8,7 @@ import { managedEnv, updateManagedEnvironment } from '../environment-store.js';
 import type { AgentEnvironmentVariable } from '../types.js';
 import {
   claudeEnvironmentName,
+  claudeProviderIdForSession,
   claudeRuntimeProvider,
   claudeProviderState,
   claudeProviderApiKey,
@@ -169,6 +170,12 @@ export function claudeManagement(descriptor: AgentDescriptor): AgentManagementPo
   };
   return {
     ...base,
+    providerForSession(session) {
+      if(session.agent_environment_id)return claudeProviderIdForSession(session);
+      if(managedEnv('CLAUDE_CODE_USE_BEDROCK')==='1')return 'bedrock';
+      if(managedEnv('CLAUDE_CODE_USE_VERTEX')==='1')return 'vertex';
+      return 'anthropic';
+    },
     inspect,
     refreshProviderBilling:async providerId=>refreshStoredProviderBilling('claude',provider=>claudeProviderApiKey(provider.id),{providerId}),
     readModelConfigs:async()=>{

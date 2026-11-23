@@ -18,9 +18,37 @@ export interface AutomaticSendGuardRule {
   conditions: SendGuardGroup;
 }
 
-export interface SendGuardPolicy {
+export interface LegacySendGuardPolicy {
   enabled: boolean;
   reminder_enabled?: boolean;
   conditions: SendGuardGroup;
   automatic_rules?: AutomaticSendGuardRule[];
+}
+
+export const MAX_REMINDER_SEND_RULES = 20;
+export const MAX_SEND_GUARD_PROVIDERS = 32;
+export type SendGuardRule = Omit<AutomaticSendGuardRule,'action'> & {
+  action: SendGuardAction | 'remind';
+  /** Omitted means all Providers, including sessions without a confirmed binding. */
+  provider_ids?: string[];
+};
+
+export interface SendGuardPolicy {
+  enabled: boolean;
+  reminder_enabled?: boolean;
+  rules: SendGuardRule[];
+}
+
+export function normalizeSendGuardPolicy(policy: LegacySendGuardPolicy | SendGuardPolicy): SendGuardPolicy {
+  if('rules' in policy)return policy;
+  return {
+    enabled:policy.enabled,
+    ...(policy.reminder_enabled!==undefined?{reminder_enabled:policy.reminder_enabled}:{}),
+    rules:[...(policy.automatic_rules??[]),{action:'remind',conditions:policy.conditions}],
+  };
+}
+
+/** Agent IDs qualify Provider IDs from their management catalog. */
+export function sendGuardProviderKey(agentId:string,providerId:string):string {
+  return `${agentId}:${providerId}`;
 }

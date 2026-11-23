@@ -112,7 +112,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.30.0',
+    version:'3.31.0',
     updatedAt:'2026-11-23',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -428,7 +428,7 @@ export function getAgentApiContract() {
         path: '/api/context',
         description: 'Return a concise, low-token summary of the logged-in user\'s active sessions.',
       },
-      {category:'Session control',method:'POST',path:'/api/sessions/:id/input-check',description:'Read-only sending-risk preflight for an accessible session. Accepts input, attachments and batch. The first matching automatic rule takes precedence over reminders. Recheck the target conversation after the operation before submitting input.',
+      {category:'Session control',method:'POST',path:'/api/sessions/:id/input-check',description:'Read-only sending-risk preflight for an accessible session. Accepts input, attachments and batch. Rules apply to all Providers or the selected Provider identities for the session. The first matching automatic rule takes precedence over reminders. Recheck the target conversation after the operation before submitting input.',
         response:{needs_confirmation:'Whether a reminder or an automatic rule matched',required_action:'new | brief | compact | null. A non-null action requires resolving the matched rule before input can be sent.',token:'Short-lived confirmation token, or null when an automatic rule matches',switch_account:'Whether the required action needs another account',target_account:'Authorized alternative {id, label} with current available quota, or null',account_remaining_percent:'Remaining capacity in the most constrained current subscription window, or null',cache_miss_estimate:'Reminder-only scenario for the next request. {tokens, cost: {amount, unit} | null} compares charging the previous cached input at the ordinary input rate with retaining its cache hits, using recorded rates. Null if no positive cache count can be estimated.',can_compact:'Whether native compaction is currently available',can_new:'Whether a fresh conversation can currently be created',context_percent:'Latest observed context occupancy or null',idle_minutes:'Minutes since the last completed turn or null'}},
       {category:'Session control',method:'POST',path:'/api/sessions/:id/compact',description:'Request native compaction in the same conversation. Requires an administrator who owns the session and has agent write permission. Await native completion before sending new input.',
         request:{expected_native_id:{type:'string',required:false,description:'Native conversation identity from input-check. If it changed, the compaction request is rejected.'}}},
@@ -941,7 +941,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         const check=await checkSendGuardSubmission(session,req.user!.id,guardPayload,guardToken,true);
         const nativeId=nativeConversationId(session);
         const latest=getSession(id);
-        if(check||!latest||nativeConversationId(latest)!==nativeId||target&&nativeConversationId(target)!==nativeId)
+        if(check||!latest||nativeConversationId(latest)!==nativeId||latest.agent_environment_id!==session.agent_environment_id
+          ||target&&(nativeConversationId(target)!==nativeId||target.agent_environment_id!==session.agent_environment_id))
           throw Object.assign(Error(check?.required_action?'当前会话命中发送保护自动规则，处理后才能发送':'会话或规则已变化，请重新检查后发送'),{submission:'rejected',send_guard:check});
       }
       if(batch)rememberBatch(id,clientId as string,batch);

@@ -13,6 +13,7 @@ import {DEFAULT_SEND_GUARD,SEND_GUARD_KEY} from '../src/services/send-guard-poli
 import {validGuardToken,guardToken,inspectSendGuard} from '../src/services/conversation-send-guard.js';
 import * as stream from '../src/services/agents/codex/stream.js';
 import * as manager from '../src/services/session-manager.js';
+import {updateAgentManagement} from '../src/services/agents/management-store.js';
 import {setRoleGrants,setUserRoles} from '../src/services/rbac.js';
 let app:ReturnType<typeof Fastify>,cleanup:()=>void,cookie:string,userId:string;
 beforeEach(async()=>{
@@ -187,4 +188,57 @@ it.each(['codex','claude'] as const)('estimates the cached input at risk for the
  vi.mocked(adapter.telemetry.read).mockResolvedValue(telemetry(540,760));
  getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY,JSON.stringify({...DEFAULT_SEND_GUARD,reminder_enabled:false}));
  expect((await check()).json()).toMatchObject({needs_confirmation:false,cache_miss_estimate:null});
+});
+
+
+it.each(['codex','claude'] as const)('matches whole rules only for selected Provider bindings on %s',async agentId=>{
+ for(const id of ['codex','claude']){
+  updateAgentManagement(id,()=>({defaults:{},providers:['shared','backup','other'].map(id=>({id,name:id,kind:'fixture',enabled:true,fields:{}}))}));
+ }
+ const adapter=getAgent(agentId);
+ if(agentId==='claude'){
+  getDb().prepare("UPDATE sessions SET cli_type='claude',codex_session_id=NULL,claude_session_id='native' WHERE id='s'").run();
+  vi.spyOn(adapter.telemetry,'read').mockImplementation(codexAdapter.telemetry.read);
+  vi.spyOn(adapter.runtime,'read').mockImplementation(codexAdapter.runtime.read);
+ }
+ const submit=vi.spyOn(adapter.input,'submit');
+ const prefix=agentId==='codex'?'provider:':'claude-provider:';
+ const bind=(id:string)=>getDb().prepare("UPDATE sessions SET agent_environment_id=? WHERE id='s'").run(prefix+id);
+ const conditions={operator:'and',conditions:[{type:'context_percent',value:80}]};
+ const settings={enabled:true,rules:[
+  {action:'compact',provider_ids:[`${agentId==='codex'?'claude':'codex'}:shared`],conditions},
+  {action:'new',provider_ids:['codex:backup','claude:backup'],conditions},
+  {action:'remind',provider_ids:['codex:shared','claude:shared'],conditions},
+ ]};
+ bind('shared');
+ const saved=await app.inject({method:'PUT',url:'/api/settings',headers:{cookie},payload:{settings:{[SEND_GUARD_KEY]:JSON.stringify(settings)}}});
+ expect(saved.statusCode).toBe(200);
+ const check=()=>app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ const reminder=(await check()).json();
+ expect(reminder).toMatchObject({needs_confirmation:true,required_action:null,token:expect.any(String)});
+ bind('backup');
+ expect((await check()).json()).toMatchObject({needs_confirmation:true,required_action:'new',token:null});
+ const denied=await app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{...input,guard_token:reminder.token}});
+ expect(denied.statusCode).toBe(409);
+ expect(denied.json()).toMatchObject({submission:'rejected',send_guard:{required_action:'new'}});
+ expect(submit).not.toHaveBeenCalled();
+ bind('other');
+ expect((await check()).json()).toMatchObject({needs_confirmation:false,required_action:null});
+});
+
+it('can confirm quota after switching out of the scope of a quota rule',async()=>{
+ updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'source',name:'source',kind:'fixture',enabled:true,fields:{}}]}));
+ const quota=vi.spyOn(codexAdapter.quota,'accountRemaining').mockReturnValue(0);
+ vi.spyOn(codexAdapter.quota,'alternateAccount').mockReturnValue({id:'native',label:'native'});
+ const settings={enabled:true,rules:[{
+  action:'brief',target:'available_account',provider_ids:['codex:source'],
+  conditions:{operator:'and',conditions:[{type:'account_remaining_percent',value:0}]},
+ }]};
+ getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY,JSON.stringify(settings));
+ getDb().prepare("UPDATE sessions SET agent_environment_id='provider:source' WHERE id='s'").run();
+ const check=()=>app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ expect((await check()).json()).toMatchObject({required_action:'brief',switch_account:true,account_remaining_percent:0});
+ quota.mockReturnValue(65);
+ getDb().prepare("UPDATE sessions SET agent_environment_id=NULL WHERE id='s'").run();
+ expect((await check()).json()).toMatchObject({required_action:null,needs_confirmation:false,account_remaining_percent:65});
 });

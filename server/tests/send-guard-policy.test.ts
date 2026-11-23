@@ -33,3 +33,13 @@ it('validates automatic targets and treats unavailable quota as unknown',()=>{
  }
  expect(()=>validateSendGuard({...DEFAULT_SEND_GUARD,automatic_rules:Array(9).fill(rule)})).toThrow();
 });
+
+it('requires an explicit nonempty list of unique Provider IDs when narrowing a rule',()=>{
+ const rule={action:'remind',conditions:DEFAULT_SEND_GUARD.conditions};
+ expect(()=>validateSendGuard({enabled:true,rules:[rule,{...rule,provider_ids:['codex:native','claude:anthropic']}]})).not.toThrow();
+ for(const provider_ids of [[],['codex:native','codex:native'],['missing-agent-prefix'],[null]]){
+  expect(()=>validateSendGuard({enabled:true,rules:[{...rule,provider_ids}]})).toThrow();
+ }
+ expect(()=>validateSendGuard({enabled:true,rules:[{...rule,target:'available_account'}]})).toThrow();
+ expect(()=>validateSendGuard({...DEFAULT_SEND_GUARD,rules:[rule]})).toThrow();
+});

@@ -4,12 +4,27 @@ import {getDb} from '../db/index.js';
 import {isAdmin} from '../auth.js';
 import {agentForSession} from './agents/index.js';
 import {sessionAgentContext} from './agents/session.js';
-import type {AgentSession} from './agents/types.js';
+import type {AgentAdapter,AgentSession} from './agents/types.js';
+import {normalizeSendGuardPolicy,sendGuardProviderKey,type SendGuardAction,type SendGuardRule} from '../shared/send-guard.js';
 import {nativeConversationId} from './session-identity.js';
 import {DEFAULT_SEND_GUARD,SEND_GUARD_KEY,validateSendGuard,evaluateSendGuard,usesAccountQuota} from './send-guard-policy.js';
 const secret=randomBytes(32),TTL=5*60_000;
-export function sendGuardPolicy(){const row=getDb().prepare('SELECT value FROM settings WHERE key=?').get(SEND_GUARD_KEY) as {value:string}|undefined;const value=row?JSON.parse(row.value):DEFAULT_SEND_GUARD;validateSendGuard(value);return value;}
-function scope(session:AgentSession,userId:string,payload:unknown,policy=sendGuardPolicy()){return createHash('sha256').update(JSON.stringify([userId,session.id,nativeConversationId(session),policy,payload])).digest('hex');}
+export function sendGuardPolicy(){
+ const row=getDb().prepare('SELECT value FROM settings WHERE key=?').get(SEND_GUARD_KEY) as {value:string}|undefined;
+ const value=row?JSON.parse(row.value):DEFAULT_SEND_GUARD;
+ validateSendGuard(value);
+ return normalizeSendGuardPolicy(value);
+}
+function sessionProviderKey(session:AgentSession,adapter:AgentAdapter){
+ const provider=adapter.management.providerForSession?.(session);
+ return provider?sendGuardProviderKey(adapter.descriptor.id,provider):null;
+}
+function scope(session:AgentSession,userId:string,payload:unknown,policy=sendGuardPolicy()){
+ return createHash('sha256').update(JSON.stringify([
+  userId,session.id,nativeConversationId(session),session.agent_environment_id??null,
+  sessionProviderKey(session,agentForSession(session)),policy,payload,
+ ])).digest('hex');
+}
 export function guardToken(session:AgentSession,userId:string,payload:unknown,now=Date.now(),policy=sendGuardPolicy()){
  const body=Buffer.from(JSON.stringify({scope:scope(session,userId,payload,policy),expires:now+TTL})).toString('base64url');return `${body}.${createHmac('sha256',secret).update(body).digest('base64url')}`;
 }
@@ -25,13 +40,20 @@ export async function inspectSendGuard(session:AgentSession,userId:string,payloa
  const tokens=finite(usage?.usage?.last.total_tokens),window=finite(usage?.usage?.window),percent=tokens!==null&&window&&window>0?Math.min(100,tokens/window*100):null;
  const idle=!!runtime&&['idle','interrupted','failed'].includes(runtime.state),last=idle&&runtime?.last_turn_ended_at?Date.parse(runtime.last_turn_ended_at):NaN;
  const idleMinutes=Number.isFinite(last)&&last<=now?(now-last)/60000:null;
- const needsQuota=policy.enabled&&(policy.reminder_enabled!==false&&usesAccountQuota(policy.conditions)||policy.automatic_rules?.some(rule=>rule.target||usesAccountQuota(rule.conditions)));
+ const provider=sessionProviderKey(session,adapter);
+ const applicable=policy.enabled?policy.rules.filter(rule=>!rule.provider_ids||(provider!==null&&rule.provider_ids.includes(provider))):[];
+ const reminders=policy.reminder_enabled===false?[]:applicable.filter(rule=>rule.action==='remind');
+ const automatic=applicable.filter((rule):rule is SendGuardRule&{action:SendGuardAction}=>rule.action!=='remind');
+ // A cross-account send must also confirm quota after entering a Provider
+ // outside the original rule's scope.
+ const needsQuota=policy.enabled&&(policy.rules.some(rule=>rule.target)||
+   [...automatic,...reminders].some(rule=>usesAccountQuota(rule.conditions)));
  let accountRemaining:number|null=null;
  try{if(needsQuota)accountRemaining=finite(adapter.quota.accountRemaining?.(context));}catch{/* No confirmed quota snapshot. */}
  const values={context_percent:percent,context_tokens:tokens,idle_minutes:runtime&&['running','waiting_for_input'].includes(runtime.state)?0:idleMinutes,account_remaining_percent:accountRemaining};
- const rule=policy.enabled?policy.automatic_rules?.find(rule=>evaluateSendGuard(rule.conditions,values)===true):undefined;
+ const rule=automatic.find(rule=>evaluateSendGuard(rule.conditions,values)===true);
  const requiredAction=rule?.action??null;
- const matched=requiredAction?true:policy.enabled&&policy.reminder_enabled!==false?evaluateSendGuard(policy.conditions,values):false;
+ const matched=requiredAction?true:evaluateSendGuard({operator:'or',conditions:reminders.map(rule=>rule.conditions)},values);
  const owned=session.created_by_user_id===userId,canTransform=isAdmin(userId)&&owned&&idle;
  const switchAccount=rule?.target==='available_account';
  let targetAccount:{id:string;label:string}|null=null;
@@ -68,7 +90,7 @@ export async function checkSendGuardSubmission(session:AgentSession,userId:strin
  const policy=sendGuardPolicy();
  if(!policy.enabled&&token===undefined)return null;
  const valid=validGuardToken(token,session,userId,payload,Date.now(),policy);
- if(valid&&!(queued&&policy.enabled&&policy.automatic_rules?.length))return null;
+ if(valid&&!(queued&&policy.enabled&&policy.rules.some(rule=>rule.action!=='remind')))return null;
  const check=await inspectSendGuard(session,userId,payload,policy);
  const policyChanged=JSON.stringify(policy)!==JSON.stringify(sendGuardPolicy());
  if(check.required_action||policyChanged)return check;
