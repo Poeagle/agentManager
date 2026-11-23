@@ -1,7 +1,7 @@
 import {lazy,Suspense,useCallback,useEffect,useId,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
 import {useQuery,useInfiniteQuery,useQueryClient} from '@tanstack/react-query';
-import {ArrowLeft,ArrowUpRight,Bell,BellOff,ChevronDown,Folder,Loader2,X} from 'lucide-react';
+import {ArrowLeft,ArrowUpRight,Bell,BellOff,ChevronDown,Folder,Loader2} from 'lucide-react';
 import {api,type Project} from '../lib/api';
 import {agentNativeId} from '../lib/agents';
 import {notificationApi,notificationFocus,notificationIsVisible,notificationTime,type Notification,type NotificationFilter} from '../lib/notifications';
@@ -111,9 +111,12 @@ export function NotificationCenter({userId,projects,onOpen,onDetailChange}:{user
   if(!canRead)return null;
   const unread=summary.data?.unread||0,pending=summary.data?.pending||0;
   const current=selected&&(summary.data?.notifications.find(row=>row.id===selected.id)||selected);
+  const toastLabel=toast?`${toast.project_name||'工作会话'}｜${toast.display_name}`:'';
   return <>
     <button ref={button} type="button" className="notification-bell workspace-header-button" aria-label={`消息通知${unread?`，${unread} 条未读`:''}`} aria-expanded={open} aria-controls="notification-center" onClick={()=>{if(!open){setToast(null);setSelected(null);setFilter(pending?'pending':'unread');}setOpen(value=>!value);}} title={`消息通知 · ${pending} 项待处理`}><Bell size={14}/>{!!unread&&<span className="notification-badge">{unread>99?'99+':unread}</span>}{summary.isError&&<span className="notification-offline" title="通知读取失败"/>}</button>
-    {toast&&!open&&createPortal(<aside className="notification-toast" aria-label="新消息通知" aria-live="polite"><button className="notification-toast-close" aria-label="关闭提醒" onClick={()=>setToast(null)}><X size={14}/></button><strong>{toast.project_name} · {toast.display_name}</strong><p>{toast.title}</p><div className="notification-toast-preview">{toast.body}</div><footer><button onClick={()=>select(toast)}>查看并处理</button><button onClick={()=>jump(toast)}>打开标签页<ArrowUpRight size={12}/></button></footer></aside>,document.body)}
+    {toast&&!open&&createPortal(<aside className="notification-toast" aria-label="新消息通知" aria-live="polite">
+      <button type="button" title={toastLabel} onClick={()=>toast.project_id?jump(toast):select(toast)}>{toastLabel}</button>
+    </aside>,document.body)}
     {open&&<Dialog title="消息通知" size="image" width={current?1120:640} maxWidth="calc(100vw - 24px)" className="notification-dialog" actions={<>
         <div className="notification-toolbar"><div role="group" aria-label="通知分类">{([['pending','待处理'],['unread','未读'],['all','全部']] as const).map(([value,label])=><button key={value} aria-pressed={filter===value} onClick={()=>setFilter(value)}>{label}</button>)}</div><select aria-label="筛选通知项目" value={project} onChange={event=>setProject(event.target.value)}><option value="">全部项目</option>{ownProjects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>{project&&<button disabled={busy} title={summary.data?.preferences.muted_project_ids.includes(project)?'恢复项目提醒':'静音项目提醒，通知仍保留'} aria-label={summary.data?.preferences.muted_project_ids.includes(project)?'恢复项目提醒':'静音项目提醒'} onClick={()=>void mute()}><BellOff size={15}/></button>}</div>
         <span className="notification-counts">待处理 {pending} · 未读 {unread}</span>

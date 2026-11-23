@@ -56,7 +56,9 @@ test('notifies changed sessions across closed projects, answers in the centered 
     appendFileSync(log,record('response_item',{type:'message',id:'work-result',role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'work'},content:[{type:'output_text',text:'兼容性检查完成，现有接口保持兼容。'}]})+record('event_msg',{type:'task_complete',turn_id:'work'}));
     active=false;send('turn/completed',{threadId:native,turn:{id:'work',status:'completed',completedAt:Date.now()/1000}});
     await expect(page.getByRole('button',{name:/消息通知，1 条未读/})).toBeVisible({timeout:15000});
-    const toast=page.getByRole('complementary',{name:'新消息通知'});await expect(toast).toContainText('本轮运行完成');
+    const toast=page.getByRole('complementary',{name:'新消息通知'});
+    await expect(toast).toHaveText('通知验证项目｜兼容性修复');
+    await expect(toast.getByRole('button')).toHaveCount(1);
     await page.getByRole('button',{name:/消息通知，1 条未读/}).click();
     const drawer=page.getByRole('dialog',{name:'消息通知'});
     const noticeList=drawer.getByRole('region',{name:'通知列表'});
@@ -141,6 +143,24 @@ test('notifies changed sessions across closed projects, answers in the centered 
     await expect(page.getByLabel('会话标签',{exact:true}).locator('[data-session-id="notification-work"]')).toHaveCount(1);
     const original=page.locator('.session-chat[data-session-id="notification-work"]').filter({visible:true});
     await expect(original).toBeVisible();await expect(original.locator('.session-chat-message-statistics').first()).toBeVisible();
+    expect((await(await page.request.get('/api/sessions')).json()).sessions).toHaveLength(2);
+
+    await page.getByRole('button',{name:'Projects',exact:true}).click();
+    await expect(original).not.toBeVisible();
+    await page.setViewportSize({width:320,height:780});
+    appendFileSync(log,record('response_item',{type:'message',id:'popup-result',role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'reply-turn-2'},content:[{type:'output_text',text:'可通过右侧提醒定位这条结果。'}]})+record('event_msg',{type:'task_complete',turn_id:'reply-turn-2'}));
+    active=false;send('turn/completed',{threadId:native,turn:{id:'reply-turn-2',status:'completed',completedAt:Date.now()/1000}});
+    const jumpFromToast=toast.getByRole('button',{name:'通知验证项目｜兼容性修复',exact:true});
+    await expect(jumpFromToast).toBeVisible();
+    await expect(jumpFromToast).toHaveCSS('white-space','nowrap');
+    await expect(jumpFromToast).toHaveCSS('text-overflow','ellipsis');
+    const toastBox=await toast.boundingBox();
+    expect(toastBox!.height).toBeLessThan(40);
+    expect(toastBox!.x+toastBox!.width).toBeLessThanOrEqual(320);
+    await jumpFromToast.click();
+    await expect(drawer).not.toBeVisible();
+    await expect(toast).not.toBeVisible();
+    await expect(original.locator('[data-notification-focus="true"]')).toContainText('可通过右侧提醒定位这条结果。');
     expect((await(await page.request.get('/api/sessions')).json()).sessions).toHaveLength(2);
   }finally{
     try {
