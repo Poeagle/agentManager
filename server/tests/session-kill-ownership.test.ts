@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { authHook, createSession as createAuthSession, createUser, hashApiKey, setProjectToolAccess } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
 import { sessionRoutes } from '../src/routes/sessions.js';
+import { subscribe, type Event } from '../src/services/event-store.js';
 import * as sessionManager from '../src/services/session-manager.js';
 import * as agentHost from '../src/services/agents/host.js';
 import { createTestDatabase } from './helpers/database.js';
@@ -177,7 +178,7 @@ describe('session kill ownership', () => {
     } finally { finish?.({ok:false}); }
   });
 
-  it('queues selected ended records before native cleanup settles and retains failures for retry', async () => {
+  it('accepts batches across projects while native cleanup is pending and scopes each result', async () => {
     const add = getDb().prepare(`INSERT INTO sessions
       (id,project_id,task,status,mode,cli_type,native_session_id,created_by_user_id)
       VALUES (?,'project-1','Work',?,'session',?,?,?)`);
@@ -185,6 +186,10 @@ describe('session kill ownership', () => {
     add.run('batch-codex', 'cancelled', 'codex', '019ff001-4545-7454-8454-454545454545', ownerId);
     add.run('batch-active', 'running', 'codex', null, ownerId);
     add.run('batch-unselected', 'completed', 'claude', null, ownerId);
+    getDb().prepare('INSERT INTO projects(id,name,path,owner_id) VALUES(?,?,?,?)')
+      .run('project-2', 'Other Project', join(fixtureDir, 'other'), ownerId);
+    getDb().prepare(`INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id)
+      VALUES('batch-project-two','project-2','Other work','completed','session','claude',?)`).run(ownerId);
     const viewer = getDb().prepare("SELECT id FROM users WHERE username='kill-viewer'").get() as { id: string };
     add.run('batch-other-owner', 'completed', 'claude', null, viewer.id);
     const tabs = { terminalInstances: [{ id: 'batch-claude' }, { id: 'batch-codex' }] };
@@ -202,9 +207,11 @@ describe('session kill ownership', () => {
     const claudeCleanup = vi.spyOn(claude.identity, 'purgeHistory').mockReturnValue(cleanupPending);
     const codexCleanup = vi.spyOn(codex.identity, 'purgeHistory').mockRejectedValueOnce(new Error('cleanup unavailable')).mockResolvedValue();
     const kill = vi.spyOn(sessionManager, 'killSession');
-    const request = (ids: unknown[], cookie = ownerCookie) => app.inject({
+    const events: Event[] = [];
+    const unsubscribe = subscribe(event => { if (event.type === 'session.record-deletion') events.push(event); });
+    const request = (ids: unknown[], cookie = ownerCookie, projectId = 'project-1') => app.inject({
       method: 'POST', url: '/api/sessions/records/ended', headers: { cookie },
-      payload: { project_id: 'project-1', session_ids: ids },
+      payload: { project_id: projectId, session_ids: ids },
     });
     const record = async (id: string) => (await app.inject({ method: 'GET', url: `/api/sessions/${id}`, headers: { cookie: ownerCookie } })).json().session;
     try {
@@ -225,6 +232,11 @@ describe('session kill ownership', () => {
       expect(result.statusCode).toBe(202);
       expect(result.json()).toEqual({ accepted_ids: ['batch-claude', 'batch-codex'], rejected_ids: ['batch-active', 'batch-other-owner'] });
       await vi.waitFor(() => expect(claudeCleanup).toHaveBeenCalledOnce());
+      const nextProject = await request(['batch-project-two'], ownerCookie, 'project-2');
+      expect(nextProject.statusCode).toBe(202);
+      expect(nextProject.json()).toEqual({ accepted_ids: ['batch-project-two'], rejected_ids: [] });
+      expect((await record('batch-project-two')).record_deletion).toBe('pending');
+      expect(events).toHaveLength(0);
       expect((await request(['batch-claude'])).json()).toEqual({ accepted_ids: ['batch-claude'], rejected_ids: [] });
       expect((await record('batch-claude')).record_deletion).toBe('pending');
       expect((await record('batch-codex')).record_deletion).toBe('pending');
@@ -234,12 +246,19 @@ describe('session kill ownership', () => {
       await vi.waitFor(async () => expect((await record('batch-codex')).record_deletion).toBe('failed'));
       expect(sessionManager.getSession('batch-claude')).toBeNull();
       expect(savedTabs()).toEqual([{ id: 'batch-codex' }]);
+      await vi.waitFor(() => expect(sessionManager.getSession('batch-project-two')).toBeNull());
+      expect(events.map(event => ({ ...event, data: JSON.parse(event.data || '{}') }))).toMatchObject([
+        { session_id: 'batch-claude', project_id: 'project-1', data: { user_id: ownerId, state: 'deleted', project_pending: true } },
+        { session_id: 'batch-codex', project_id: 'project-1', data: { user_id: ownerId, state: 'failed', project_pending: false } },
+        { session_id: 'batch-project-two', project_id: 'project-2', data: { user_id: ownerId, state: 'deleted', project_pending: false } },
+      ]);
       expect((await request(['batch-codex'])).statusCode).toBe(202);
       await vi.waitFor(() => expect(sessionManager.getSession('batch-codex')).toBeNull());
       expect(codexCleanup).toHaveBeenCalledTimes(2);
       expect(savedTabs()).toEqual([]);
       for (const id of ['batch-unselected', 'batch-active', 'batch-other-owner']) expect(sessionManager.getSession(id)).not.toBeNull();
     } finally {
+      unsubscribe();
       finish();
     }
   });

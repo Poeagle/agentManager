@@ -27,9 +27,9 @@ export function createSessionRecordDeletionWorker(
 
   async function runNext(): Promise<boolean> {
     const db = getDb();
-    const job = db.prepare(`SELECT d.session_id, s.created_by_user_id FROM session_record_deletions d
+    const job = db.prepare(`SELECT d.session_id, s.created_by_user_id, s.project_id FROM session_record_deletions d
       JOIN sessions s ON s.id=d.session_id WHERE d.state='pending' ORDER BY d.requested_at,d.session_id LIMIT 1`)
-      .get() as {session_id: string; created_by_user_id: string | null} | undefined;
+      .get() as {session_id: string; created_by_user_id: string | null; project_id: string | null} | undefined;
     if (!job) return false;
 
     const result = await purge(job.session_id).catch(error => {
@@ -41,7 +41,14 @@ export function createSessionRecordDeletionWorker(
       db.prepare("UPDATE session_record_deletions SET state='failed' WHERE session_id=?").run(job.session_id);
     }
     if (job.created_by_user_id && !closing) {
-      broadcastEphemeral({type:'session.record-deletion',session_id:job.session_id,data:{user_id:job.created_by_user_id}});
+      const projectPending = !!db.prepare(`SELECT 1 FROM session_record_deletions d
+        JOIN sessions s ON s.id=d.session_id
+        WHERE d.state='pending' AND s.created_by_user_id=? AND s.project_id IS ? LIMIT 1`)
+        .get(job.created_by_user_id, job.project_id);
+      broadcastEphemeral({
+        type: 'session.record-deletion', session_id: job.session_id, project_id: job.project_id ?? undefined,
+        data: { user_id: job.created_by_user_id, state: result.ok ? 'deleted' : 'failed', project_pending: projectPending },
+      });
     }
     return true;
   }

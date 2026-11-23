@@ -178,13 +178,13 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   // No refetchInterval — driven by WebSocket invalidation (websocket.ts).
   const { data: sessionsData, isSuccess: sessionsLoaded, dataUpdatedAt: sessionsUpdatedAt } = useQuery({
     queryKey: ['sessions'],
-    queryFn: () => api.sessions.list(),
+    queryFn: ({ signal }) => api.sessions.list(undefined, undefined, signal),
   });
   // Keep the complete project record set available for the project sessions
   // view and for naming/restoring older tabs beyond the global history window.
   const { data: projectHistoryData, isSuccess: projectHistoryLoaded, dataUpdatedAt: projectHistoryUpdatedAt } = useQuery({
     queryKey: ['project-sessions', projectId],
-    queryFn: () => api.sessions.list(undefined, projectId),
+    queryFn: ({ signal }) => api.sessions.list(undefined, projectId, signal),
     refetchInterval:(query)=>active && query.state.data?.sessions.some(session=>agentSupports(session,'runtime')) ? 5000 : false,
   });
   // A newly launched session first appears as pending in the global cache.

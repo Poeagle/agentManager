@@ -149,7 +149,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   // the terminal stays quiet, so read their cached runtime snapshots every 5s.
   const { data: sessionsData } = useQuery({
     queryKey: ['sessions'],
-    queryFn: () => api.sessions.list(),
+    queryFn: ({ signal }) => api.sessions.list(undefined, undefined, signal),
     refetchInterval: (query) => query.state.data?.sessions.some((session) => agentSupports(session,'runtime')) ? 5000 : 60_000,
   });
 

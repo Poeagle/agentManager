@@ -189,9 +189,9 @@ describe('project table interactions', () => {
 
   it('loads a project-specific session list only after expansion, and opens an existing session', async () => {
     const user = userEvent.setup(); const open = await mount();
-    expect(api.sessions.list).not.toHaveBeenCalledWith(undefined, 'p1');
+    expect(api.sessions.list).not.toHaveBeenCalledWith(undefined, 'p1', expect.any(AbortSignal));
     await user.click(screen.getByRole('button', { name: '展开项目 Zulu 的会话' }));
-    await waitFor(() => expect(api.sessions.list).toHaveBeenCalledWith(undefined, 'p1'));
+    await waitFor(() => expect(api.sessions.list).toHaveBeenCalledWith(undefined, 'p1', expect.any(AbortSignal)));
     expect(await screen.findByText('Investigate memory')).toBeVisible();
     expect(screen.getByText('原生状态未知')).toBeVisible();
     expect(screen.getByText('Found an idle worker')).toBeVisible();

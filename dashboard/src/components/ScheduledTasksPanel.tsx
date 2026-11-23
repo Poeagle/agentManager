@@ -247,7 +247,7 @@ export function ScheduledTasksPanel({
   });
   const sessionsQuery = useQuery({
     queryKey: ['sessions'],
-    queryFn: () => api.sessions.list(),
+    queryFn: ({ signal }) => api.sessions.list(undefined, undefined, signal),
   });
   const tasks = tasksQuery.data?.tasks ?? [];
   const tabNames = useMemo(() => new Map(

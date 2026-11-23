@@ -85,4 +85,44 @@ describe('shared resource stream cache', () => {
     expect(client.getQueryState(['sessions'])?.isInvalidated).toBe(true);
     expect(client.getQueryState(['project-sessions', 'p1'])?.isInvalidated).toBe(true);
   });
+
+  it('applies deletion results to their own project and refreshes lists only when that project drains', () => {
+    const firstProject = Array.from({ length: 26 }, (_, index) => ({ id: `a-${index}`, record_deletion: 'pending' }));
+    const secondProject = Array.from({ length: 33 }, (_, index) => ({ id: `b-${index}` }));
+    client.setQueryData(['sessions'], { sessions: [...firstProject, ...secondProject] });
+    client.setQueryData(['project-sessions', 'a'], { sessions: firstProject });
+    client.setQueryData(['project-sessions', 'b'], { sessions: secondProject });
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const complete = (id: string, state: 'deleted' | 'failed', projectPending: boolean) => socket.onmessage?.({
+      data: JSON.stringify({ type: 'session.record-deletion', session_id: id, project_id: 'a',
+        data: JSON.stringify({ state, project_pending: projectPending }) }),
+    });
+
+    complete('a-0', 'failed', true);
+    for (const row of firstProject.slice(1, -1)) complete(row.id, 'deleted', true);
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(client.getQueryData(['project-sessions', 'a'])).toEqual({ sessions: [{ id: 'a-0', record_deletion: 'failed' }, firstProject.at(-1)] });
+    expect(client.getQueryData(['project-sessions', 'b'])).toEqual({ sessions: secondProject });
+    complete('a-25', 'deleted', false);
+    expect(client.getQueryData(['sessions'])).toEqual({ sessions: [{ id: 'a-0', record_deletion: 'failed' }, ...secondProject] });
+    expect(invalidate.mock.calls.map(([filter]) => filter?.queryKey)).toEqual([['project-sessions', 'a'], ['sessions'], ['admin-monitor']]);
+  });
+
+  it('cancels an older list response that could put a deleted row back', async () => {
+    const key = ['project-sessions', 'project'];
+    const oldList = { sessions: [{ id: 'deleted' }] };
+    client.setQueryData(key, oldList);
+    let finish!: (list: typeof oldList) => void;
+    let signal: AbortSignal | undefined;
+    const fetching = client.fetchQuery({ queryKey: key, queryFn: (context) => {
+      signal = context.signal;
+      return new Promise<typeof oldList>(resolve => { finish = resolve; });
+    } }).catch(() => undefined);
+    socket.onmessage?.({ data: JSON.stringify({ type: 'session.record-deletion', session_id: 'deleted', project_id: 'project',
+      data: JSON.stringify({ state: 'deleted', project_pending: true }) }) });
+    finish(oldList);
+    await fetching;
+    expect(signal?.aborted).toBe(true);
+    expect(client.getQueryData(key)).toEqual({ sessions: [] });
+  });
 });

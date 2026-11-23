@@ -424,12 +424,12 @@ export const api = {
       ),
   },
   sessions: {
-    list: (status?: string, projectId?: string) => {
+    list: (status?: string, projectId?: string, signal?: AbortSignal) => {
       const query = new URLSearchParams();
       if (status) query.set('status', status);
       if (projectId) query.set('project_id', projectId);
       const suffix = query.size ? `?${query.toString()}` : '';
-      return fetchJSON<{ sessions: Session[] }>(`/sessions${suffix}`);
+      return fetchJSON<{ sessions: Session[] }>(`/sessions${suffix}`, { signal });
     },
     get: (id: string) => fetchJSON<{ session: Session }>(`/sessions/${id}`),
     ignoreQuestions:(id:string,questionIds:string[],ignored=true)=>fetchJSON<{ok:boolean;ignored_question_ids:string[]}>(`/sessions/${encodeURIComponent(id)}/questions/ignore`,{method:'POST',body:JSON.stringify({question_ids:questionIds,ignored})}),
@@ -483,10 +483,17 @@ export const api = {
       fetchJSON<{ok: boolean}>(`/sessions/${encodeURIComponent(id)}/record`, {method:'DELETE'}),
     queueRecordDeletion: (id: string) =>
       fetchJSON<{ok: true; accepted: true}>(`/sessions/${encodeURIComponent(id)}/record?stop=true&background=true`, {method:'DELETE'}),
-    queueEndedRecordDeletions: (projectId: string, sessionIds: string[]) =>
-      fetchJSON<{ accepted_ids: string[]; rejected_ids: string[] }>('/sessions/records/ended', {
-        method: 'POST', body: JSON.stringify({ project_id: projectId, session_ids: sessionIds }),
-      }),
+    queueEndedRecordDeletions: async (projectId: string, sessionIds: string[]) => {
+      try {
+        return await fetchJSON<{ accepted_ids: string[]; rejected_ids: string[] }>('/sessions/records/ended', {
+          method: 'POST', body: JSON.stringify({ project_id: projectId, session_ids: sessionIds }),
+          signal: AbortSignal.timeout(15_000),
+        });
+      } catch (error) {
+        if (error instanceof ApiError && error.status < 500) throw error;
+        throw new Error('未能确认删除提交结果。请取消后刷新列表，确认哪些记录仍可提交。');
+      }
+    },
     // Permanently delete this account's ended records for one project.
     deleteEndedRecords: (projectId: string) =>
       fetchJSON<{ ok: boolean; deleted: number; failed: number }>(`/sessions/records/ended?project_id=${encodeURIComponent(projectId)}`, {

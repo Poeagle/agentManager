@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { QueryClient } from '@tanstack/react-query';
-import type { Event } from './api';
+import type { Event, Session } from './api';
 import { cacheServerResources, SERVER_RESOURCE_QUERY_KEY, type ServerResourceResponse } from './server-resource-cache';
 import {cacheSessionRuntime} from './session-runtime-cache';
 
@@ -126,9 +126,39 @@ export function connectStream() {
         void queryClientRef?.invalidateQueries({queryKey:['notifications']});return;
       }
       if (event.type === 'session.record-deletion') {
-        void queryClientRef?.invalidateQueries({queryKey:['project-sessions']});
-        void queryClientRef?.invalidateQueries({queryKey:['sessions']});
-        void queryClientRef?.invalidateQueries({queryKey:['admin-monitor']});
+        const client = queryClientRef;
+        if (!client) return;
+        const { state, project_pending: projectPending } = JSON.parse(event.data || '{}');
+        if (!event.session_id || !['deleted', 'failed'].includes(state) || typeof projectPending !== 'boolean') {
+          // Older workers report only the user and session. Refresh until those workers are upgraded.
+          void client.invalidateQueries({ queryKey: ['project-sessions'] });
+          void client.invalidateQueries({ queryKey: ['sessions'] });
+          void client.invalidateQueries({ queryKey: ['admin-monitor'] });
+          return;
+        }
+        const id: string = event.session_id;
+        const keys = typeof event.project_id === 'string'
+          ? [['project-sessions', event.project_id], ['sessions']]
+          : [['sessions']];
+        for (const queryKey of keys) {
+          const cached = client.getQueryData<{ sessions: Session[] }>(queryKey);
+          if (cached?.sessions.some(session => session.id === id)) {
+            // A response captured before the deletion cannot replace this result.
+            void client.cancelQueries({ queryKey, exact: true });
+            client.setQueryData<{ sessions: Session[] }>(queryKey, current => current && ({
+              ...current,
+              sessions: state === 'deleted'
+                ? current.sessions.filter(session => session.id !== id)
+                : current.sessions.map(session => session.id === id ? { ...session, record_deletion: 'failed' } : session),
+            }));
+          }
+          if (!projectPending) void client.invalidateQueries({ queryKey, exact: true });
+        }
+        if (state === 'deleted') {
+          client.removeQueries({ queryKey: ['session-record', id], exact: true });
+          client.removeQueries({ queryKey: ['project-session-detail', id], exact: true });
+        }
+        if (!projectPending) void client.invalidateQueries({ queryKey: ['admin-monitor'] });
         return;
       }
       if(event.type==='session.retry')return;

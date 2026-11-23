@@ -1203,7 +1203,7 @@ export function ProjectDashboard({ onOpenProject, onOpenSession, onOpenHarness, 
   // Sessions — driven by WebSocket invalidation, no polling needed
   const { data: sessionsData } = useQuery({
     queryKey: ['sessions'],
-    queryFn: () => api.sessions.list(),
+    queryFn: ({ signal }) => api.sessions.list(undefined, undefined, signal),
   });
 
   const activeSessionsByProject = useMemo(() => {

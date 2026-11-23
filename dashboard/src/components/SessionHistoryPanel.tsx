@@ -143,7 +143,7 @@ export function SessionHistoryPanel({
   onDeleted?: (sessionId: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({ queryKey: ['project-sessions', projectId], queryFn: () => api.sessions.list(undefined, projectId), staleTime: 10_000 });
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({ queryKey: ['project-sessions', projectId], queryFn: ({ signal }) => api.sessions.list(undefined, projectId, signal), staleTime: 10_000 });
   const sessions = data?.sessions ?? [];
   const environments=useQuery({queryKey:['codex-environments'],queryFn:()=>api.codexEnvironments.list(),staleTime:300000});
   const providerLabel=(session:Session)=>{if(session.cli_type!=='codex')return sessionKind(session);const id=session.agent_environment_id||'native';return environments.data?.environments.find(env=>env.id===id)?.name||(id.startsWith('provider:')?id.slice(9):id==='native'?'本机默认 Engine':id);};

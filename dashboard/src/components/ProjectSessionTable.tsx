@@ -16,7 +16,7 @@ function client(session: Session) { return session.mode === 'terminal' || sessio
 function activity(session: Session) { return agentSupports(session,'runtime') ? session.agent_runtime?.last_activity_at ?? null : session.last_activity_at ?? session.updated_at ?? session.started_at ?? session.created_at; }
 
 export function ProjectSessionTable({ projectId, onOpen }: { projectId: string; onOpen: (sessionId: string) => void }) {
-  const query = useQuery({ queryKey: ['project-sessions', projectId], queryFn: () => api.sessions.list(undefined, projectId), staleTime: 10_000, refetchInterval:(query)=>query.state.data?.sessions.some(session=>agentSupports(session,'runtime')) ? 5000 : false });
+  const query = useQuery({ queryKey: ['project-sessions', projectId], queryFn: ({ signal }) => api.sessions.list(undefined, projectId, signal), staleTime: 10_000, refetchInterval:(query)=>query.state.data?.sessions.some(session=>agentSupports(session,'runtime')) ? 5000 : false });
   const liveStates = useStreamStore((store) => store.liveStates);
   const activityAt = useStreamStore((store) => store.activityAt);
   const sessions = (query.data?.sessions ?? []).filter((session) => session.project_id === projectId && activeStatuses.has(session.status)).map((session) => {

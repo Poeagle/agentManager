@@ -80,9 +80,24 @@ describe('dashboard API client', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await api.sessions.list(undefined, 'project-1');
+    const { signal } = new AbortController();
+    await api.sessions.list(undefined, 'project-1', signal);
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/sessions?project_id=project-1', expect.objectContaining({ headers: {} }));
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions?project_id=project-1', expect.objectContaining({ headers: {}, signal }));
+  });
+
+  it('bounds the batch submission wait and reports an unknown result without retrying', async () => {
+    const timeout = AbortSignal.abort(new DOMException('Timeout', 'TimeoutError'));
+    const timeoutSignal = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeout);
+    try {
+      const fetchMock = vi.fn((_url: string, init?: RequestInit) => init?.signal?.aborted
+        ? Promise.reject(init.signal.reason) : Promise.resolve(new Response('{}')));
+      vi.stubGlobal('fetch', fetchMock);
+      await expect(api.sessions.queueEndedRecordDeletions('second-project', ['session'])).rejects.toThrow('未能确认删除提交结果');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      timeoutSignal.mockRestore();
+    }
   });
 
   it('sends enhancement requests through the server with the active tab id', async () => {
