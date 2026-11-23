@@ -326,9 +326,11 @@
 .session-pane-switch button[aria-pressed="false"]:hover {background:var(--bg-tertiary);color:var(--accent);}
 .session-pane-switch .session-pane-reload {display:flex;align-items:center;gap:4px;margin-left:4px;}
 .conversation-auto-context {margin:0 0 12px;color:var(--text-secondary);font-size:11px;}
+.conversation-auto-context .conversation-card-trigger {min-height:28px;padding-block:4px;}
 .conversation-auto-context .conversation-card-trigger strong,.conversation-auto-context .conversation-card-trigger span {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .conversation-auto-context .conversation-card-trigger time {white-space:nowrap;font-size:10px;}
 .conversation-auto-context .conversation-card-trigger svg {flex-shrink:0;color:var(--accent);}
+.conversation-auto-context-dialog {padding-block:8px 12px;}
 .conversation-auto-dialog-copy {display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text-secondary);white-space:nowrap;}
 .conversation-auto-context-body {padding-top:10px;font-size:13px;line-height:1.7;}
 .conversation-auto-context-body>.conversation-markdown {max-width:none;}
