@@ -1,6 +1,6 @@
 import {expect,test} from '@playwright/test';
 
-test('shows the default send guard branches and their operators on desktop and mobile',async({page})=>{
+test('edits reminder groups and automatic rule rows on desktop and mobile',async({page})=>{
  const auth=await (await page.request.get('/api/auth/status')).json();
  const login=await page.request.post(auth.needsSetup?'/api/auth/setup':'/api/auth/login',{
   data:{username:'e2e-admin',password:'test-password'},
@@ -36,12 +36,38 @@ test('shows the default send guard branches and their operators on desktop and m
  await expect(rule.getByLabel('发送提醒条件 5分组 2数值',{exact:true})).toHaveValue('20');
  expect(await rule.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
  const automatic=platform.getByRole('region',{name:'发送保护自动规则'});
+ const table=automatic.getByRole('table',{name:'自动规则'});
  await automatic.getByRole('button',{name:'添加自动规则'}).click();
- await automatic.getByLabel('自动规则 1 的操作').selectOption('brief');
- await automatic.getByLabel('换到有剩余额度的账号').check();
- await automatic.getByLabel('自动规则 1 条件 1',{exact:true}).selectOption('account_remaining_percent');
- await expect(automatic.getByLabel('自动规则 1 条件 1数值')).toHaveValue('0');
+ const add=page.getByRole('dialog',{name:'添加自动规则'});
+ const box=(await add.boundingBox())!;
+ expect(Math.abs(box.x+box.width/2-195)).toBeLessThan(2);
+ expect(Math.abs(box.y+box.height/2-422)).toBeLessThan(2);
+ await add.getByLabel('执行动作').selectOption('brief');
+ await add.getByLabel('换到有剩余额度的账号').check();
+ await add.getByLabel('触发条件 1',{exact:true}).selectOption('account_remaining_percent');
+ await expect(add.getByLabel('触发条件 1数值')).toHaveValue('0');
+ expect(await add.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+ await add.getByRole('button',{name:'应用到表格'}).click();
+ await expect(table.getByRole('row')).toHaveCount(2);
+ const action=table.getByRole('cell',{name:/简要压缩/});
+ await expect(action).toContainText('切换账号');
  expect(await automatic.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+ expect(await table.evaluate(el=>el.scrollWidth<=el.parentElement!.clientWidth+1)).toBe(true);
+ await action.click();
+ const edit=page.getByRole('dialog',{name:'编辑自动规则 1'});
+ await expect(edit.getByLabel('触发条件 1数值')).toHaveValue('0');
+ await edit.getByLabel('触发条件 1数值').fill('15');
+ await page.keyboard.press('Escape');
+ await expect(edit).toHaveCount(0);
+ await expect(platform).toBeVisible();
+ await expect(table.getByRole('row').nth(1)).toContainText('账号额度剩余 ≤ 0%');
+ const open=table.getByRole('button',{name:/编辑自动规则 1/});
+ await open.press('Enter');
+ await expect(edit.getByLabel('触发条件 1数值')).toHaveValue('0');
+ await edit.getByRole('button',{name:'取消',exact:true}).click();
+ await expect(open).toBeFocused();
+ await page.setViewportSize({width:1280,height:720});
+ await expect(table.getByRole('row').nth(1)).toContainText('账号额度剩余 ≤ 0%');
  await platform.getByRole('button',{name:'保存发送保护规则'}).click();
  await expect(platform.getByText('发送保护规则已保存')).toBeVisible();
  const saved=await (await page.request.get('/api/settings')).json();

@@ -275,3 +275,7 @@
   .settings-panel-navigation button { width: auto; flex: none; padding-inline: 10px; font-size: 12px; }
   .settings-panel-content { flex: 1; }
 }
+
+.table-wrap.send-guard-rule-table .table-button {
+  padding-inline: 4px;
+}
