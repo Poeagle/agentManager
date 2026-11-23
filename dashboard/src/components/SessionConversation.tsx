@@ -2942,8 +2942,11 @@ export function SessionConversation({
               />
               {notificationView&&<button type="button" className="session-chat-more" aria-label="更多回复选项" aria-expanded={composerOptionsOpen} aria-controls={`notification-composer-options-${session.id}`} onClick={()=>setComposerOptionsOpen(value=>!value)}>{composer.mode==='batch'?'批量 · 更多':'更多'}<ChevronDown size={12}/></button>}
               {(!notificationView||composerOptionsOpen)&&<div id={`notification-composer-options-${session.id}`} className="session-chat-controls-slot conversation-toolbar"><label className="conversation-control-select conversation-composer-mode"><span>模式</span><select aria-label="发送模式" value={composer.mode} disabled={sending||sendGuard.blocking||!!composer.pending} onChange={e=>persistComposer({mode:e.target.value as ComposerState['mode']})}><option value="immediate">立即发送</option><option value="batch">批量发送</option></select><ChevronDown size={12}/></label><div ref={setToolbarTarget}/></div>}
-              <span className="session-chat-send-hint">{composer.mode==='batch'?'Enter 加入批量 · Ctrl+Enter 发送':'Enter 发送 · Shift+Enter 换行'}</span>
-              <div className="session-chat-send-actions">
+              {!sending&&!sendGuard.checking&&<span className="session-chat-send-hint">{composer.mode==='batch'?'Enter 加入批量 · Ctrl+Enter 发送':'Enter 发送 · Shift+Enter 换行'}</span>}
+              <div className="session-chat-send-actions" data-pending={sending||sendGuard.checking||undefined}>
+                {composer.mode!=='batch'&&(sending||sendGuard.checking)&&<span className="session-chat-send-status" role="status">
+                  {sendGuard.checking?'检查中…':'正在发送…'}
+                </span>}
                 {(!notificationView||composerOptionsOpen)&&<button
                   type="button"
                   className="session-chat-enhance"

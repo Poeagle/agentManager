@@ -420,6 +420,8 @@
 .conversation-control-select select {field-sizing:content;}
 .session-chat-input-tools>.session-chat-send-hint {flex:0 0 auto;margin-left:auto;margin-right:0;text-align:right;}
 .session-chat-send-actions {margin-left:0;}
+.session-chat-send-actions[data-pending="true"] {margin-left:auto;}
+.session-chat-send-status {font-size:11px;color:var(--text-secondary);white-space:nowrap;}
 
 /* Minimal composer controls retain consistent targets without boxed surfaces. */
 .conversation-toolbar {gap:6px;min-height:32px;padding:2px 0;}

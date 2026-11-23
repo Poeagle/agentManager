@@ -30,7 +30,7 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
   if(action==='continue'){finish(p,p.check.token);return;}
   if(action==='brief'&&!options){p.phase='select';publish(p);return;}
   const originalPayload=p.payload,originalNativeId=p.check.native_id;
-  p.detached=action==='compact';p.brief=action==='brief';p.phase=action==='compact'?'compacting':action==='brief'?'preparing':'new';p.error=undefined;p.startedAt=estimatedServerNow();publish(p);
+  p.brief=action==='brief';p.detached=action==='compact'||p.brief;p.phase=action==='compact'?'compacting':action==='brief'?'preparing':'new';p.error=undefined;p.startedAt=estimatedServerNow();publish(p);
   try{
    if(action==='compact')await compaction.start();
    else {
@@ -38,7 +38,7 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
      if(!originalNativeId)throw Error('原生会话身份未知，无法读取历史。');
      p.payload=await prepareBriefSend(sessionId,originalNativeId,p.payload,p.controller.signal);
      if(current.current!==p||p.phase!=='preparing')return;
-     p.detached=true;p.phase='new';publish(p);
+     p.phase='new';publish(p);
     }
     const freshId=action==='brief'?(options?.preference||options?.environmentId?await onNew?.(originalNativeId??undefined,options.preference,options.environmentId):await onNew?.(originalNativeId??undefined)):await onNew?.();
     if(current.current===p&&p.phase==='new'){
@@ -66,16 +66,21 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
  useEffect(()=>{if(!active&&current.current&&!current.current.detached)finish(current.current,null);},[active,finish]);
  useEffect(()=>()=>{const p=current.current;current.current=null;if(p){p.controller.abort();p.resolve(null);}},[sessionId]);
  const check=view?.sessionId===sessionId?view.check:null;
- const notice=view?.detached&&check?<div className="session-chat-guard-status" role={view.error?'alert':'status'}><span>{view.error|| (view.brief?(view.phase==='checking'?'新会话已创建，正在检查后发送…':'正在创建新会话，确认完成后发送简要历史。'):(view.phase==='checking'?'压缩完成，正在检查后发送…':'正在压缩，确认完成后自动发送。'))}</span><button type="button" onClick={()=>{if(current.current)finish(current.current,null);}}>{view.error?'关闭提示':'取消后续发送'}</button></div>:null;
- const dialog=view&&!view.detached&&check?(view.phase==='select'?<BriefOptions sessionId={sessionId} onCancel={()=>{if(current.current)finish(current.current,null);}} onConfirm={options=>{const p=current.current;if(p&&p.phase==='select'){p.phase='choice';void choose('brief',options);}}}/>:<Dialog title="发送前检查" size="lg" busy={view.phase==='new'} onClose={()=>{if(current.current)finish(current.current,null);}}>
+ const showDialog=active&&view&&check&&(!view.detached||view.brief&&view.phase==='choice');
+ const briefStatus=view?.phase==='preparing'?'正在整理已有对话记录…':view?.phase==='checking'?'新会话已创建，正在检查后发送…':'正在创建新会话，确认完成后发送简要历史。';
+ const compactStatus=view?.phase==='checking'?'压缩完成，正在检查后发送…':'正在压缩，确认完成后自动发送。';
+ const notice=view?.detached&&check&&!showDialog?<div className="session-chat-guard-status" role={view.error?'alert':'status'}>
+  <span>{view.error||(view.brief?briefStatus:compactStatus)}</span>
+  <button type="button" onClick={()=>{if(current.current)finish(current.current,null);}}>{view.error?'关闭提示':'取消后续发送'}</button>
+ </div>:null;
+ const dialog=showDialog?(view.phase==='select'?<BriefOptions sessionId={sessionId} onCancel={()=>{if(current.current)finish(current.current,null);}} onConfirm={options=>{const p=current.current;if(p&&p.phase==='select'){p.phase='choice';void choose('brief',options);}}}/>:<Dialog title="发送前检查" size="lg" busy={view.phase==='new'} onClose={()=>{if(current.current)finish(current.current,null);}}>
   <p className="text-sm" style={{color:'var(--text-secondary)'}}>{check.matched===null?'部分会话用量或闲置状态无法核实。':check.matched?'当前会话达到平台设置的上下文提醒条件。':''}请选择如何发送；草稿会保留到实际提交。</p>
   <dl className="my-4 grid grid-cols-2 gap-x-6 gap-y-2 text-xs"><dt>当前上下文 / 窗口</dt><dd>{check.context_tokens??'未知'} / {check.context_window??'未知'} Token</dd><dt>窗口占用</dt><dd>{check.context_percent===null?'未知':`${check.context_percent.toFixed(1)}%`}</dd><dt>上轮结束后闲置</dt><dd>{check.idle_minutes===null?'未知':`${Math.floor(check.idle_minutes)} 分钟`}</dd><dt>用量采集时间</dt><dd>{formatDisplayTimestamp(check.observed_at)}</dd></dl>
   <p className="text-xs" style={{color:'var(--text-muted)'}}>这是发送风险提醒，缓存是否仍可复用无法由闲置时间准确判断。</p>
-  {view.phase==='preparing'&&<p role="status" className="my-3 text-xs">正在整理已有对话记录…</p>}
   {view.phase==='new'&&<p role="status" className="my-3 text-xs">正在创建新会话，确认成功后发送。</p>}
   {view.error&&<p role="alert" className="my-3 text-xs" style={{color:'var(--error)'}}>{view.error}</p>}
   <div className="mt-4 flex flex-wrap justify-end gap-2"><button className="settings-panel-button" disabled={view.phase==='new'} onClick={()=>{if(current.current)finish(current.current,null);}}>取消</button><button className="settings-panel-button" disabled={view.phase!=='choice'||!check.can_new||!onNew} onClick={()=>void choose('new')}>新开后发送</button><button className="settings-panel-button" title="整理已有输入、结论和少量过程，在新会话中发送" disabled={view.phase!=='choice'||!check.can_new||!onNew||!!parseBriefContext(view.payload.input)} onClick={()=>void choose('brief')}>简要压缩后发送</button><button className="settings-panel-button" disabled={view.phase!=='choice'||!check.can_compact} onClick={()=>void choose('compact')}>压缩后发送</button><button className="settings-panel-button settings-panel-button--primary" disabled={view.phase!=='choice'} onClick={()=>void choose('continue')}>原样发送</button></div>
   {(!check.can_compact||!check.can_new)&&<p className="mt-2 text-xs" style={{color:'var(--text-muted)'}}>压缩和新开沿用现有会话权限，并要求当前轮次已结束。</p>}
  </Dialog>):null;
- return {confirm,background:!!view&&view.sessionId===sessionId&&!!view.detached&&['compacting','new','checking'].includes(view.phase),blocking:!!view&&view.sessionId===sessionId,checking:view?.sessionId===sessionId&&view.phase==='checking',dialog,notice};
+ return {confirm,background:!!view&&view.sessionId===sessionId&&!!view.detached&&['preparing','compacting','new','checking'].includes(view.phase),blocking:!!view&&view.sessionId===sessionId,checking:view?.sessionId===sessionId&&view.phase==='checking',dialog,notice};
 }
