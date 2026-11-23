@@ -8,8 +8,9 @@ import { projectOpenModes } from './project-open-modes';
 import { conversationClientId } from '../lib/conversation-timeline';
 
 /** One creation flow for the project list and the workspace's + button. */
-export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated, title }: {
+export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated, title, harnessUrl, onHarnessOpen }: {
   project: Project; onClose: () => void; onSessionCreated: (session: Session) => void; title?: string;
+  harnessUrl?: string; onHarnessOpen?: () => void;
 }) {
   const client = useQueryClient();
   const [environmentId,setEnvironmentId]=useState<string|undefined>(),[environmentReady,setEnvironmentReady]=useState(false);
@@ -38,7 +39,7 @@ export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated,
       void client.invalidateQueries({ queryKey: ['project-sessions', project.id] });
     },
   });
-  return <ProjectOpenDialog project={project} title={title} onClose={onClose} busy={mutation.isPending} error={mutation.error?.message}
+  return <ProjectOpenDialog project={project} harnessUrl={onHarnessOpen ? harnessUrl : undefined} title={title} onClose={onClose} busy={mutation.isPending} error={mutation.error?.message}
     renderOptions={(mode,cli)=>
       mode==='session'&&cli==='codex'
         ? <CodexCreateEnvironment projectId={project.id} onChange={chooseEnvironment} onReady={markEnvironmentReady}/>
@@ -47,5 +48,10 @@ export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated,
           : null}
     isChoiceReady={(mode,cli)=>
       mode!=='session'||(cli!=='codex'&&cli!=='claude')||environmentReady}
-    onOpen={(mode, cli) => mutation.mutate({ mode, cli })} />;
+    onOpen={(mode, cli) => {
+      if (mode === 'deepseek-harness') {
+        onHarnessOpen?.();
+        onClose();
+      } else mutation.mutate({ mode, cli });
+    }} />;
 }

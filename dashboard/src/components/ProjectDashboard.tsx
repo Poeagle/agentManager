@@ -34,6 +34,7 @@ import { useTableModel } from './table/use-table-model';
 import { DataTable, TableExpandButton, TableDetailRow } from './table/DataTable';
 import { RowActionsMenu } from './table/RowActionsMenu';
 import { ProjectSessionCreateDialog } from './ProjectSessionCreateDialog';
+import { HARNESS_URL_SETTING } from '../lib/deepseek-harness';
 import { projectOpenModes } from './project-open-modes';
 import { ProjectSessionTable } from './ProjectSessionTable';
 import { Dialog } from './Dialog';
@@ -41,6 +42,7 @@ import {FolderBrowser} from './FolderBrowser';
 
 interface ProjectDashboardProps {
   onOpenProject: (projectId: string, projectName: string, quickLaunch?: 'session' | 'terminal', cliType?: string) => void;
+  onOpenHarness?: (projectId: string, projectName: string) => void;
   onOpenSession?: (projectId: string, sessionId: string) => void;
   projectOrder: string[];
   onProjectOrderChange: (order: string[]) => void;
@@ -1135,7 +1137,7 @@ function CreateRepoModal({ projectPath, onClose, onCreated }: {
   );
 }
 
-export function ProjectDashboard({ onOpenProject, onOpenSession, projectOrder, onProjectOrderChange }: ProjectDashboardProps) {
+export function ProjectDashboard({ onOpenProject, onOpenSession, onOpenHarness, projectOrder, onProjectOrderChange }: ProjectDashboardProps) {
   const [view, setView] = useState<ViewState>({ mode: 'list' });
   const queryClient = useQueryClient();
   const { data: authStatus } = useQuery({ queryKey: ['auth-status'], queryFn: () => api.auth.status(), staleTime: 60_000 });
@@ -1192,6 +1194,7 @@ export function ProjectDashboard({ onOpenProject, onOpenSession, projectOrder, o
     queryFn: () => api.settings.get(),
     staleTime: 60_000,
   });
+  const harnessUrl = onOpenHarness ? settingsData?.settings?.[HARNESS_URL_SETTING] : undefined;
   const [statuslinePromptDismissed, setStatuslinePromptDismissed] = useState(false);
   const showStatuslinePrompt = !statuslinePromptDismissed
     && isAdmin
@@ -1349,7 +1352,7 @@ export function ProjectDashboard({ onOpenProject, onOpenSession, projectOrder, o
                     <td>{projectOpenModes(project).length ? <GitInfoBadge projectPath={project.path} /> : '未授权'}</td>
                     <td>{activeSessionsByProject[project.id]?.total ?? 0}</td>
                     <td><TableActions>
-                      <TableActionButton  aria-label={`打开项目 ${project.name}`} disabled={projectOpenModes(project).length === 0} onClick={() => { setOpenProject(project); }}>打开</TableActionButton>
+                      <TableActionButton  aria-label={`打开项目 ${project.name}`} disabled={projectOpenModes(project, harnessUrl).length === 0} onClick={() => { setOpenProject(project); }}>打开</TableActionButton>
                       <RowActionsMenu label={`${project.name} 的更多操作`} actions={[
                         ...((isAdmin || (!!authStatus?.user?.id && project.owner_id === authStatus.user.id)) ? [
                           { label: '编辑项目', icon: <Pencil className="h-3.5 w-3.5" />, onClick: () => setView({ mode: 'edit', project }) },
@@ -1373,6 +1376,7 @@ export function ProjectDashboard({ onOpenProject, onOpenSession, projectOrder, o
         onSubmit={() => setView({ mode: 'list' })} onCancel={() => setView({ mode: 'list' })} />}
 
       {openProject && <ProjectSessionCreateDialog key={openProject.id} project={allProjects.find((project) => project.id === openProject.id) ?? openProject}
+        harnessUrl={harnessUrl} onHarnessOpen={onOpenHarness ? () => onOpenHarness(openProject.id, openProject.name) : undefined}
         onClose={closeOpenProject} onSessionCreated={(session) => {
           if (onOpenSession) onOpenSession(openProject.id, session.id);
           else onOpenProject(openProject.id, openProject.name);

@@ -3,12 +3,13 @@ import {sessionAgent,agentNativeId,agentSupports} from '../lib/agents';
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Trash2,Loader2 } from 'lucide-react';
+import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2,Loader2 } from 'lucide-react';
 import { Terminal } from './Terminal';
 import { SessionWorkspacePane } from './SessionWorkspacePane';
 import { FileExplorer, type FileRefreshRequest } from './FileExplorer';
 import { droppedFiles, isFileDrag, type FileUploadRequest } from '../lib/file-upload';
 import { GitPanel } from './GitPanel';
+import { DeepSeekHarnessFrame } from './DeepSeekHarnessFrame';
 import { ProjectSessionCreateDialog } from './ProjectSessionCreateDialog';
 import { projectOpenModes } from './project-open-modes';
 import { api, type Session } from '../lib/api';
@@ -41,6 +42,9 @@ interface ProjectViewProps {
   /** When set, switch to this terminal session ID and clear it */
   focusSessionId?: string | null;
   onFocusSessionHandled?: () => void;
+  configuredHarnessUrl?: string;
+  focusHarness?: boolean;
+  onFocusHarnessHandled?: () => void;
   conversationTarget?:{sessionId:string;focus:ConversationFocus}|null;
   notificationUnread?:Record<string,number>;
 }
@@ -63,11 +67,12 @@ interface ExplorerInstance {
   label: string;
 }
 
-type ActiveMode = 'terminal' | 'explorer' | 'events' | 'git' | 'history' | 'skills' | 'scheduled';
+type ActiveMode = 'terminal' | 'explorer' | 'events' | 'git' | 'history' | 'skills' | 'scheduled' | 'harness';
 
 interface PersistedState {
   activeMode: ActiveMode;
   fileTreeOpen?: boolean;
+  harnessOpen?: boolean;
   explorerInstances: ExplorerInstance[];
   activeExplorerId: string | null;
   terminalInstances: TerminalInstance[];
@@ -144,7 +149,7 @@ const sidebarButtons = [
 // handlers), so the shallow compare holds.
 export const ProjectView = memo(ProjectViewImpl);
 
-function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled,conversationTarget,notificationUnread }: ProjectViewProps) {
+function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled, configuredHarnessUrl = '', focusHarness, onFocusHarnessHandled, conversationTarget,notificationUnread }: ProjectViewProps) {
   const queryClient = useQueryClient();
   const sessionResume = useSessionResume(projectId);
   const [terminalConnectionVersions, setTerminalConnectionVersions] = useState<Record<string, number>>({});
@@ -155,6 +160,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     queryFn: () => api.projects.list(),
   });
   const project = projectsData?.projects.find((p) => p.id === projectId);
+  const harnessUrl = project && project.tool_access !== null && (project.tool_access?.can_session ?? true)
+    ? configuredHarnessUrl : '';
 
   const [restoredRecords,setRestoredRecords]=useState<Record<string,Session>>({});
   const restoreRecord=useCallback((session:Session)=>setRestoredRecords(current=>({...current,[session.id]:session})),[]);
@@ -223,6 +230,16 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const [activeMode, setActiveMode] = useState<ActiveMode>(
     initialized?.activeMode ?? 'terminal'
   );
+  const [harnessOpen, setHarnessOpen] = useState(initialized?.harnessOpen === true);
+  const openHarness = useCallback(() => {
+    setHarnessOpen(true);
+    setActiveMode('harness');
+  }, []);
+  useEffect(() => {
+    if (!projHydrated || !focusHarness || !project || !harnessUrl) return;
+    openHarness();
+    onFocusHarnessHandled?.();
+  }, [projHydrated, focusHarness, project, harnessUrl, openHarness, onFocusHarnessHandled]);
   const [fileTreeOpen,setFileTreeOpen]=useState(initialized?.fileTreeOpen ?? initialized?.activeMode==='explorer');
   const [fileTreeHost,setFileTreeHost]=useState<HTMLDivElement|null>(null);
   const [fileTabsHost,setFileTabsHost]=useState<HTMLDivElement|null>(null);
@@ -692,6 +709,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   useEffect(() => {
     persistState(currentUserId, projectId, {
       activeMode,
+      harnessOpen,
       fileTreeOpen,
       explorerInstances,
       activeExplorerId,
@@ -699,7 +717,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       activeTerminalId,
       hiddenSessionIds: [...closedSessionIds.current],
     });
-  }, [currentUserId, projectId, activeMode, fileTreeOpen, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion]);
+  }, [currentUserId, projectId, activeMode, harnessOpen, fileTreeOpen, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion]);
 
   // ── Cross-device sync: the terminal tab list uses stable AgentManager
   // session IDs. Persisting it (plus hidden/active IDs) makes the tab-to-native
@@ -1034,6 +1052,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     }
     persistState(currentUserId, projectId, {
       activeMode,
+      harnessOpen,
       explorerInstances,
       activeExplorerId,
       terminalInstances: remaining,
@@ -1156,7 +1175,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   }, [activeMode, explorerSavedFile]);
 
   // Sub-tab bar for terminal and explorer modes
-  const showSubTabs = activeMode === 'terminal' || activeMode === 'explorer';
+  const showSubTabs = activeMode === 'terminal' || activeMode === 'explorer' || activeMode === 'harness';
   const [sessionControlsHost,setSessionControlsHost]=useState<HTMLDivElement|null>(null);
 
   return (
@@ -1340,10 +1359,22 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                   );
                 })}
 
+                {harnessOpen && <div className="workspace-tab group" data-active={activeMode === 'harness'}>
+                  <button type="button" aria-pressed={activeMode === 'harness'} className="workspace-tab-button" onClick={openHarness}>
+                    <Globe className="workspace-tab-icon w-3 h-3 shrink-0" aria-hidden="true" />
+                    <span>DeepSeek Harness</span>
+                  </button>
+                  <button type="button" className="workspace-tab-close" aria-label="关闭 DeepSeek Harness"
+                    onClick={() => {
+                      setHarnessOpen(false);
+                      setActiveMode(mode => mode === 'harness' ? 'terminal' : mode);
+                    }}><X className="w-3 h-3" /></button>
+                </div>}
+
                 {/* Create directly through the same dialog as the project list. */}
                 <button
                   onClick={() => setShowNewSession(true)}
-                  disabled={!project || projectOpenModes(project).length === 0}
+                  disabled={!project || projectOpenModes(project, harnessUrl).length === 0}
                   className="flex items-center justify-center rounded-md shrink-0 transition-colors"
                   style={{ width: 24, height: 24, color: 'var(--text-secondary)', background: 'transparent' }}
                   title="新建会话"
@@ -1674,6 +1705,12 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
               </div>
           </div>
 
+          {harnessOpen && <div className="absolute inset-0" hidden={activeMode !== 'harness'}>
+            {harnessUrl && project
+              ? <DeepSeekHarnessFrame key={harnessUrl + project.path} url={harnessUrl} path={project.path} />
+              : <p role="status" className="p-3 text-sm">DeepSeek Harness 接入或项目访问当前不可用。</p>}
+          </div>}
+
           {/* Explorer instances retain edits while their trees/tabs are docked. */}
           {mountedExplorerInstances.map((expl) => (
             <div
@@ -1752,7 +1789,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         </div>
       </div>
 
-      {showNewSession && project && <ProjectSessionCreateDialog project={project} title="新建会话" onClose={closeNewSession} onSessionCreated={handleSessionCreated} />}
+      {showNewSession && project && <ProjectSessionCreateDialog project={project} title="新建会话" onClose={closeNewSession} onSessionCreated={handleSessionCreated} harnessUrl={harnessUrl} onHarnessOpen={openHarness} />}
 
       {/* Close tab confirmation modal */}
       {closeConfirm && (
