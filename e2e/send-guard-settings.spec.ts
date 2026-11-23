@@ -12,32 +12,34 @@ test('edits reminder groups and automatic rule rows on desktop and mobile',async
  const platform=page.getByRole('dialog',{name:'平台管理',exact:true});
  await platform.getByRole('button',{name:'平台设置',exact:true}).click();
  await platform.getByRole('button',{name:'发送保护',exact:true}).click();
- const rule=platform.getByRole('region',{name:'发送提醒条件',exact:true});
- await expect(rule.getByRole('button',{name:'发送提醒条件组合方式'})).toHaveText('或');
- await expect(rule.getByLabel('发送提醒条件 1数值')).toHaveValue('80');
- await expect(rule.getByText('或',{exact:true})).toHaveCount(5);
+ const table=platform.getByRole('table',{name:'发送保护规则'});
+ await expect(platform.getByRole('table')).toHaveCount(1);
+ await expect(platform.getByLabel('提醒条件组合')).toHaveValue('or');
+ await expect(table.getByRole('cell',{name:'发送提醒',exact:true})).toHaveCount(5);
+ await expect(table.getByRole('row')).toHaveCount(6);
+ await expect(table.getByRole('row').nth(1)).toContainText('窗口占用率 ≥ 80%');
  for(const [index,[minutes,percent]] of [[30,30],[20,50],[10,60],[60,20]].entries()){
-  const label=`发送提醒条件 ${index+2}分组`;
-  const branch=rule.getByRole('region',{name:label,exact:true});
-  await expect(branch.getByRole('button',{name:`${label}组合方式`})).toHaveText('且');
-  await expect(branch.getByRole('button',{name:`${label}连接方式`})).toHaveText('且');
-  await expect(branch.getByLabel(`${label} 1`,{exact:true})).toHaveValue('idle_minutes');
-  await expect(branch.getByLabel(`${label} 1数值`,{exact:true})).toHaveValue(String(minutes));
-  await expect(branch.getByLabel(`${label} 2`,{exact:true})).toHaveValue('context_percent');
-  await expect(branch.getByLabel(`${label} 2数值`,{exact:true})).toHaveValue(String(percent));
+  await expect(table.getByRole('row').nth(index+2)).toContainText(`闲置时间 ≥ ${minutes} 分钟 且 窗口占用率 ≥ ${percent}%`);
  }
- const desktopBranch=rule.getByRole('region',{name:'发送提醒条件 2分组',exact:true});
- const idle=desktopBranch.getByLabel('发送提醒条件 2分组 1',{exact:true});
- const usage=desktopBranch.getByLabel('发送提醒条件 2分组 2',{exact:true});
- expect(Math.abs((await idle.boundingBox())!.y-(await usage.boundingBox())!.y)).toBeLessThan(2);
- await desktopBranch.getByRole('button',{name:'发送提醒条件 2分组连接方式'}).click();
- await expect(desktopBranch.getByRole('button',{name:'发送提醒条件 2分组组合方式'})).toHaveText('或');
+ await expect(platform.getByRole('spinbutton')).toHaveCount(0);
  await page.setViewportSize({width:390,height:844});
- await expect(rule.getByLabel('发送提醒条件 5分组 2数值',{exact:true})).toHaveValue('20');
- expect(await rule.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
- const automatic=platform.getByRole('region',{name:'发送保护自动规则'});
- const table=automatic.getByRole('table',{name:'自动规则'});
- await automatic.getByRole('button',{name:'添加自动规则'}).click();
+ const reminderOpen=table.getByRole('button',{name:/编辑提醒条件 2/});
+ await reminderOpen.press('Enter');
+ const reminder=page.getByRole('dialog',{name:'编辑提醒条件 2'});
+ await expect(reminder.getByLabel('触发条件 1数值')).toHaveValue('30');
+ const reminderBox=(await reminder.boundingBox())!;
+ expect(Math.abs(reminderBox.x+reminderBox.width/2-195)).toBeLessThan(2);
+ expect(Math.abs(reminderBox.y+reminderBox.height/2-422)).toBeLessThan(2);
+ await expect(reminder.getByRole('button',{name:'触发条件组合方式'})).toHaveText('且');
+ await reminder.getByRole('button',{name:'触发条件连接方式'}).click();
+ await reminder.getByLabel('触发条件 2数值').fill('35');
+ await reminder.getByRole('button',{name:'应用到表格'}).click();
+ await expect(table.getByRole('row').nth(2)).toContainText('闲置时间 ≥ 30 分钟 或 窗口占用率 ≥ 35%');
+ await expect(reminderOpen).toBeFocused();
+ await platform.getByLabel('启用发送提醒').uncheck();
+ await expect(table.getByText('已停用',{exact:true})).toHaveCount(5);
+ await platform.getByLabel('启用发送提醒').check();
+ await platform.getByRole('button',{name:'添加自动规则'}).click();
  const add=page.getByRole('dialog',{name:'添加自动规则'});
  const box=(await add.boundingBox())!;
  expect(Math.abs(box.x+box.width/2-195)).toBeLessThan(2);
@@ -48,10 +50,9 @@ test('edits reminder groups and automatic rule rows on desktop and mobile',async
  await expect(add.getByLabel('触发条件 1数值')).toHaveValue('0');
  expect(await add.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
  await add.getByRole('button',{name:'应用到表格'}).click();
- await expect(table.getByRole('row')).toHaveCount(2);
+ await expect(table.getByRole('row')).toHaveCount(7);
  const action=table.getByRole('cell',{name:/简要压缩/});
  await expect(action).toContainText('切换账号');
- expect(await automatic.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
  expect(await table.evaluate(el=>el.scrollWidth<=el.parentElement!.clientWidth+1)).toBe(true);
  await action.click();
  const edit=page.getByRole('dialog',{name:'编辑自动规则 1'});
@@ -71,7 +72,10 @@ test('edits reminder groups and automatic rule rows on desktop and mobile',async
  await platform.getByRole('button',{name:'保存发送保护规则'}).click();
  await expect(platform.getByText('发送保护规则已保存')).toBeVisible();
  const saved=await (await page.request.get('/api/settings')).json();
- expect(JSON.parse(saved.settings.conversation_send_guard).automatic_rules).toEqual([
+ const policy=JSON.parse(saved.settings.conversation_send_guard);
+ expect(policy.conditions.operator).toBe('or');
+ expect(policy.conditions.conditions[1]).toEqual({operator:'or',conditions:[{type:'idle_minutes',value:30},{type:'context_percent',value:35}]});
+ expect(policy.automatic_rules).toEqual([
   {action:'brief',target:'available_account',conditions:{operator:'and',conditions:[{type:'account_remaining_percent',value:0}]}},
  ]);
 

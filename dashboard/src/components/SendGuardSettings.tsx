@@ -46,6 +46,11 @@ function describeConditions(group:SendGuardGroup):string {
   }).join(group.operator==='and'?' 且 ':' 或 ')||'未设置条件';
 }
 
+type RuleEditor = {index:number; group:SendGuardGroup} & (
+  | {kind:'reminder'; keepGroup:boolean}
+  | {kind:'automatic'; action:SendGuardAction; target?:AutomaticSendGuardRule['target']}
+);
+
 export function SendGuardSettings({value,canEdit}:{value:string|undefined;canEdit:boolean}) {
   const client=useQueryClient();
   const [policy,setPolicy]=useState<SendGuardPolicy>(()=>{
@@ -56,16 +61,42 @@ export function SendGuardSettings({value,canEdit}:{value:string|undefined;canEdi
     mutationFn:()=>api.settings.update({conversation_send_guard:JSON.stringify(policy)}),
     onSuccess:result=>client.setQueryData(['settings'],{settings:result.settings}),
   });
-  const [editor,setEditor]=useState<{index:number;rule:AutomaticSendGuardRule}|null>(null);
-  const rules=policy.automatic_rules??[];
+  const [editor,setEditor]=useState<RuleEditor|null>(null);
+  const automaticRules=policy.automatic_rules??[];
+  const reminderRules=policy.conditions.conditions;
+  const reminderGroupOperator=policy.conditions.operator==='and'?'or':'and';
   const editable=canEdit&&!mutation.isPending&&!!value;
-  const openRule=(index:number)=>setEditor({index,rule:rules[index]});
-  const editorTitle=editor?.index===rules.length?'添加自动规则':`${canEdit?'编辑':'查看'}自动规则 ${(editor?.index??0)+1}`;
-  const setRules=(automatic_rules:AutomaticSendGuardRule[])=>setPolicy({...policy,automatic_rules});
+  const rows:RuleEditor[]=[
+    ...automaticRules.map(({action,target,conditions:group},index)=>({kind:'automatic' as const,index,action,target,group})),
+    ...reminderRules.map((condition,index):RuleEditor=>{
+      if('conditions' in condition)return {kind:'reminder',index,group:condition,keepGroup:true};
+      return {kind:'reminder',index,group:{operator:reminderGroupOperator,conditions:[condition]},keepGroup:false};
+    }),
+  ];
+  const titleFor=(row:RuleEditor)=>{
+    const isReminder=row.kind==='reminder';
+    const title=isReminder?'提醒条件':'自动规则';
+    const count=isReminder?reminderRules.length:automaticRules.length;
+    return row.index===count?`添加${title}`:`${canEdit?'编辑':'查看'}${title} ${row.index+1}`;
+  };
+  const setAutomaticRules=(automatic_rules:AutomaticSendGuardRule[])=>setPolicy({...policy,automatic_rules});
+  const setReminderRules=(conditions:SendGuardGroup['conditions'])=>setPolicy({...policy,conditions:{...policy.conditions,conditions}});
   const moveRule=(from:number,to:number)=>{
-    const ordered=[...rules];
+    const ordered=[...automaticRules];
     [ordered[from],ordered[to]]=[ordered[to],ordered[from]];
-    setRules(ordered);
+    setAutomaticRules(ordered);
+  };
+  const applyRule=(draft:RuleEditor)=>{
+    if(draft.kind==='automatic'){
+      const next=[...automaticRules];
+      next[draft.index]={action:draft.action,target:draft.target,conditions:draft.group};
+      setAutomaticRules(next);
+    }else{
+      const next=[...reminderRules];
+      next[draft.index]=!draft.keepGroup&&draft.group.conditions.length===1?draft.group.conditions[0]:draft.group;
+      setReminderRules(next);
+    }
+    setEditor(null);
   };
 
   return <section className="settings-panel-section">
@@ -77,87 +108,96 @@ export function SendGuardSettings({value,canEdit}:{value:string|undefined;canEdi
     </div>
     {!canEdit&&<p className="mb-3 text-xs" style={{color:'var(--text-muted)'}}>只有管理员可以修改此平台规则。</p>}
     <div className="space-y-3">
-      <fieldset disabled={!editable} className="space-y-3">
-        <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={policy.enabled} onChange={event=>setPolicy({...policy,enabled:event.target.checked})}/>启用发送保护</label>
-        <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={policy.reminder_enabled!==false} onChange={event=>setPolicy({...policy,reminder_enabled:event.target.checked})}/>启用发送提醒</label>
-        {policy.reminder_enabled!==false&&<ConditionGroupEditor<SendGuardCondition> layout="expression" group={policy.conditions} onChange={group=>setPolicy({...policy,conditions:group})}
-          title="发送提醒条件" heading="什么时候提醒" makeCondition={makeCondition} renderCondition={renderCondition}
-          emptyText="请添加至少一条提醒条件。" help="最多 4 层、50 项。闲置从上一轮结束时开始计算。"/>}
-      </fieldset>
-      <section aria-label="发送保护自动规则" className="space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h4 className="text-sm font-semibold">自动规则</h4>
-          <button type="button" className="settings-panel-button" disabled={!editable||rules.length>=MAX_AUTOMATIC_SEND_RULES}
-            onClick={()=>setEditor({index:rules.length,rule:{action:'brief',conditions:{operator:'and',conditions:[makeCondition()]}}})}>添加自动规则</button>
+      <fieldset disabled={!editable} className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+        <label className="flex items-center gap-2"><input type="checkbox" checked={policy.enabled} onChange={event=>setPolicy({...policy,enabled:event.target.checked})}/>启用发送保护</label>
+        <label className="flex items-center gap-2"><input type="checkbox" checked={policy.reminder_enabled!==false} onChange={event=>setPolicy({...policy,reminder_enabled:event.target.checked})}/>启用发送提醒</label>
+        <label className="flex items-center gap-2">提醒条件组合
+          <select className="settings-panel-control" style={{width:'auto'}} value={policy.conditions.operator}
+            onChange={event=>setPolicy({...policy,conditions:{...policy.conditions,operator:event.target.value as SendGuardGroup['operator']}})}>
+            <option value="or">任一满足（或）</option>
+            <option value="and">全部满足（且）</option>
+          </select>
+        </label>
+        <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+          <button type="button" className="settings-panel-button" disabled={reminderRules.length>=20}
+            onClick={()=>setEditor({kind:'reminder',index:reminderRules.length,group:{operator:reminderGroupOperator,conditions:[makeCondition()]},keepGroup:false})}>添加提醒条件</button>
+          <button type="button" className="settings-panel-button" disabled={automaticRules.length>=MAX_AUTOMATIC_SEND_RULES}
+            onClick={()=>setEditor({kind:'automatic',index:automaticRules.length,action:'brief',group:{operator:'and',conditions:[makeCondition()]}})}>添加自动规则</button>
         </div>
-        <p className="text-xs leading-5" style={{color:'var(--text-secondary)'}}>按表格顺序执行首条命中的规则。操作需要会话空闲和相应权限，未完成时保留草稿。新开和简要压缩在新会话就绪后会永久删除旧会话及 Agent 原始对话文件。</p>
-        <TableFrame label="自动规则" fitWidth className="send-guard-rule-table"
-          columns={<colgroup><col style={{width:42}}/><col/><col style={{width:'24%'}}/>{canEdit&&<col style={{width:100}}/>}</colgroup>}
-          header={<><th scope="col">顺序</th><th scope="col">触发条件</th><th scope="col">执行动作</th>{canEdit&&<th scope="col">操作</th>}</>}>
-          {!rules.length&&<TableStateRow columnCount={canEdit?4:3}>暂无自动规则</TableStateRow>}
-          {rules.map((rule,index)=>{
-            const title=`自动规则 ${index+1}`;
-            const summary=describeConditions(rule.conditions);
-            return <tr key={index} className="cursor-pointer" onClick={event=>{
-              if(!(event.target as Element).closest('button'))openRule(index);
-            }}>
-              <td>{index+1}</td>
-              <td><button type="button" aria-haspopup="dialog" aria-label={`${canEdit?'编辑':'查看'}${title}，${summary}`}
-                title={summary} className="w-full rounded text-left whitespace-normal focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
-                style={{color:'var(--accent)'}} onClick={()=>openRule(index)}>
-                <span className="line-clamp-2 [overflow-wrap:anywhere]">{summary}</span>
-              </button></td>
-              <td><span className="block whitespace-normal">{SEND_GUARD_ACTION_LABELS[rule.action]}</span>
-                {rule.target==='available_account'&&<span className="block whitespace-normal" style={{color:'var(--text-secondary)'}}>切换账号</span>}
-              </td>
-              {canEdit&&<td>
-                <div className="flex gap-1">
+      </fieldset>
+      <TableFrame label="发送保护规则" fitWidth className="send-guard-rule-table"
+        columns={<colgroup><col style={{width:42}}/><col/><col style={{width:'24%'}}/>{canEdit&&<col style={{width:100}}/>}</colgroup>}
+        header={<><th scope="col">顺序</th><th scope="col">触发条件</th><th scope="col">执行动作</th>{canEdit&&<th scope="col">操作</th>}</>}>
+        {!rows.length&&<TableStateRow columnCount={canEdit?4:3}>暂无发送保护规则</TableStateRow>}
+        {rows.map(row=>{
+          const {index}=row;
+          const automatic=row.kind==='automatic';
+          const title=automatic?`自动规则 ${index+1}`:`提醒条件 ${index+1}`;
+          const summary=describeConditions(row.group);
+          const canDelete=editable&&(automatic||reminderRules.length>1);
+          return <tr key={`${row.kind}-${index}`} className="cursor-pointer" onClick={event=>{
+            if(!(event.target as Element).closest('button'))setEditor(row);
+          }}>
+            <td>{automatic?index+1:'—'}</td>
+            <td><button type="button" aria-haspopup="dialog" aria-label={`${titleFor(row)}，${summary}`}
+              title={summary} className="w-full rounded text-left whitespace-normal focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+              style={{color:'var(--accent)'}} onClick={()=>setEditor(row)}>
+              <span className="line-clamp-2 [overflow-wrap:anywhere]">{summary}</span>
+            </button></td>
+            <td><span className="block whitespace-normal">{automatic?SEND_GUARD_ACTION_LABELS[row.action]:'发送提醒'}</span>
+              {automatic&&row.target==='available_account'&&<span className="block whitespace-normal" style={{color:'var(--text-secondary)'}}>切换账号</span>}
+              {!automatic&&policy.reminder_enabled===false&&<span style={{color:'var(--text-secondary)'}}>已停用</span>}
+            </td>
+            {canEdit&&<td>
+              <div className="flex gap-1">
+                {automatic&&<>
                   <TableActionButton aria-label={`上移${title}`} title="上移" disabled={!editable||index===0} onClick={()=>moveRule(index,index-1)}><ArrowUp size={13}/></TableActionButton>
-                  <TableActionButton aria-label={`下移${title}`} title="下移" disabled={!editable||index===rules.length-1} onClick={()=>moveRule(index,index+1)}><ArrowDown size={13}/></TableActionButton>
-                  <TableActionButton aria-label={`删除${title}`} title="删除" disabled={!editable} onClick={()=>setRules(rules.filter((_,i)=>i!==index))}><Trash2 size={13}/></TableActionButton>
-                </div>
-              </td>}
-            </tr>;
-          })}
-        </TableFrame>
-      </section>
+                  <TableActionButton aria-label={`下移${title}`} title="下移" disabled={!editable||index===automaticRules.length-1} onClick={()=>moveRule(index,index+1)}><ArrowDown size={13}/></TableActionButton>
+                </>}
+                <TableActionButton aria-label={`删除${title}`} title={!automatic&&reminderRules.length===1?'至少保留一条提醒条件':'删除'}
+                  disabled={!canDelete} onClick={()=>{
+                    if(automatic)setAutomaticRules(automaticRules.filter((_,i)=>i!==index));
+                    else setReminderRules(reminderRules.filter((_,i)=>i!==index));
+                  }}><Trash2 size={13}/></TableActionButton>
+              </div>
+            </td>}
+          </tr>;
+        })}
+      </TableFrame>
+      <p className="text-xs leading-5" style={{color:'var(--text-secondary)'}}>自动操作需要会话空闲和相应权限，未完成时保留草稿。新开和简要压缩在新会话就绪后会永久删除旧会话及 Agent 原始对话文件。</p>
       <button type="button" className="settings-panel-button settings-panel-button--primary" disabled={!editable} onClick={()=>mutation.mutate()}>保存发送保护规则</button>
     </div>
-    {editor&&<Dialog title={editorTitle} appearance="manager" width={760} onClose={()=>setEditor(null)}>
+    {editor&&<Dialog title={titleFor(editor)} appearance="manager" width={760} onClose={()=>setEditor(null)}>
       <form className="settings-panel-section space-y-3" onSubmit={event=>{
         event.preventDefault();
-        if(!editable)return;
-        const next=[...rules];
-        next[editor.index]=editor.rule;
-        setRules(next);
-        setEditor(null);
+        if(editable&&editor.group.conditions.length)applyRule(editor);
       }}>
         <fieldset disabled={!editable} className="space-y-3">
-          <div className="flex flex-wrap items-center gap-3 text-xs">
+          {editor.kind==='automatic'&&<div className="flex flex-wrap items-center gap-3 text-xs">
             <label className="flex items-center gap-2">执行动作
-              <select className="settings-panel-control" style={{width:'auto'}} value={editor.rule.action} onChange={event=>{
+              <select className="settings-panel-control" style={{width:'auto'}} value={editor.action} onChange={event=>{
                 const action=event.target.value as SendGuardAction;
-                setEditor({...editor,rule:{...editor.rule,action,target:action==='compact'?undefined:editor.rule.target}});
+                setEditor({...editor,action,target:action==='compact'?undefined:editor.target});
               }}>
                 {Object.entries(SEND_GUARD_ACTION_LABELS).map(([key,label])=><option key={key} value={key}>{label}</option>)}
               </select>
             </label>
-            {editor.rule.action!=='compact'&&<label className="flex items-center gap-2">
-              <input type="checkbox" checked={editor.rule.target==='available_account'} onChange={event=>{
-                setEditor({...editor,rule:{...editor.rule,target:event.target.checked?'available_account':undefined}});
+            {editor.action!=='compact'&&<label className="flex items-center gap-2">
+              <input type="checkbox" checked={editor.target==='available_account'} onChange={event=>{
+                setEditor({...editor,target:event.target.checked?'available_account':undefined});
               }}/>
               换到有剩余额度的账号
             </label>}
-          </div>
-          <ConditionGroupEditor<SendGuardCondition> layout="expression" group={editor.rule.conditions}
-            onChange={group=>setEditor({...editor,rule:{...editor.rule,conditions:group}})}
+          </div>}
+          <ConditionGroupEditor<SendGuardCondition> layout="expression" group={editor.group} depth={editor.kind==='reminder'?2:1}
+            onChange={group=>setEditor({...editor,group})}
             title="触发条件" heading="触发条件" makeCondition={makeCondition} renderCondition={renderCondition}
-            emptyText="请添加至少一条触发条件。" help="最多 4 层、50 项。账号额度条件使用可读取的订阅额度。"/>
+            emptyText="请添加至少一条触发条件。" help="最多 4 层、50 项。闲置从上一轮结束时开始计算。"/>
         </fieldset>
         <div className="flex flex-wrap justify-end gap-2">
           <button type="button" className="settings-panel-button" onClick={()=>setEditor(null)}>{editable?'取消':'关闭'}</button>
           {editable&&<button type="submit" className="settings-panel-button settings-panel-button--primary"
-            disabled={!editor.rule.conditions.conditions.length}>应用到表格</button>}
+            disabled={!editor.group.conditions.length}>应用到表格</button>}
         </div>
       </form>
     </Dialog>}
