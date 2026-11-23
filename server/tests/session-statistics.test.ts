@@ -272,6 +272,24 @@ describe('persisted session statistics',()=>{
     expect(readSessionMetadata(context)).toMatchObject({reasons:[],totals:{requests:2,tool_calls:1}});
   });
 
+  it.each([['default',1],['ultrafast',3]] as const)('uses the same USD rates for %s Codex cache drops and request totals',async(speed,multiplier)=>{
+    vi.spyOn(Date,'now').mockReturnValue(base);
+    await writeFile(file,event(0,'task_started',{turn_id:'turn'})+
+      row(1,'turn_context',{turn_id:'turn',model:'gpt-6.2-sol',service_tier:speed})+
+      user(2,'input')+answer(3,'first','commentary')+receipt(4,'before','turn',tokens(101250,98560,145))+
+      answer(5,'second','commentary')+receipt(6,'after','turn',tokens(102609,8064,579)));
+    await updateSessionFacts(codex,file);
+    const metadata=readSessionMetadataDetails(codex,true)!;
+    const [drop]=metadata.cache_drops;
+    expect(metadata.summary.totals?.cost?.amount).toBeCloseTo(0.2123724*multiplier,12);
+    expect(drop.extra_cost?.unit).toBe('USD');
+    expect(drop.extra_cost?.amount).toBeCloseTo(0.1746604*multiplier,12);
+    getDb().prepare('UPDATE session_statistics_sources SET codec_version=609').run();
+    getDb().prepare("UPDATE session_statistics_cache_drops SET fact=json_set(fact,'$.extra_cost.amount',4.36651)").run();
+    await updateSessionFacts(codex,file);
+    expect(readSessionMetadataDetails(codex,true)?.cache_drops[0]?.extra_cost?.amount).toBeCloseTo(0.1746604*multiplier,12);
+  });
+
   it('subtracts reduced cache-read spend from the increased uncached-input cost and preserves signed savings',async()=>{
     updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'ds',name:'DS',kind:'responses',enabled:true,fields:{baseUrl:'https://api.deepseek.com/v1',models:['deepseek-flash']}}]}));
     const api=agentContext({...codex.session,agent_environment_id:'provider:ds'});
