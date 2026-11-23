@@ -1063,10 +1063,14 @@ export interface AdminMonitorSession {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
-  last_activity_at: string;
+  last_activity_at: string | null;
   last_output: string | null;
+  last_output_at?: string | null;
+  agent_state?: 'ready' | 'running' | 'idle' | 'waiting_for_input' | 'interrupted' | 'failed' | null;
+  agent_state_reason?: string | null;
+  memory_source?: 'cgroup' | 'rss' | null;
   root_pid: number | null;
-  process_count: number;
+  process_count: number | null;
   memory_bytes: number | null;
   process_state: 'busy' | 'idle' | 'waiting_for_input' | null;
   prompt_type: 'choice' | 'confirmation' | 'text' | null;
@@ -1100,7 +1104,9 @@ export interface AdminMonitorUser extends AuthUser {
   last_seen_at: string | null;
   active_sessions: number;
   open_projects: number;
-  memory_bytes: number;
+  memory_bytes: number | null;
+  memory_sampled_sessions?: number;
+  tab_quota_used?: number | null;
   projects: AdminMonitorProject[];
 }
 
@@ -1139,6 +1145,7 @@ export interface AdminMonitorResponse {
       used_bytes: number;
       available_bytes: number;
       usage_percent: number;
+      reliable?: boolean;
     };
     disk: {
       total_bytes: number;
@@ -1150,7 +1157,8 @@ export interface AdminMonitorResponse {
   };
   active_users: number;
   active_sessions: number;
-  total_memory_bytes: number;
+  total_memory_bytes: number | null;
+  memory_sampled_sessions?: number;
   users: AdminMonitorUser[];
 }
 

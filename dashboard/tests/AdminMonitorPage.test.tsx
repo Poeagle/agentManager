@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen,within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { calibrateBrowserClock, resetBrowserClock } from '../src/lib/display-clock';
 import { AdminMonitorPage } from '../src/components/AdminMonitorPage';
 import { api, type AdminMonitorResponse, type AdminMonitorSession } from '../src/lib/api';
 
@@ -40,6 +41,7 @@ function session(overrides: Partial<AdminMonitorSession> = {}): AdminMonitorSess
     process_count: 3,
     memory_bytes: 128 * 1024 * 1024,
     process_state: 'busy',
+    agent_state: 'running',
     prompt_type: null,
     choices: null,
     is_permission: false,
@@ -112,6 +114,8 @@ beforeEach(() => {
   vi.mocked(api.admin.deleteMonitorTab).mockResolvedValue({ ok: true, session_continues: false });
 });
 
+afterEach(resetBrowserClock);
+
 describe('administrator monitor page', () => {
   it('shows only online logins by default and lets administrators inspect unconnected unexpired logins',async()=>{
     const online=response.users[0].login_sessions![0],offline={...online,login_ip:'192.0.2.20',last_ip:'192.0.2.20',presence:{state:'offline' as const,connections:0,last_heartbeat_at:null}},stale={...online,login_ip:'192.0.2.30',last_ip:'192.0.2.30',presence:{state:'unresponsive' as const,connections:0,last_heartbeat_at:'2026-07-31T10:00:00Z'}};
@@ -132,6 +136,58 @@ describe('administrator monitor page', () => {
     const client=new QueryClient({defaultOptions:{queries:{retry:false}}});render(<QueryClientProvider client={client}><AdminMonitorPage onBack={vi.fn()} onOpenSession={vi.fn()}/></QueryClientProvider>);
     expect(await screen.findByText('连接异常')).toBeInTheDocument();expect(screen.getAllByText('未记录')).toHaveLength(2);expect(screen.queryByText('刚刚')).not.toBeInTheDocument();
   });
+  it('displays log timestamps with an explicit offset without applying browser clock skew', async () => {
+    const browserNow = Date.now();
+    calibrateBrowserClock(browserNow - 60_000, browserNow, 0);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><AdminMonitorPage onBack={vi.fn()} onOpenSession={vi.fn()}/></QueryClientProvider>);
+    await user.click(await screen.findByRole('button', {name: '展开用户 operator'}));
+    const logins = within(screen.getByRole('table', {name: 'operator 的登录连接'}));
+    const loginAt = new Date(response.users[0].login_sessions![0].login_at);
+    const expected = new Intl.DateTimeFormat('sv-SE', {
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+      second: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset',
+    }).format(loginAt);
+    expect(logins.getByText(expected)).toBeVisible();
+  });
+
+  it('preserves saved ended tabs, shows background activity and labels idle and missing samples accurately', async () => {
+    const base = response.users[0];
+    const project = base.projects[0];
+    vi.mocked(api.admin.monitor).mockResolvedValue({
+      ...response,
+      active_sessions: 2,
+      memory_sampled_sessions: 1,
+      users: [{
+        ...base,
+        active_sessions: 2,
+        memory_sampled_sessions: 1,
+        projects: [{
+          ...project,
+          tabs: [...project.tabs, {id: 'ended-tab', name: '已取消的标签', kind: 'session', is_active: false}],
+          sessions: [
+            session({agent_state: null, process_state: 'idle', last_output: null, memory_bytes: null}),
+            session({id: 'ended-tab', status: 'cancelled', last_output: null}),
+          ],
+        }, {
+          ...project, id: 'closed', name: '未打开项目', is_open: false, is_active: false, tabs: [],
+          sessions: [session({id: 'background', status: 'detached'})],
+        }],
+      }],
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><AdminMonitorPage onBack={vi.fn()} onOpenSession={vi.fn()}/></QueryClientProvider>);
+    await user.click(await screen.findByRole('button', {name: '展开用户 operator'}));
+    expect(screen.getByRole('button', {name: '展开项目 未打开项目'})).toBeVisible();
+    await user.click(screen.getByRole('button', {name: '展开项目 DolphinDB Manager'}));
+    expect(screen.getByText('已取消')).toBeVisible();
+    expect(screen.queryByText('本轮任务已完成')).not.toBeInTheDocument();
+    expect(screen.getByText('终端输出静默')).toBeVisible();
+    expect(screen.getAllByText('（已采样 1/2）')).toHaveLength(2);
+  });
+
   it('shows the user-project-tab hierarchy, status help and ended sessions', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const user = userEvent.setup();

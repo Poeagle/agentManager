@@ -1,4 +1,5 @@
 import {mkdirSync,writeFileSync} from 'fs';
+import * as fs from 'fs/promises';
 import {join} from 'path';
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it,vi } from 'vitest';
@@ -6,12 +7,110 @@ import { createUser } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
 import { userRoutes } from '../src/routes/users.js';
 import { createTestDatabase } from './helpers/database.js';
+import { resolveClaudeDir } from '../src/services/agents/claude/archive.js';
 import { serverResourceSampler } from '../src/services/server-resources.js';
 
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof fs>();
+  return { ...actual, readFile: vi.fn(actual.readFile), readdir: vi.fn(actual.readdir) };
+});
+
+vi.mock('../src/services/agents/claude/archive.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/agents/claude/archive.js')>();
+  return { ...actual, resolveClaudeDir: vi.fn(actual.resolveClaudeDir) };
+});
+
+vi.mock('../src/config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/config.js')>();
+  return { ...actual, config: { ...actual.config, useTmux: false, useDtach: false } };
+});
+
 let cleanup: (() => void) | undefined;
-afterEach(async () => { await serverResourceSampler.stop(); cleanup?.();vi.unstubAllEnvs(); });
+afterEach(async () => { await serverResourceSampler.stop(); cleanup?.();vi.unstubAllEnvs(); vi.mocked(fs.readFile).mockReset(); vi.mocked(fs.readdir).mockReset(); });
 
 describe('administrator monitoring', () => {
+  it.skipIf(process.platform !== 'linux')('counts cgroup processes separately from threads and leaves unsampled totals unknown', async () => {
+    const fixture = createTestDatabase();
+    cleanup = fixture.cleanup;
+    const admin = createUser({ username: 'admin', password: 'password1', role: 'admin' });
+    const db = getDb();
+    db.prepare("INSERT INTO sessions (id, task, status, mode, created_by_user_id) VALUES ('sampled', 'Sampled', 'running', 'terminal', ?), ('unsampled', 'Unsampled', 'running', 'terminal', ?)").run(admin.id, admin.id);
+    db.prepare("UPDATE sessions SET pid = ? WHERE id = 'unsampled'").run(process.pid);
+    const group = join(fixture.dir, 'fake-cgroup');
+    const child = join(group, 'child');
+    mkdirSync(child, { recursive: true });
+    writeFileSync(join(group, 'memory.current'), '139460608\n');
+    writeFileSync(join(group, 'pids.current'), '44\n');
+    writeFileSync(join(group, 'cgroup.procs'), '101\n');
+    writeFileSync(join(child, 'cgroup.procs'), '102\n');
+    const actual = await vi.importActual<typeof fs>('fs/promises');
+    const inFixture = (path: unknown) => typeof path === 'string'
+      ? path.replace(/^.*\/agentmanager-sandbox-sampled\.service(?=\/|$)/, group)
+      : path;
+    vi.mocked(fs.readFile).mockImplementation((path, options) => actual.readFile(inFixture(path) as typeof path, options));
+    vi.mocked(fs.readdir).mockImplementation((path, options) => actual.readdir(inFixture(path) as typeof path, options));
+    const app = Fastify();
+    app.addHook('onRequest', async (req) => { req.user = admin; });
+    await app.register(userRoutes, { prefix: '/api' });
+    try {
+      const res = await app.inject('/api/admin/monitor');
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      const sessions = body.users[0].projects[0].sessions;
+      expect(sessions.find((session: any) => session.id === 'sampled')).toMatchObject({
+        memory_bytes: 139460608, process_count: 2, memory_source: 'cgroup',
+      });
+      expect(sessions.find((session: any) => session.id === 'unsampled')).toMatchObject({
+        memory_bytes: null, process_count: null, last_activity_at: null,
+      });
+      expect(body).toMatchObject({ total_memory_bytes: 139460608, memory_sampled_sessions: 1, active_sessions: 2 });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each(['codex', 'claude'] as const)('reports native %s idle state and activity independently of the terminal', async (agent) => {
+    const fixture = createTestDatabase();
+    cleanup = fixture.cleanup;
+    vi.stubEnv('CODEX_HOME', fixture.dir);
+    vi.mocked(resolveClaudeDir).mockReturnValue(fixture.dir);
+    const nativeId = '019ffabc-3434-7212-8212-123456789012';
+    const when = '2026-11-23T01:02:05.000Z';
+    const message = '原生助手消息';
+    mkdirSync(join(fixture.dir, 'sessions'));
+    const transcript = agent === 'codex' ? [
+      {type: 'event_msg', timestamp: '2026-11-23T01:02:04.000Z', payload: {type: 'agent_message', phase: 'final_answer', message}},
+      {type: 'event_msg', timestamp: when, payload: {type: 'task_complete'}},
+    ] : [
+      {type: 'assistant', timestamp: when, message: {model: 'claude-sonnet-4', role: 'assistant', stop_reason: 'end_turn', content: [{type: 'text', text: message}]}},
+    ];
+    const filename = agent === 'codex' ? join('sessions', `rollout-${nativeId}.jsonl`) : `${nativeId}.jsonl`;
+    writeFileSync(join(fixture.dir, filename), transcript.map((event) => JSON.stringify(event)).join('\n') + '\n');
+    const admin = createUser({ username: 'admin', password: 'password1', role: 'admin' });
+    const db = getDb();
+    db.prepare("INSERT INTO projects (id, name, path) VALUES ('p1', 'Project One', ?)").run(fixture.dir);
+    db.prepare(`INSERT INTO sessions (id, project_id, task, status, mode, agent_id, cli_type, native_session_id, created_by_user_id)
+      VALUES ('active', 'p1', 'Run', 'running', 'session', ?, ?, ?, ?)`).run(agent, agent, nativeId, admin.id);
+
+    const app = Fastify();
+    app.addHook('onRequest', async (req) => { req.user = admin; });
+    await app.register(userRoutes, { prefix: '/api' });
+    try {
+      const result = await app.inject('/api/admin/monitor');
+      expect(result.statusCode).toBe(200);
+      expect(result.json().users[0].projects[0].sessions[0]).toMatchObject({
+        status: 'running',
+        agent_state: 'idle',
+        process_state: null,
+        last_activity_at: when,
+        last_output: message,
+      });
+    } finally {
+      vi.mocked(resolveClaudeDir).mockReset();
+      await app.close();
+    }
+  });
+
   it('rejects members and groups each users open projects and sessions for admins', async () => {
     const fixture=createTestDatabase();cleanup=fixture.cleanup;vi.stubEnv('CODEX_HOME',fixture.dir);mkdirSync(join(fixture.dir,'sessions'));
     const native='019ffabc-1212-7212-8212-123456789012';writeFileSync(join(fixture.dir,'sessions',`rollout-${native}.jsonl`),JSON.stringify({type:'event_msg',timestamp:'2026-10-31T02:00:00Z',payload:{type:'agent_message',phase:'commentary',message:'正在分析查询计划，等待结果'}})+'\n');
@@ -66,7 +165,7 @@ describe('administrator monitoring', () => {
     });
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body).toMatchObject({ active_users: 1, active_sessions: 2, total_memory_bytes: 0 });
+    expect(body).toMatchObject({ active_users: 1, active_sessions: 2, total_memory_bytes: null, memory_sampled_sessions: 0 });
     expect(body.server_resources).toMatchObject({
       hostname: expect.any(String),
       uptime_seconds: expect.any(Number),
@@ -106,16 +205,16 @@ describe('administrator monitoring', () => {
       status: 'running',
       cli_type: 'codex',
       memory_bytes: null,
-      process_count: 0,
+      process_count: null,
       last_output: '正在分析查询计划，等待结果',
-      process_state: 'idle',
+      process_state: null,
     });
     expect(monitoredMember.projects[0].sessions.find((session: any) => session.id === 's1').last_activity_at).toEqual(expect.any(String));
     expect(monitoredMember.projects[0].sessions.find((session: any) => session.id === 'legacy-session')).toMatchObject({
       created_by_user_id: member.id,
       status: 'running',
-      process_state: 'waiting_for_input',
-      is_permission: true,
+      process_state: null,
+      is_permission: false,
     });
 
     const deniedRename = await app.inject({

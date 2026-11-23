@@ -444,22 +444,26 @@ function findCliProcess(rootPid: number): { pid: number; cliType: string; args: 
   return null;
 }
 
-async function terminalRootPid(sessionId: string): Promise<number | null> {
+async function terminalRootPid(sessionId: string, allowStoredPid = true): Promise<number | null> {
   if (config.useTmux) {
     try {
       const { stdout } = await execFileAsync('tmux', [
         '-L', TMUX_SERVER, 'display-message', '-p', '-t', tmuxSessionName(sessionId), '#{pane_pid}',
-      ], { encoding: 'utf8' });
+      ], { encoding: 'utf8', timeout: 2_000 });
       const pid = parseInt(stdout.trim(), 10);
       if (pid > 0) return pid;
     } catch { /* fall through */ }
   }
   if (config.useDtach) {
     try {
-      const { stdout } = await execFileAsync('fuser', [dtachSocket(sessionId)], { encoding: 'utf8' });
+      const { stdout } = await execFileAsync('fuser', [dtachSocket(sessionId)], { encoding: 'utf8', timeout: 2_000 });
       const pid = stdout.trim().split(/\s+/).map(Number).find((value) => value > 0);
       if (pid) return pid;
     } catch { /* fall through */ }
+  }
+  if (!allowStoredPid) {
+    const worker = activeSessions.get(sessionId)?.worker;
+    return worker?.exitCode === null && worker.signalCode === null ? worker.pid ?? null : null;
   }
   try {
     const row = getDb().prepare('SELECT pid FROM sessions WHERE id = ?').get(sessionId) as { pid: number | null } | undefined;
@@ -472,11 +476,11 @@ async function terminalRootPid(sessionId: string): Promise<number | null> {
 /**
  * Resolve the process that owns a session's actual terminal workload.
  * For tmux this is the pane shell (not the short-lived attach client); for
- * dtach/direct sessions it falls back to the durable process recorded in DB.
+ * direct sessions it uses the current worker when one is tracked.
  * Used by the administrator resource monitor.
  */
 export async function getSessionProcessRootPid(sessionId: string): Promise<number | null> {
-  return terminalRootPid(sessionId);
+  return terminalRootPid(sessionId, false);
 }
 
 /** Fresh process check before routing natural-language input to a terminal tab. */

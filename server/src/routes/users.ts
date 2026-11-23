@@ -3,17 +3,19 @@ import {canUseSessionEnvironment} from '../services/agents/environment-access.js
 import { runtimeNames } from '../services/runtime-namespace.js';
 import type { FastifyPluginAsync } from 'fastify';
 import { execFile } from 'child_process';
-import { readFileSync } from 'fs';
+import { readdir, readFile } from 'fs/promises';
+import { join } from 'path';
 import { promisify } from 'util';
 import { getDb } from '../db/index.js';
 import {
   listUsers, createUserAsync, findUserById, findUserByUsername,
-  setUserPasswordAsync, destroyUserSessions, verifyPasswordAsync,
+  getUserTabUsage, setUserPasswordAsync, destroyUserSessions, verifyPasswordAsync,
   passwordLengthError, createSession as createAuthSession, setSessionCookie,SESSION_TTL_DAYS,
 } from '../auth.js';
-import { getTracker, inferQuiescentSessionState } from '../services/session-state.js';
+import { getTracker } from '../services/session-state.js';
 import { getSessionProcessRootPid, killSession } from '../services/session-manager.js';
 import { broadcastEphemeral } from '../services/event-store.js';
+import {readAgentRuntime} from '../services/agents/session.js';
 import {readConversationPreview} from '../services/conversation-preview.js';
 import { revokeUserConnections,userPresence } from '../services/user-connections.js';
 import {requestLoginMetadata} from '../services/login-metadata.js';
@@ -44,6 +46,7 @@ async function readProcessSnapshot(): Promise<Map<number, ProcessSample>> {
     const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,rss='], {
       encoding: 'utf8',
       maxBuffer: 4 * 1024 * 1024,
+      timeout: 2000,
     });
     const snapshot = new Map<number, ProcessSample>();
     for (const line of stdout.split('\n')) {
@@ -60,14 +63,20 @@ async function readProcessSnapshot(): Promise<Map<number, ProcessSample>> {
   }
 }
 
-function measureProcessTree(rootPid: number | null, snapshot: Map<number, ProcessSample>) {
-  if (!rootPid || !snapshot.has(rootPid)) return { root_pid: rootPid, process_count: 0, memory_bytes: null as number | null };
+const unknownResources = { root_pid: null, process_count: null, memory_bytes: null, memory_source: null };
+
+function indexProcessChildren(snapshot: Map<number, ProcessSample>) {
   const children = new Map<number, number[]>();
   for (const process of snapshot.values()) {
     const siblings = children.get(process.parentPid) ?? [];
     siblings.push(process.pid);
     children.set(process.parentPid, siblings);
   }
+  return children;
+}
+
+function measureProcessTree(rootPid: number | null, snapshot: Map<number, ProcessSample>, children: Map<number, number[]>) {
+  if (!rootPid || !snapshot.has(rootPid)) return unknownResources;
   const queue = [rootPid];
   const seen = new Set<number>();
   let memoryBytes = 0;
@@ -78,32 +87,62 @@ function measureProcessTree(rootPid: number | null, snapshot: Map<number, Proces
     memoryBytes += snapshot.get(pid)?.rssBytes ?? 0;
     queue.push(...(children.get(pid) ?? []));
   }
-  return { root_pid: rootPid, process_count: seen.size, memory_bytes: memoryBytes };
+  if (queue.length > 0) return unknownResources;
+  return { root_pid: rootPid, process_count: seen.size, memory_bytes: memoryBytes, memory_source: 'rss' as const };
 }
 
-/** systemd-run sessions live in a sibling cgroup, not below the tmux pane PID. */
-function measureSandboxCgroup(sessionId: string) {
+/** cgroup.procs lists thread groups. Child cgroups share the unit's memory accounting. */
+async function countCgroupProcesses(root: string): Promise<number | null> {
+  const directories = [root];
+  const processes = new Set<string>();
+  try {
+    for (let i = 0; i < directories.length; i++) {
+      const directory = directories[i];
+      const [pids, entries] = await Promise.all([
+        readFile(join(directory, 'cgroup.procs'), 'utf8'),
+        readdir(directory, { withFileTypes: true }),
+      ]);
+      for (const pid of pids.match(/\b[1-9]\d*\b/g) ?? []) processes.add(pid);
+      for (const entry of entries) {
+        if (entry.isDirectory()) directories.push(join(directory, entry.name));
+      }
+      if (directories.length > 64) return null;
+    }
+    return processes.size;
+  } catch {
+    return null;
+  }
+}
+
+async function measureSandboxCgroup(sessionId: string) {
   if (process.platform !== 'linux' || typeof process.getuid !== 'function') return null;
   const uid = process.getuid();
   const safeId = sessionId.replace(/[^A-Za-z0-9_.-]/g, '-');
   const unit = `${runtimeNames().sandboxPrefix}${safeId}.service`;
   const userRoot = `/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service`;
   for (const slice of ['app.slice', 'session.slice', 'background.slice']) {
-    const root = `${userRoot}/${slice}/${unit}`;
+    const root = join(userRoot, slice, unit);
     try {
-      const memoryBytes = Number(readFileSync(`${root}/memory.current`, 'utf8').trim());
-      const processCount = Number(readFileSync(`${root}/pids.current`, 'utf8').trim());
-      const rootPid = Number(readFileSync(`${root}/cgroup.procs`, 'utf8').trim().split(/\s+/)[0]);
-      if (Number.isFinite(memoryBytes) && memoryBytes >= 0) {
-        return {
-          root_pid: Number.isInteger(rootPid) && rootPid > 0 ? rootPid : null,
-          process_count: Number.isFinite(processCount) ? processCount : 0,
-          memory_bytes: memoryBytes,
-        };
-      }
-    } catch { /* this session is not running in this systemd slice */ }
+      const memory = (await readFile(join(root, 'memory.current'), 'utf8')).trim();
+      if (!/^\d+$/.test(memory) || !Number.isSafeInteger(Number(memory))) continue;
+      return {
+        root_pid: null,
+        process_count: await countCgroupProcesses(root),
+        memory_bytes: Number(memory),
+        memory_source: 'cgroup' as const,
+      };
+    } catch { /* unit is unavailable in this slice */ }
   }
   return null;
+}
+
+function latestActivity(...timestamps: Array<string | null | undefined>): string | null {
+  const latest = Math.max(...timestamps.map((value) => {
+    if (!value) return -Infinity;
+    const time = Date.parse(value.includes('T') ? value : value.replace(' ', 'T') + 'Z');
+    return Number.isFinite(time) ? time : -Infinity;
+  }));
+  return Number.isFinite(latest) ? new Date(latest).toISOString() : null;
 }
 
 interface StoredMonitorTab {
@@ -162,6 +201,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
   // recent 20 per user/project so the page remains useful on long-lived installs.
   app.get('/admin/monitor', async (req, reply) => {
     if (!requirePermission(req, reply, 'monitor')) return;
+    reply.header('Cache-Control', 'no-store');
     const serverResourcesPromise = serverResourceSampler.read();
     const db = getDb();
     const users = db.prepare(`
@@ -208,7 +248,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
       is_active: boolean;
     }>>();
     const projectTabs = new Map<string, Map<string, MonitorTab[]>>();
-    const sessionTabOwners = new Map<string, Set<string>>();
+    const sessionTabOwners = new Map<string, Map<string, Set<string>>>();
     for (const row of stateRows) {
       try {
         const parsed = JSON.parse(row.value) as Record<string, unknown>;
@@ -239,12 +279,14 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
           ? parsed.terminalLabels as Record<string, unknown>
           : {};
         const tabs: MonitorTab[] = [];
+        const seenTabs = new Set<string>();
         const addSessionTabs = (values: unknown, activeId: unknown) => {
           if (!Array.isArray(values)) return;
           for (const value of values) {
             if (!value || typeof value !== 'object') continue;
             const tab = value as { id?: unknown; label?: unknown; customLabel?: unknown };
-            if (typeof tab.id !== 'string') continue;
+            if (typeof tab.id !== 'string' || !tab.id || seenTabs.has(tab.id)) continue;
+            seenTabs.add(tab.id);
             const customLabel = typeof tab.customLabel === 'string' ? tab.customLabel.trim() : '';
             const syncedLabel = typeof labels[tab.id] === 'string' ? String(labels[tab.id]).trim() : '';
             const defaultLabel = typeof tab.label === 'string' && tab.label.trim() ? tab.label.trim() : '未命名标签';
@@ -254,9 +296,11 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
               kind: 'session',
               is_active: activeId === tab.id,
             });
-            const owners = sessionTabOwners.get(tab.id) ?? new Set<string>();
+            const ownerProjects = sessionTabOwners.get(tab.id) ?? new Map<string, Set<string>>();
+            const owners = ownerProjects.get(projectId) ?? new Set<string>();
             owners.add(row.user_id);
-            sessionTabOwners.set(tab.id, owners);
+            ownerProjects.set(projectId, owners);
+            sessionTabOwners.set(tab.id, ownerProjects);
           }
         };
         addSessionTabs(parsed.terminalInstances, parsed.activeTerminalId);
@@ -284,7 +328,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
       WHERE status IN ('pending', 'launching', 'running', 'detached', 'released')
          OR recent_rank <= 20
          OR id IN (${tabSessionPlaceholders})
-      ORDER BY COALESCE(started_at, created_at) DESC
+      ORDER BY COALESCE(started_at, created_at) DESC, id
     `).all(...tabSessionIds, ...tabSessionIds) as Array<{
       id: string;
       project_id: string | null;
@@ -296,6 +340,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
       agent_environment_id: string | null;
       pid: number | null;
       terminal_cols: number | null;claude_session_id:string|null;codex_session_id:string|null;
+      native_session_id: string | null;
       created_by_user_id: string | null;
       started_at: string | null;
       completed_at: string | null;
@@ -304,42 +349,48 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
     }>;
     const sessionRows=rawSessionRows.filter(session=>canUseSessionEnvironment(session,req.user!.id));
     const activeStatuses = new Set(['pending', 'launching', 'running', 'detached', 'released']);
-    const rootPids = new Map<string, number | null>();
-    await Promise.all(sessionRows.map(async (session) => {
-      if (!activeStatuses.has(session.status) || !session.pid) return;
-      rootPids.set(session.id, await getSessionProcessRootPid(session.id));
-    }));
     const processSnapshot = await readProcessSnapshot();
-    const recentOutput = db.prepare('SELECT seq, created_at, data FROM pty_output WHERE session_id = ? ORDER BY seq DESC LIMIT 160');
+    const children = indexProcessChildren(processSnapshot);
+    const recentOutput = db.prepare('SELECT created_at FROM pty_output WHERE session_id = ? ORDER BY seq DESC LIMIT 1');
 
-    const sessions = await Promise.all(sessionRows.map(async (session) => {
-      const live = getTracker(session.id)?.state;
-      const outputRows = recentOutput.all(session.id) as Array<{ seq: number; created_at: string; data: string }>;
-      const outputTail = outputRows.slice().reverse().map((row) => row.data).join('');
-      const inferred = !live && activeStatuses.has(session.status) && outputTail
-        ? inferQuiescentSessionState(outputTail)
-        : null;
-      const inferredOwners = session.created_by_user_id ? undefined : sessionTabOwners.get(session.id);
-      const inferredUserId = inferredOwners?.size === 1 ? inferredOwners.values().next().value as string : null;
-      const resources = activeStatuses.has(session.status)
-        ? measureSandboxCgroup(session.id) ?? measureProcessTree(rootPids.get(session.id) ?? session.pid, processSnapshot)
-        : { root_pid: null, process_count: 0, memory_bytes: null as number | null };
-      const processState = live?.processState ?? inferred?.processState ?? null;
-      const preview=await readConversationPreview(session);
+    const sampleSession = async (session: typeof sessionRows[number]) => {
+      const isActive = activeStatuses.has(session.status);
+      const live = isActive ? getTracker(session.id)?.state : undefined;
+      const output = recentOutput.get(session.id) as { created_at: string } | undefined;
+      const owners = session.created_by_user_id || !session.project_id
+        ? undefined : sessionTabOwners.get(session.id)?.get(session.project_id);
+      const inferredUser = owners?.size === 1 ? owners.values().next().value! : null;
+      const linked = Boolean(session.native_session_id || session.codex_session_id || session.claude_session_id);
+      const [sandbox, runtime, preview] = await Promise.all([
+        isActive ? measureSandboxCgroup(session.id) : null,
+        isActive && (linked || session.mode === 'session') ? readAgentRuntime(session, true).catch(() => null) : null,
+        linked ? Promise.resolve().then(() => readConversationPreview(session)).catch(() => null) : null,
+      ]);
+      const resources = !isActive ? unknownResources
+        : sandbox ?? measureProcessTree(session.pid ? await getSessionProcessRootPid(session.id) : null, processSnapshot, children);
+      const agentState = runtime && runtime.state !== 'unknown' ? runtime.state : null;
       return {
         ...session,
-        created_by_user_id: session.created_by_user_id ?? inferredUserId,
+        created_by_user_id: session.created_by_user_id ?? inferredUser,
         ...resources,
-        last_activity_at: live?.lastActivity
-          ? new Date(live.lastActivity).toISOString()
-          : outputRows[0]?.created_at ?? session.updated_at,
-        last_output: preview?.text??null,
-        process_state: processState,
-        prompt_type: live?.promptType ?? inferred?.promptType ?? null,
-        choices: live?.choices ?? inferred?.choices ?? null,
-        is_permission: live?.isPermission ?? inferred?.isPermission ?? false,
+        last_activity_at: latestActivity(
+          live?.lastActivity ? new Date(live.lastActivity).toISOString() : null,
+          output?.created_at, runtime?.last_activity_at, preview?.timestamp,
+        ),
+        last_output: preview?.text ?? null,
+        last_output_at: preview?.timestamp ?? null,
+        agent_state: agentState,
+        agent_state_reason: agentState ? runtime?.reason ?? null : null,
+        process_state: live?.processState ?? null,
+        prompt_type: live?.promptType ?? null,
+        choices: live?.choices ?? null,
+        is_permission: live?.isPermission ?? false,
       };
-    }));
+    };
+    const sessions: Awaited<ReturnType<typeof sampleSession>>[] = [];
+    for (let i = 0; i < sessionRows.length; i += 8) {
+      sessions.push(...await Promise.all(sessionRows.slice(i, i + 8).map(sampleSession)));
+    }
 
     const sessionsByUser = new Map<string, typeof sessions>();
     for (const session of sessions) {
@@ -409,20 +460,28 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
         online: presence.state==='online',
         presence,
         login_sessions:loginRows.filter(login=>login.user_id===user.id).map(({token,user_id,...login})=>({...login,presence:userPresence(user.id,token)})).sort((a,b)=>Number(b.presence.state==='online')-Number(a.presence.state==='online')),
+        tab_quota_used: user.role === 'member' ? getUserTabUsage(user.id).used : null,
         active_sessions: userSessions.filter((session) => activeStatuses.has(session.status)).length,
         open_projects: monitorProjects.filter((project) => project.is_open).length,
-        memory_bytes: userSessions.reduce((total, session) => total + (session.memory_bytes ?? 0), 0),
+        memory_sampled_sessions: userSessions.filter((session) => session.memory_bytes !== null).length,
+        memory_bytes: userSessions.some((session) => session.memory_bytes !== null)
+          ? userSessions.reduce((total, session) => total + (session.memory_bytes ?? 0), 0)
+          : null,
         projects: monitorProjects,
       };
     });
 
+    const memorySampledSessions = monitorUsers.reduce((total, user) => total + user.memory_sampled_sessions, 0);
     return {
       generated_at: new Date().toISOString(),
       login_session_policy:{idle_ttl_days:SESSION_TTL_DAYS},
       server_resources: await serverResourcesPromise,
       active_users: monitorUsers.filter((user) => user.active_sessions > 0).length,
       active_sessions: monitorUsers.reduce((total, user) => total + user.active_sessions, 0),
-      total_memory_bytes: monitorUsers.reduce((total, user) => total + user.memory_bytes, 0),
+      memory_sampled_sessions: memorySampledSessions,
+      total_memory_bytes: memorySampledSessions > 0
+        ? monitorUsers.reduce((total, user) => total + (user.memory_bytes ?? 0), 0)
+        : null,
       users: monitorUsers,
     };
   });

@@ -106,6 +106,15 @@ test('Project ownership, client selection and monitoring all use compact expanda
     await dialog.getByRole('button', { name: `展开用户 ${admin.username}` }).click();
     await dialog.getByRole('button', { name: `展开项目 ${project.name}` }).click();
     await expect(dialog.getByText('表格会话 1', { exact: true })).toBeVisible();
+    const sessionTable = dialog.getByRole('table', { name: '会话监控' });
+    for (const [index, id] of sessionIds.entries()) {
+      expect((await page.request.delete(`/api/sessions/${id}`)).ok()).toBeTruthy();
+      const savedTab = sessionTable.getByRole('row').filter({ hasText: `表格会话 ${index + 1}` });
+      await expect(savedTab.getByText('已取消', { exact: true })).toBeVisible();
+      await expect(savedTab.getByText('进程数未采样', { exact: true })).toBeVisible();
+    }
+    await expect(dialog.getByRole('switch', { name: '显示最近已结束会话' })).toHaveAttribute('aria-checked', 'false');
+
     const userRow = dialog.getByRole('table', { name: '用户监控', exact: true }).getByRole('row').filter({ has: page.getByRole('button', { name: `收起用户 ${admin.username}` }) }).first();
     const height = (await userRow.boundingBox())?.height ?? 0;
     expect(height).toBeGreaterThan(20); expect(height).toBeLessThan(50);
