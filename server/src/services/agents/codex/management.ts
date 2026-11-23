@@ -311,19 +311,18 @@ export function nativeCodexConnectionConfig():{
   const envKey=section.match(/^\s*env_key\s*=\s*"([^"]+)"/m)?.[1]||'';
   const hasAccountAuth = existsSync(join(dirname(configPath()),'auth.json'));
   const hasApiKeyInDb = providerApiKeyConfigured('native');
-  // 认证模式判断：只看配置文件，不看数据库 Key 是否可解密
-  // - 有 auth.json → account
-  // - 有 base_url + env_key → api（即使 Key 解密失败，用户也能看到 API 界面并重新输入）
-  // - 都没有 → uninitialized
+  // API 配置和已保存 Key 优先于遗留 auth.json。这样从账号登录切换到
+  // API Provider 后，旧凭据文件不会继续把运行模式误判为账号模式。
   const isApiConfigured = !!envKey && !!baseUrl;
-  const isApiMode = isApiConfigured && hasApiKeyInDb;
+  const isApiKeyAvailable = hasApiKeyInDb || !!(envKey && process.env[envKey]);
+  const isApiMode = isApiConfigured && isApiKeyAvailable;
 
   // 认证模式：account（账号登录）、api（API Key）、uninitialized（未初始化）
   let authMode: 'account' | 'api' | 'uninitialized';
-  if (hasAccountAuth) {
-    authMode = 'account';
-  } else if (isApiConfigured) {
+  if (isApiConfigured) {
     authMode = 'api';
+  } else if (hasAccountAuth) {
+    authMode = 'account';
   } else {
     authMode = 'uninitialized';
   }
@@ -334,7 +333,7 @@ export function nativeCodexConnectionConfig():{
     defaultModel:model,
     providerId,
     envKey,
-    apiKeyConfigured: hasAccountAuth || hasApiKeyInDb,
+    apiKeyConfigured: hasAccountAuth || isApiKeyAvailable,
     apiMode: isApiMode,
     authMode,
   };
