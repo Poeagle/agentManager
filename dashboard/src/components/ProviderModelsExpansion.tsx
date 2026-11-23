@@ -57,7 +57,6 @@ export function ProviderModelsExpansion({agentId,provider,readOnly,detected,onCh
    onSelectedChange={models=>{setSelected(models);setDefaultModel(model=>models.includes(model)?model:models[0]||'');}}
    onSave={patches=>save.mutateAsync(patches)} onDirtyChange={setDirty} onBusyChange={()=>{}}/>
    :<div className="provider-model-expansion-empty">暂无模型</div>}
-  {detect.isError&&<p className="agent-management-error-box" role="alert"><CircleAlert size={13}/>{detect.error.message}</p>}
   {save.isError&&<p className="agent-management-error-box" role="alert"><CircleAlert size={13}/>{save.error.message}</p>}
  </div>;
 }

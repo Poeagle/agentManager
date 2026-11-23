@@ -75,7 +75,7 @@ flowchart LR
 
 已登记会话的 Engine 绑定优先于线程路由缓存；旧记录中空绑定按界面与权限规则解释为 `native`。若同一原生 ID 同时绑定多个 Engine，平台拒绝猜测。原生会话已有其他写入者时，恢复明确失败，不切换账号、不终止占用者；需要用户回到原会话继续，或先在原位置停止它。
 
-`identity` 的可选 `purgeHistory` 在移除平台会话行前异步清理 Agent 原始历史。Codex 按历史行绑定的 Engine 和原生会话 ID 删除 `sessions` 或 `archived_sessions` 中对应的 rollout；跨 Provider 副本、新开后的历史行各自保留其环境和 ID。压缩可能共享的 `history_base` 祖先不会随子会话删除，以免破坏其他会话。
+`identity` 的可选 `purgeHistory` 在移除平台会话行前异步清理 Agent 原始历史。Codex 优先向历史行绑定的 Engine 发送 `thread/delete`，并按同一环境和原生会话 ID 清理 `sessions` 或 `archived_sessions` 中对应的 rollout。引擎不可用或拒绝请求时，继续清理该环境的 rollout。跨 Provider 副本、新开后的历史行各自保留其环境和 ID。压缩可能共享的 `history_base` 祖先不会随子会话删除，以免破坏其他会话。
 
 `AgentDefinition` 是新增 Agent 的实现契约；`resolveAgent()` 在注册时补齐可选接口，
 不支持的操作统一返回 `AGENT_FEATURE_UNSUPPORTED`，不借用其他厂商实现。

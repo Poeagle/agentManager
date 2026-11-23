@@ -9,13 +9,76 @@ import { codexAdapter } from '../src/services/agents/codex/adapter.js';
 import { purgeCodexHistory } from '../src/services/agents/codex/identity.js';
 import * as stream from '../src/services/agents/codex/stream.js';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { createServer } from 'http';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { WebSocketServer } from 'ws';
+import { managedCodexSocket } from '../src/services/agents/codex/provider-config.js';
+import { writeAgentManagement } from '../src/services/agents/management-store.js';
 
 let cleanup: (() => void) | undefined;
 afterEach(() => { vi.restoreAllMocks(); cleanup?.(); });
 
 describe('session record purge safety', () => {
+  it('sends each thread deletion only to the session’s bound Codex engine', async () => {
+    const database = createTestDatabase();
+    cleanup = database.cleanup;
+    const nativeHome = join(database.dir, 'native');
+    const providerHome = join(database.dir, 'provider');
+    const nativeSocket = join(database.dir, 'native.sock');
+    const providerSocket = managedCodexSocket('fixture');
+    mkdirSync(join(database.dir, 'codex-providers'));
+    vi.stubEnv('CODEX_HOME', nativeHome);
+    vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET', nativeSocket);
+    writeAgentManagement('codex', { defaults: {}, providers: [
+      { id: 'fixture', name: 'Fixture', kind: 'api', enabled: true, fields: { codexHome: providerHome, models: ['fixture-model'] } },
+    ] });
+    const sessions = [
+      { id: 'native-history', nativeId: '019ff001-1111-7111-8111-111111111111', environment: 'native', home: nativeHome, socket: nativeSocket },
+      { id: 'provider-history', nativeId: '019ff001-2222-7222-8222-222222222222', environment: 'provider:fixture', home: providerHome, socket: providerSocket },
+    ];
+    const calls: Array<{ environment: string; threadId: string }> = [];
+    const close: Array<() => Promise<void>> = [];
+    try {
+      const insert = getDb().prepare(`
+        INSERT INTO sessions (id, task, status, cli_type, mode, codex_session_id, agent_environment_id)
+        VALUES (?, 'Fixture', 'cancelled', 'codex', 'runtime', ?, ?)
+      `);
+      for (const session of sessions) {
+        const dir = join(session.home, 'sessions');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, `rollout-${session.nativeId}.jsonl`), '{}\n');
+        insert.run(session.id, session.nativeId, session.environment);
+        const server = createServer();
+        const wss = new WebSocketServer({ server });
+        close.push(async () => {
+          for (const client of wss.clients) client.terminate();
+          await new Promise<void>(resolve => wss.close(() => resolve()));
+          await new Promise<void>(resolve => server.close(() => resolve()));
+        });
+        wss.on('connection', socket => socket.on('message', raw => {
+          const request = JSON.parse(raw.toString());
+          if (request.id === undefined) return;
+          if (request.method === 'thread/delete') calls.push({ environment: session.environment, threadId: request.params.threadId });
+          socket.send(JSON.stringify({ id: request.id, result: {} }));
+        }));
+        await new Promise<void>((resolve, reject) => server.once('error', reject).listen(session.socket, resolve));
+      }
+      vi.spyOn(codexAdapter.history.file!, 'locate').mockResolvedValue(null);
+      vi.spyOn(codexAdapter.statistics.facts!, 'preserveAccountUsage').mockResolvedValue();
+
+      for (const session of sessions) {
+        await expect(purgeSessionRecord(session.id)).resolves.toEqual({ ok: true });
+        expect(getDb().prepare('SELECT id FROM sessions WHERE id=?').get(session.id)).toBeUndefined();
+        expect(() => readFileSync(join(session.home, 'sessions', `rollout-${session.nativeId}.jsonl`))).toThrow();
+      }
+      expect(calls).toEqual(sessions.map(session => ({ environment: session.environment, threadId: session.nativeId })));
+    } finally {
+      vi.unstubAllEnvs();
+      await Promise.all(close.map(stop => stop()));
+    }
+  });
+
   it('deletes the native thread before removing an ended Codex record', async () => {
     ({ cleanup } = createTestDatabase());
     const home=join(tmpdir(),'codex-purge-'+Math.random().toString(36).slice(2));

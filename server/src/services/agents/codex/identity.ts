@@ -5,7 +5,8 @@ import { mkdirSync, writeFileSync, renameSync } from 'fs';
 import { dirname, join } from 'path';
 import { config } from '../../../config.js';
 import { homedir } from 'os';
-import { getCodexEnvironment, environmentConnection } from './environments.js';
+import { engineForEnvironment, getCodexEnvironment, environmentConnection } from './environments.js';
+import { runInCodexEngine } from './engine-context.js';
 import { localHome, forgetEnvironmentRollout } from './account-files.js';
 import { accountCommand } from './account-transport.js';
 import { withCodexConnection } from './stream.js';
@@ -28,7 +29,8 @@ export async function purgeCodexHistory(context: {session: {agent_environment_id
     const environmentId = context.session.agent_environment_id || 'native';
     const environment = getCodexEnvironment(environmentId);
     try {
-        await withCodexConnection(request => request('thread/delete', { threadId: nativeId }));
+        const engine = await engineForEnvironment(environmentId, { history: true });
+        await runInCodexEngine(engine, () => withCodexConnection(request => request('thread/delete', { threadId: nativeId })));
     } catch {
         // An ended thread may already be unloaded or unavailable. File cleanup
         // below remains the fallback and must not resurrect it in the UI.

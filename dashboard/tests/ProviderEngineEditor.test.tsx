@@ -71,18 +71,19 @@ it('keeps a native Codex account in the account details instead of the API form'
  expect(within(dialog).queryByRole('textbox',{name:'Responses API 地址'})).not.toBeInTheDocument();
 });
 it('keeps existing native models selected and leaves newly detected models disabled',async()=>{
- mount();fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});
  provider={...provider,id:'native',name:'Fixture API',kind:'native',models:['stale-model'],defaultModel:'stale-model',fields:[
   {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1'},
   {key:'envKey',label:'API Key',type:'password',value:'',configured:true},
   {key:'models',label:'模型',type:'string-list',value:['stale-model']},
   {key:'defaultModel',label:'默认模型',type:'text',value:'stale-model'},
  ]};
+ state={...state,providers:[provider]};
+ mount();fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});
  vi.mocked(api.agentManagement.detectModels).mockResolvedValueOnce({models:[{model:'gpt-current',name:'GPT Current',description:'',efforts:[],defaultEffort:''}]});
- fireEvent.click(screen.getByRole('button',{name:/探测.*模型/}));
- await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','fixture',expect.objectContaining({fields:expect.objectContaining({models:['gpt-current'],defaultModel:'gpt-current'})})));
+ fireEvent.click(screen.getByRole('button',{name:'探测 Fixture API 模型'}));
+ expect(await within(table).findByRole('checkbox',{name:'启用 gpt-current'})).not.toBeChecked();
+ expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','native',expect.objectContaining({fields:expect.objectContaining({models:['stale-model'],defaultModel:'stale-model'})}));
  expect(within(table).getByRole('checkbox',{name:'启用 stale-model'})).toBeChecked();
- expect(within(table).getByRole('checkbox',{name:'启用 gpt-current'})).not.toBeChecked();
 });
 it('edits native Codex connection settings without exposing the stored API key',async()=>{
  provider={...createFixture().provider,id:'native',name:'Native API',kind:'native',models:['model-a'],defaultModel:'model-a',codexHome:'/fixture/.codex',fields:[
@@ -137,11 +138,12 @@ it('expands the Provider model table and probes only that Provider',async()=>{
  expect(within(table).queryByRole('spinbutton',{name:'model-a 上下文长度'})).toBeNull();
  expect(within(table).getByRole('row',{name:/model-a/})).toHaveTextContent('200,000');
  expect(within(table).getByRole('row',{name:/model-a/})).toHaveTextContent('不支持');
- fireEvent.click(within(table).getByRole('button',{name:'编辑'}));
+ fireEvent.click(within(within(table).getByRole('row',{name:/model-a/})).getByRole('button',{name:'编辑'}));
  expect(within(table).getByRole('spinbutton',{name:'model-a 上下文长度'})).toHaveValue(200000);
  vi.mocked(api.agentManagement.detectModels).mockResolvedValueOnce({models:[{model:'model-a',name:'Model A',description:'',efforts:[],defaultEffort:'',context_window:300000},{model:'new-model',name:'New',description:'',efforts:[],defaultEffort:'',context_window:500000}]});
  fireEvent.click(screen.getByRole('button',{name:/探测.*模型/}));await within(table).findByRole('checkbox',{name:'启用 new-model'});
- await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','fixture',expect.objectContaining({fields:expect.objectContaining({models:['model-a'],defaultModel:'model-a'})})));
+ expect(api.agentManagement.detectModels).toHaveBeenCalledWith('codex',{providerId:'fixture'});
+ expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','fixture',expect.objectContaining({fields:expect.objectContaining({models:['model-a','model-b'],defaultModel:'model-a'})}));
  expect(within(table).getByRole('checkbox',{name:'启用 model-a'})).toBeChecked();expect(within(table).getByRole('checkbox',{name:'启用 new-model'})).not.toBeChecked();
 });
 it('edits and immediately refreshes the Provider multiplier in the parent row',async()=>{
@@ -179,9 +181,10 @@ it('shows model capabilities read-only until the explicit model edit action',asy
  mount();fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});await within(table).findByRole('checkbox',{name:'启用 model-a'});
  expect(within(table).queryByRole('spinbutton',{name:'model-a 上下文长度'})).toBeNull();
  expect(within(table).getByRole('row',{name:/model-a/})).toHaveTextContent('200,000');
- fireEvent.click(within(table).getByRole('button',{name:'编辑'}));
+ const modelRow=within(within(table).getByRole('row',{name:/model-a/}));
+ fireEvent.click(modelRow.getByRole('button',{name:'编辑'}));
  const context=within(table).getByRole('spinbutton',{name:'model-a 上下文长度'});fireEvent.change(context,{target:{value:'300000'}});
- fireEvent.click(screen.getByRole('button',{name:'保存并重启 Engine'}));
+ fireEvent.click(modelRow.getByRole('button',{name:'保存并重启'}));
  await waitFor(()=>expect(api.agentManagement.updateModelConfigs).toHaveBeenCalledWith('codex',[expect.objectContaining({model:'model-a',contextWindow:300000})]));
 });
 it('displays the saved context window instead of stale detected metadata after restart',async()=>{
@@ -189,7 +192,7 @@ it('displays the saved context window instead of stale detected metadata after r
  vi.mocked(api.agentManagement.modelCatalog).mockImplementation(async()=>({models:provider.models.map(model=>({vendor:'OpenAI',model,providers:[provider.name],context_window:1050000,api_pricing:{currency:'USD',source:'official',reference_only:true,bands:[{rates:{input:2,cached:0.2,output:8}}]}}))}));
  mount();fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));
  const table=await screen.findByRole('table',{name:'Provider 模型'});
- expect(within(table).getByRole('row',{name:/model-a/})).toHaveTextContent('300,000');
+ expect(await within(table).findByRole('row',{name:/model-a/})).toHaveTextContent('300,000');
 });
 it('shows official image support even when stored model capability metadata is incomplete',async()=>{
  configs=configs.map(config=>({...config,inputModalities:[],supportsImages:null}));
@@ -202,10 +205,10 @@ it('shows official image support even when stored model capability metadata is i
 });
 it('discards detected models whenever the endpoint or key changes, including late responses',async()=>{
  mount();fireEvent.click(await screen.findByRole('button',{name:'新增 Provider'}));
- expect(screen.getByRole('dialog',{name:'新增 Provider'})).toBeVisible();
+ const dialog=within(screen.getByRole('dialog',{name:'新增 Provider'}));
  fireEvent.change(screen.getByLabelText('Provider ID'),{target:{value:'new'}});fireEvent.change(screen.getByLabelText('Responses API 地址'),{target:{value:'https://first.invalid/v1'}});fireEvent.change(screen.getByLabelText('API Key'),{target:{value:'fixture'}});
- let finish!:(value:any)=>void;vi.mocked(api.agentManagement.detectModels).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));fireEvent.click(screen.getByRole('button',{name:/探测.*模型/}));await waitFor(()=>expect(api.agentManagement.detectModels).toHaveBeenCalled());
+ let finish!:(value:any)=>void;vi.mocked(api.agentManagement.detectModels).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));fireEvent.click(dialog.getByRole('button',{name:/探测.*模型/}));await waitFor(()=>expect(api.agentManagement.detectModels).toHaveBeenCalled());
  fireEvent.change(screen.getByLabelText('Responses API 地址'),{target:{value:'https://second.invalid/v1'}});await act(async()=>finish({models:[{model:'stale',name:'Stale',description:'',efforts:[],defaultEffort:''}]}));expect(screen.queryByText('Stale')).toBeNull();expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeDisabled();
- vi.mocked(api.agentManagement.detectModels).mockResolvedValueOnce({models:[{model:'fresh',name:'Fresh',description:'',efforts:[],defaultEffort:''}]});await waitFor(()=>expect(screen.getByRole('button',{name:/探测.*模型/})).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:/探测.*模型/}));expect((await screen.findAllByText('Fresh')).length).toBeGreaterThan(0);expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeEnabled();
+ vi.mocked(api.agentManagement.detectModels).mockResolvedValueOnce({models:[{model:'fresh',name:'Fresh',description:'',efforts:[],defaultEffort:''}]});await waitFor(()=>expect(dialog.getByRole('button',{name:/探测.*模型/})).toBeEnabled());fireEvent.click(dialog.getByRole('button',{name:/探测.*模型/}));expect((await screen.findAllByText('Fresh')).length).toBeGreaterThan(0);expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeEnabled();
  fireEvent.change(screen.getByLabelText('API Key'),{target:{value:'another-fixture'}});expect(screen.queryByText('Fresh')).toBeNull();expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeDisabled();
 });
