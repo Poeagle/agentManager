@@ -11,6 +11,7 @@ import {Dialog} from './Dialog';
 import './NotificationCenter.css';
 
 const SessionConversation=lazy(()=>import('./SessionConversation').then(module=>({default:module.SessionConversation})));
+const reminderStatus:Record<Notification['kind'],string>={result:'完成',error:'报错',question:'等待输入',approval:'等待授权'};
 
 function NotificationDetail({notification,userId,onOpen,onRead}:{notification:Notification;userId:string;onOpen:(n:Notification,raw?:boolean)=>void;onRead:(ids:number[])=>void}) {
   const session=useQuery({queryKey:['session-record',notification.session_id],queryFn:()=>api.sessions.get(notification.session_id),retry:false});
@@ -73,8 +74,8 @@ export function NotificationCenter({userId,projects,onOpen,onDetailChange}:{user
   const [open,setOpen]=useState(false),[filter,setFilter]=useState<NotificationFilter>('pending'),[projectSelection,setProject]=useState('');
   const ownProjects=projects.filter(project=>project.owner_id===userId);
   const project=ownProjects.some(project=>project.id===projectSelection)?projectSelection:'';
-  const [selected,setSelected]=useState<Notification|null>(null),[toast,setToast]=useState<Notification|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
-  const button=useRef<HTMLButtonElement>(null),known=useRef<Map<number,string>|null>(null),reading=useRef(new Set<number>()),failedReads=useRef(new Set<number>()),lastSeenId=useRef(0);
+  const [selected,setSelected]=useState<Notification|null>(null),[reminderIds,setReminderIds]=useState<number[]>([]),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+  const button=useRef<HTMLButtonElement>(null),reading=useRef(new Set<number>()),failedReads=useRef(new Set<number>());
   const summary=useQuery({queryKey:['notifications',userId],queryFn:()=>notificationApi.list(),enabled:canRead});
   const connected=useStreamStore(state=>state.connected);
   useEffect(()=>{if(connected)void client.invalidateQueries({queryKey:['notifications',userId]});},[connected,client,userId]);
@@ -87,35 +88,42 @@ export function NotificationCenter({userId,projects,onOpen,onDetailChange}:{user
   useEffect(()=>{
     const rows=summary.data?.notifications;if(!rows)return;
     window.dispatchEvent(new Event('agentmanager:notifications-changed'));
-    setToast(current=>current&&!rows.some(row=>row.id===current.id)?null:current);
     const visible=rows.filter(row=>!row.read_at&&notificationIsVisible(row));
     if(visible.length)read(visible.map(row=>row.id));
-    const previous=known.current;
-    const newestSeen=lastSeenId.current;lastSeenId.current=Math.max(newestSeen,...rows.map(row=>row.id));
-    known.current=new Map(rows.map(row=>[row.id,row.state]));
-    if(!previous)return;
-    const incoming=rows.find(row=>!row.read_at&&!row.muted&&row.state!=='resolved'&&row.state!=='recovering'&&!notificationIsVisible(row)
-      &&(row.id>newestSeen||previous.has(row.id)&&row.state==='pending'&&previous.get(row.id)!=='pending'));
-    if(incoming&&!open)setToast(incoming);
-  },[summary.data,read,open]);
+    const visibleIds=new Set(visible.map(row=>row.id));
+    const unread=rows.filter(row=>!row.read_at&&!row.muted&&(row.state==='info'||row.state==='pending')&&!visibleIds.has(row.id));
+    setReminderIds(previous=>{
+      const incoming=new Set(unread.map(row=>row.id).reverse());
+      const retained=previous.filter(id=>incoming.delete(id));
+      return [...retained,...incoming];
+    });
+  },[summary.data,read]);
   useEffect(()=>{
     const changed=()=>{const visible=(summary.data?.notifications||[]).filter(row=>!row.read_at&&notificationIsVisible(row));if(visible.length)read(visible.map(row=>row.id));};
     window.addEventListener('agentmanager:conversation-visibility',changed);window.addEventListener('focus',changed);document.addEventListener('visibilitychange',changed);
     return()=>{window.removeEventListener('agentmanager:conversation-visibility',changed);window.removeEventListener('focus',changed);document.removeEventListener('visibilitychange',changed);};
   },[summary.data,read]);
-  useEffect(()=>{if(!toast)return;const timer=setTimeout(()=>setToast(null),10000);return()=>clearTimeout(timer);},[toast]);
   useEffect(()=>{onDetailChange(open);return()=>onDetailChange(false);},[open,onDetailChange]);
-  const select=(n:Notification)=>{if(n.kind==='result'&&!n.read_at)read([n.id]);setFilter(n.state==='pending'?'pending':'all');setSelected(n);setOpen(true);setToast(null);};
-  const jump=(n:Notification,raw=false)=>{if(n.kind==='result'&&!n.read_at)read([n.id]);setOpen(false);setToast(null);if(raw)onOpen(n,true);else onOpen(n);};
+  const select=(n:Notification)=>{if(n.kind==='result'&&!n.read_at)read([n.id]);setFilter(n.state==='pending'?'pending':'all');setSelected(n);setOpen(true);};
+  const jump=(n:Notification,raw=false)=>{if(n.kind==='result'&&!n.read_at)read([n.id]);setOpen(false);if(raw)onOpen(n,true);else onOpen(n);};
   async function mute(){if(!project||!summary.data)return;setBusy(true);setError('');const muted=summary.data.preferences.muted_project_ids;try{await notificationApi.preferences(muted.includes(project)?muted.filter(id=>id!==project):[...muted,project]);await refresh();}catch(failure){setError(failure instanceof Error?failure.message:'保存失败');}finally{setBusy(false);}}
   if(!canRead)return null;
   const unread=summary.data?.unread||0,pending=summary.data?.pending||0;
   const current=selected&&(summary.data?.notifications.find(row=>row.id===selected.id)||selected);
-  const toastLabel=toast?`${toast.project_name||'工作会话'}｜${toast.display_name}`:'';
+  const notificationsById=new Map(summary.data?.notifications.map(row=>[row.id,row]));
+  const reminders=reminderIds.flatMap(id=>{const row=notificationsById.get(id);return row?[row]:[];});
   return <>
-    <button ref={button} type="button" className="notification-bell workspace-header-button" aria-label={`消息通知${unread?`，${unread} 条未读`:''}`} aria-expanded={open} aria-controls="notification-center" onClick={()=>{if(!open){setToast(null);setSelected(null);setFilter(pending?'pending':'unread');}setOpen(value=>!value);}} title={`消息通知 · ${pending} 项待处理`}><Bell size={14}/>{!!unread&&<span className="notification-badge">{unread>99?'99+':unread}</span>}{summary.isError&&<span className="notification-offline" title="通知读取失败"/>}</button>
-    {toast&&!open&&createPortal(<aside className="notification-toast" aria-label="新消息通知" aria-live="polite">
-      <button type="button" title={toastLabel} onClick={()=>toast.project_id?jump(toast):select(toast)}>{toastLabel}</button>
+    <button ref={button} type="button" className="notification-bell workspace-header-button" aria-label={`消息通知${unread?`，${unread} 条未读`:''}`} aria-expanded={open} aria-controls="notification-center" onClick={()=>{if(!open){setSelected(null);setFilter(pending?'pending':'unread');}setOpen(value=>!value);}} title={`消息通知 · ${pending} 项待处理`}><Bell size={14}/>{!!unread&&<span className="notification-badge">{unread>99?'99+':unread}</span>}{summary.isError&&<span className="notification-offline" title="通知读取失败"/>}</button>
+    {!!reminders.length&&!open&&createPortal(<aside className="notification-toast-stack" aria-label="新消息通知" aria-live="polite" aria-relevant="additions">
+      {reminders.map(reminder=>{
+        const label=`${reminder.project_name||'工作会话'}｜${reminder.display_name}`;
+        const status=reminderStatus[reminder.kind];
+        return <button key={reminder.id} type="button" className="notification-toast" data-kind={reminder.kind}
+          aria-description={status} title={`${label}（${status}）`} onClick={()=>reminder.project_id?jump(reminder):select(reminder)}>
+          <span className="notification-toast-dot" aria-hidden="true"/>
+          <span className="notification-toast-label">{label}</span>
+        </button>;
+      })}
     </aside>,document.body)}
     {open&&<Dialog title="消息通知" size="image" width={current?1120:640} maxWidth="calc(100vw - 24px)" className="notification-dialog" actions={<>
         <div className="notification-toolbar"><div role="group" aria-label="通知分类">{([['pending','待处理'],['unread','未读'],['all','全部']] as const).map(([value,label])=><button key={value} aria-pressed={filter===value} onClick={()=>setFilter(value)}>{label}</button>)}</div><select aria-label="筛选通知项目" value={project} onChange={event=>setProject(event.target.value)}><option value="">全部项目</option>{ownProjects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>{project&&<button disabled={busy} title={summary.data?.preferences.muted_project_ids.includes(project)?'恢复项目提醒':'静音项目提醒，通知仍保留'} aria-label={summary.data?.preferences.muted_project_ids.includes(project)?'恢复项目提醒':'静音项目提醒'} onClick={()=>void mute()}><BellOff size={15}/></button>}</div>

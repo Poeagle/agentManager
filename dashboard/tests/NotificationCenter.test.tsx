@@ -132,23 +132,49 @@ it('removes an instant reminder when the notice is handled elsewhere',async()=>{
   expect(await screen.findByRole('complementary',{name:'新消息通知'})).toHaveTextContent('标签 2');
   page={...page,notifications:[row(1)],pending:1,unread:1};
   await act(()=>client.invalidateQueries({queryKey:['notifications','u']}));
-  await waitFor(()=>expect(screen.queryByRole('complementary',{name:'新消息通知'})).not.toBeInTheDocument());
+  await waitFor(()=>expect(within(screen.getByRole('complementary',{name:'新消息通知'})).getAllByRole('button').map(button=>button.textContent)).toEqual(['项目 A｜标签 1']));
 });
 
 it('shows only the project and tab in the instant reminder and opens the source tab when clicked',async()=>{
   mount();await screen.findByRole('button',{name:'消息通知，1 条未读'});
   const result=row(2,{kind:'result',state:'info',title:'本轮运行完成',body:'执行结果正文',message_id:'final-2'});
   page={...page,notifications:[result,row(1)],unread:2,through_id:2};
+  vi.mocked(notificationApi.read).mockImplementation(async()=>{
+    page={...page,notifications:[row(1)],unread:1};
+    return {ok:true};
+  });
   await act(()=>client.invalidateQueries({queryKey:['notifications','u']}));
   const toast=await screen.findByRole('complementary',{name:'新消息通知'});
-  expect(toast.textContent).toBe('项目 A｜标签 2');
   const action=within(toast).getByRole('button',{name:'项目 A｜标签 2'});
-  expect(action).toHaveAttribute('title','项目 A｜标签 2');
+  expect(action.textContent).toBe('项目 A｜标签 2');
   fireEvent.click(action);
   expect(jump).toHaveBeenCalledWith(result);
   expect(notificationApi.read).toHaveBeenCalledWith({ids:[2]});
   expect(screen.queryByRole('dialog',{name:'消息通知'})).not.toBeInTheDocument();
-  expect(toast).not.toBeInTheDocument();
+  await waitFor(()=>expect(within(toast).queryByRole('button',{name:'项目 A｜标签 2'})).not.toBeInTheDocument());
+  expect(within(toast).getByRole('button',{name:'项目 A｜标签 1'})).toBeVisible();
+});
+
+it('keeps unread reminders and appends each new status below them',async()=>{
+  mount();await screen.findByRole('button',{name:'消息通知，1 条未读'});
+  const reminder=await screen.findByRole('complementary',{name:'新消息通知'});
+  const cards=()=>within(reminder).getAllByRole('button');
+  expect(cards()[0]).toHaveAccessibleDescription('等待输入');
+
+  const result=row(2,{kind:'result',state:'info'});
+  const error=row(3,{kind:'error'});
+  page={...page,notifications:[error,result,row(1)],unread:3,pending:2,through_id:3};
+  await act(()=>client.invalidateQueries({queryKey:['notifications','u']}));
+  await waitFor(()=>expect(cards().map(button=>button.textContent)).toEqual(['项目 A｜标签 1','项目 A｜标签 2','项目 A｜标签 3']));
+  expect(cards()[1]).toHaveAccessibleDescription('完成');
+  expect(cards()[2]).toHaveAccessibleDescription('报错');
+
+  page={...page,notifications:[error,result],unread:2,pending:1};
+  await act(()=>client.invalidateQueries({queryKey:['notifications','u']}));
+  await waitFor(()=>expect(cards()).toHaveLength(2));
+  page={...page,notifications:[error,result,row(1)],unread:3,pending:2};
+  await act(()=>client.invalidateQueries({queryKey:['notifications','u']}));
+  await waitFor(()=>expect(cards().map(button=>button.textContent)).toEqual(['项目 A｜标签 2','项目 A｜标签 3','项目 A｜标签 1']));
 });
 
 it('shows a failed list load and allows retry without hiding the notification entry',async()=>{
