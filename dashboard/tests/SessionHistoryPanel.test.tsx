@@ -7,7 +7,7 @@ import { api, type Session } from '../src/lib/api';
 
 vi.mock('../src/lib/api', async (original) => {
   const actual = await original<typeof import('../src/lib/api')>();
-  return { ...actual, api: { ...actual.api, codexEnvironments:{...actual.api.codexEnvironments,list:vi.fn(async()=>({environments:[{id:'native',name:'本机 Engine'}]}))}, sessions: { ...actual.api.sessions, list: vi.fn(), deleteRecord: vi.fn(), output: vi.fn() },agent:{...actual.api.agent,conversation:vi.fn()} } };
+  return { ...actual, api: { ...actual.api, codexEnvironments:{...actual.api.codexEnvironments,list:vi.fn(async()=>({environments:[{id:'native',name:'本机 Engine'}]}))}, sessions: { ...actual.api.sessions, list: vi.fn(), deleteRecord: vi.fn(), queueEndedRecordDeletions: vi.fn(), output: vi.fn() },agent:{...actual.api.agent,conversation:vi.fn()} } };
 });
 
 const ended: Session = { id: 'ended', project_id: 'project', task: 'Ended task', status: 'cancelled', mode: 'session', cli_type: 'codex',
@@ -51,14 +51,41 @@ describe('project session deletion', () => {
     await waitFor(() => expect(screen.queryByText('删除失败，可重试')).not.toBeInTheDocument());
   });
 
-  it('selects only ended sessions and preserves failures during bulk deletion',async()=>{
-    records=[ended,active,{...ended,id:'second',task:'Second task',agent_environment_id:'provider:xindu'}];
-    vi.mocked(api.sessions.deleteRecord).mockImplementation(async id=>{if(id==='second')throw Error('failed');records=records.filter(row=>row.id!==id);return {ok:true};});
-    const user=userEvent.setup(),onDeleted=await mount();expect(await screen.findByText('xindu')).toBeVisible();
-    expect(screen.getByRole('checkbox',{name:'选择会话 Active task'})).toBeDisabled();await user.click(screen.getByRole('checkbox',{name:'全选可删除会话'}));
-    await user.click(screen.getByRole('button',{name:'批量删除 (2)'}));expect(api.sessions.deleteRecord).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button',{name:'确认批量删除'}));await screen.findByRole('alert');
-    expect(onDeleted).toHaveBeenCalledExactlyOnceWith('ended');expect(screen.getByRole('checkbox',{name:'选择会话 Second task'})).toBeChecked();expect(api.sessions.deleteRecord).not.toHaveBeenCalledWith('active');
+  it('closes bulk confirmation on queue acceptance, keeps rejected rows selected, and allows more work', async () => {
+    records = [ended, active, { ...ended, id: 'second', task: 'Second task', agent_environment_id: 'provider:xindu' }];
+    vi.mocked(api.sessions.queueEndedRecordDeletions).mockImplementation(async () => {
+      records = records.map(row => row.id === 'ended' ? { ...row, record_deletion: 'pending' } : row);
+      return { accepted_ids: ['ended'], rejected_ids: ['second'] };
+    });
+    const user = userEvent.setup();
+    const onDeleted = await mount();
+    expect(await screen.findByText('xindu')).toBeVisible();
+    expect(screen.getByRole('checkbox', { name: '选择会话 Active task' })).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: '全选可删除会话' }));
+    await user.click(screen.getByRole('button', { name: '批量删除 (2)' }));
+    expect(api.sessions.queueEndedRecordDeletions).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '确认批量删除' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(api.sessions.queueEndedRecordDeletions).toHaveBeenCalledExactlyOnceWith('project', ['ended', 'second']);
+    expect(api.sessions.deleteRecord).not.toHaveBeenCalled();
+    expect(onDeleted).not.toHaveBeenCalled();
+    expect(await screen.findByText('后台删除中')).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('1 条未提交');
+    expect(screen.getByRole('checkbox', { name: '选择会话 Second task' })).toBeChecked();
+    expect(screen.getByRole('button', { name: '批量删除 (1)' })).toBeEnabled();
+  });
+
+  it('keeps the bulk confirmation and selection when the queue request fails', async () => {
+    vi.mocked(api.sessions.queueEndedRecordDeletions).mockRejectedValueOnce(new Error('暂时无法提交'));
+    const user = userEvent.setup();
+    await mount();
+    await user.click(screen.getByRole('checkbox', { name: '选择会话 已关闭的会话' }));
+    await user.click(screen.getByRole('button', { name: '批量删除 (1)' }));
+    const dialog = screen.getByRole('dialog', { name: '批量删除会话记录' });
+    await user.click(within(dialog).getByRole('button', { name: '确认批量删除' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('暂时无法提交');
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('checkbox', { name: '选择会话 已关闭的会话' })).toBeChecked();
   });
   it('uses the common actions column and seven-column detail rows, and waits for confirmation', async () => {
     const user = userEvent.setup();

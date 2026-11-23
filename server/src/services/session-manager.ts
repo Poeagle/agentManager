@@ -26,6 +26,7 @@ import {sharedResourceLaunch} from './shared-resources/store.js';
 
 import {snapshotConversation,activateFreshConversation,restoreConversationSnapshot} from './conversation-history.js';
 import {enqueueSessionRecordDeletion,sessionRecordDeletionState} from './session-record-deletion.js';
+import {removeSessionTabs} from './session-tabs.js';
 import {beginSessionAction,flushSessionFactsBeforeDelete, recordSessionBinding} from './session-statistics.js';
 import {assertEnvironmentUse,canControlEnvironment} from './agents/environment-access.js';
 
@@ -3218,6 +3219,9 @@ export async function purgeSessionRecord(sessionId: string, options?: {backgroun
       db.prepare('DELETE FROM user_ui_state WHERE key = ?').run(`session-control:${sessionId}`);
       db.prepare('UPDATE tasks SET session_id = NULL WHERE session_id = ?').run(sessionId);
       db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+      if (options?.background && session.project_id && session.created_by_user_id) {
+        removeSessionTabs(sessionId, { projectId: session.project_id, userId: session.created_by_user_id });
+      }
     })();
     recordDelete('completed');
     return { ok: true };

@@ -483,6 +483,10 @@ export const api = {
       fetchJSON<{ok: boolean}>(`/sessions/${encodeURIComponent(id)}/record`, {method:'DELETE'}),
     queueRecordDeletion: (id: string) =>
       fetchJSON<{ok: true; accepted: true}>(`/sessions/${encodeURIComponent(id)}/record?stop=true&background=true`, {method:'DELETE'}),
+    queueEndedRecordDeletions: (projectId: string, sessionIds: string[]) =>
+      fetchJSON<{ accepted_ids: string[]; rejected_ids: string[] }>('/sessions/records/ended', {
+        method: 'POST', body: JSON.stringify({ project_id: projectId, session_ids: sessionIds }),
+      }),
     // Permanently delete this account's ended records for one project.
     deleteEndedRecords: (projectId: string) =>
       fetchJSON<{ ok: boolean; deleted: number; failed: number }>(`/sessions/records/ended?project_id=${encodeURIComponent(projectId)}`, {

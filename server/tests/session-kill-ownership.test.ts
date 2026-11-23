@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import * as claudeArchive from '../src/services/agents/claude/archive.js';
 import {getAgent} from '../src/services/agents/index.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { authHook, createSession as createAuthSession, createUser, setProjectToolAccess } from '../src/auth.js';
+import { authHook, createSession as createAuthSession, createUser, hashApiKey, setProjectToolAccess } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
 import { sessionRoutes } from '../src/routes/sessions.js';
 import * as sessionManager from '../src/services/session-manager.js';
@@ -175,6 +175,82 @@ describe('session kill ownership', () => {
       await vi.waitFor(async () => expect((await record()).json().session.record_deletion).toBe('failed'));
       expect(sessionManager.getSession('queued')?.status).toBe('cancelled');
     } finally { finish?.({ok:false}); }
+  });
+
+  it('queues selected ended records before native cleanup settles and retains failures for retry', async () => {
+    const add = getDb().prepare(`INSERT INTO sessions
+      (id,project_id,task,status,mode,cli_type,native_session_id,created_by_user_id)
+      VALUES (?,'project-1','Work',?,'session',?,?,?)`);
+    add.run('batch-claude', 'completed', 'claude', '019ff001-3434-7434-8434-343434343434', ownerId);
+    add.run('batch-codex', 'cancelled', 'codex', '019ff001-4545-7454-8454-454545454545', ownerId);
+    add.run('batch-active', 'running', 'codex', null, ownerId);
+    add.run('batch-unselected', 'completed', 'claude', null, ownerId);
+    const viewer = getDb().prepare("SELECT id FROM users WHERE username='kill-viewer'").get() as { id: string };
+    add.run('batch-other-owner', 'completed', 'claude', null, viewer.id);
+    const tabs = { terminalInstances: [{ id: 'batch-claude' }, { id: 'batch-codex' }] };
+    getDb().prepare("INSERT INTO user_ui_state(user_id,key,value) VALUES(?,'project:project-1',?)").run(ownerId, JSON.stringify(tabs));
+    const savedTabs = () => JSON.parse((getDb().prepare("SELECT value FROM user_ui_state WHERE user_id=? AND key='project:project-1'").get(ownerId) as { value: string }).value).terminalInstances;
+    let finish!: () => void;
+    const cleanupPending = new Promise<void>(resolve => { finish = resolve; });
+    const claude = getAgent('claude');
+    const codex = getAgent('codex');
+    for (const adapter of [claude, codex]) {
+      vi.spyOn(adapter.lifecycle, 'release').mockResolvedValue();
+      vi.spyOn(adapter.history.file!, 'locate').mockResolvedValue(null);
+      if (adapter.statistics.facts?.preserveAccountUsage) vi.spyOn(adapter.statistics.facts, 'preserveAccountUsage').mockResolvedValue();
+    }
+    const claudeCleanup = vi.spyOn(claude.identity, 'purgeHistory').mockReturnValue(cleanupPending);
+    const codexCleanup = vi.spyOn(codex.identity, 'purgeHistory').mockRejectedValueOnce(new Error('cleanup unavailable')).mockResolvedValue();
+    const kill = vi.spyOn(sessionManager, 'killSession');
+    const request = (ids: unknown[], cookie = ownerCookie) => app.inject({
+      method: 'POST', url: '/api/sessions/records/ended', headers: { cookie },
+      payload: { project_id: 'project-1', session_ids: ids },
+    });
+    const record = async (id: string) => (await app.inject({ method: 'GET', url: `/api/sessions/${id}`, headers: { cookie: ownerCookie } })).json().session;
+    try {
+      const key = `amk_${Buffer.alloc(32, 9).toString('base64url')}`;
+      getDb().prepare(`INSERT INTO api_keys(id,user_id,name,token_hash,grants,created_at,expires_at) VALUES(?,?,?,?,?,?,?)`)
+        .run('batch-fixture-key', viewer.id, 'fixture', hashApiKey(key), JSON.stringify({ agent_api: 'write' }),
+          new Date().toISOString(), new Date(Date.now() + 3600000).toISOString());
+      const headers = { authorization: `Bearer ${key}` };
+      expect((await app.inject({ url: '/api/sessions/batch-other-owner', headers })).statusCode).toBe(200);
+      const keyRequest = await app.inject({ method: 'POST', url: '/api/sessions/records/ended',
+        headers, payload: { project_id: 'project-1', session_ids: ['batch-other-owner'] } });
+      expect(keyRequest.statusCode).toBe(403);
+      expect((await request(['batch-claude', 12])).statusCode).toBe(400);
+      const unauthorized = await request(['batch-claude'], viewerCookie);
+      expect(unauthorized.json()).toEqual({ accepted_ids: [], rejected_ids: ['batch-claude'] });
+      const selected = ['batch-claude', 'batch-codex', 'batch-claude', 'batch-active', 'batch-other-owner'];
+      const result = await request(selected);
+      expect(result.statusCode).toBe(202);
+      expect(result.json()).toEqual({ accepted_ids: ['batch-claude', 'batch-codex'], rejected_ids: ['batch-active', 'batch-other-owner'] });
+      await vi.waitFor(() => expect(claudeCleanup).toHaveBeenCalledOnce());
+      expect((await request(['batch-claude'])).json()).toEqual({ accepted_ids: ['batch-claude'], rejected_ids: [] });
+      expect((await record('batch-claude')).record_deletion).toBe('pending');
+      expect((await record('batch-codex')).record_deletion).toBe('pending');
+      expect(savedTabs()).toEqual(tabs.terminalInstances);
+      expect(kill).not.toHaveBeenCalled();
+      finish();
+      await vi.waitFor(async () => expect((await record('batch-codex')).record_deletion).toBe('failed'));
+      expect(sessionManager.getSession('batch-claude')).toBeNull();
+      expect(savedTabs()).toEqual([{ id: 'batch-codex' }]);
+      expect((await request(['batch-codex'])).statusCode).toBe(202);
+      await vi.waitFor(() => expect(sessionManager.getSession('batch-codex')).toBeNull());
+      expect(codexCleanup).toHaveBeenCalledTimes(2);
+      expect(savedTabs()).toEqual([]);
+      for (const id of ['batch-unselected', 'batch-active', 'batch-other-owner']) expect(sessionManager.getSession(id)).not.toBeNull();
+    } finally {
+      finish();
+    }
+  });
+
+  it('cleans up a queued history record when the saved project UI state is null', async () => {
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,created_by_user_id) VALUES('batch-legacy','project-1','Work','completed','claude',?)").run(ownerId);
+    getDb().prepare("INSERT INTO user_ui_state(user_id,key,value) VALUES(?,'project:project-1','null')").run(ownerId);
+    const result = await app.inject({ method: 'POST', url: '/api/sessions/records/ended', headers: { cookie: ownerCookie },
+      payload: { project_id: 'project-1', session_ids: ['batch-legacy'] } });
+    expect(result.statusCode).toBe(202);
+    await vi.waitFor(() => expect(sessionManager.getSession('batch-legacy')).toBeNull());
   });
 
   it.each(['claude','codex'])('resumes pending %s cleanup after startup', async agentId => {

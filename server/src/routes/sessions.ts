@@ -406,6 +406,38 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return { ok: true };
   });
 
+  // Queue only the selected ended records in the user's project history.
+  app.post<{ Body?: { project_id?: unknown; session_ids?: unknown } }>('/sessions/records/ended', async (req, reply) => {
+    if (req.apiKeyGrants) return reply.code(403).send({ error: '批量删除会话记录需要浏览器登录' });
+    const { project_id: projectId, session_ids: sessionIds } = req.body ?? {};
+    if (typeof projectId !== 'string' || !projectId.trim() || !Array.isArray(sessionIds)
+      || !sessionIds.length || sessionIds.length > 1000
+      || sessionIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 128)) {
+      return reply.code(400).send({ error: '请选择要删除的会话记录，每次最多提交 1000 条' });
+    }
+    const userId = req.user!.id;
+    if (!userOwnsProject(userId, projectId)) return reply.code(404).send({ error: 'Project not found' });
+
+    const acceptedIds: string[] = [];
+    const rejectedIds: string[] = [];
+    getDb().transaction(() => {
+      for (const id of new Set<string>(sessionIds)) {
+        const session = sessionManager.getSession(id);
+        const eligible = session && session.project_id === projectId && session.created_by_user_id === userId
+          && ['completed', 'failed', 'cancelled'].includes(session.status)
+          && canAccessSessionByRow(userId, session) && canUseSessionEnvironment(session, userId);
+        if (!eligible) {
+          rejectedIds.push(id);
+          continue;
+        }
+        const accepted = sessionRecordDeletionState(id) === 'pending'
+          || (sessionManager.canQueueSessionRecordDeletion(id) && deletions.enqueue(id));
+        (accepted ? acceptedIds : rejectedIds).push(id);
+      }
+    })();
+    return reply.code(acceptedIds.length ? 202 : 200).send({ accepted_ids: acceptedIds, rejected_ids: rejectedIds });
+  });
+
   // Bulk-delete this account's ended records for one project. The query is
   // deliberately ownership-scoped even for administrators: the regular project
   // UI is personal, while cross-account management belongs to /admin/monitor.
