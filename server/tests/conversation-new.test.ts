@@ -52,8 +52,8 @@ describe('fresh conversation in the same tab',()=>{
    expect(getSession('new-test')?.codex_session_id).toBe(native);
   }finally{runtime.mockRestore();}
  });
- it('creates a fresh conversation when the expected identity is still idle',async()=>{
-  const runtime=vi.spyOn(getAgent('codex').runtime,'read').mockResolvedValue({state:'idle'} as any);
+ it.each(['idle','ready'] as const)('creates a fresh conversation when the expected identity is %s',async state=>{
+  const runtime=vi.spyOn(getAgent('codex').runtime,'read').mockResolvedValue({state} as any);
   try{
    const result=await newSessionConversation('new-test',undefined,undefined,native);
    expect(result.ok).toBe(true);expect(getSession('new-test')?.codex_session_id).not.toBe(native);expect(prepareFreshCodexConversation).toHaveBeenCalledOnce();

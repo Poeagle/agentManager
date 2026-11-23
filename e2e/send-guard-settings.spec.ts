@@ -57,7 +57,7 @@ test('shows complete rules per row and edits Provider scope in the centered edit
  await platform.getByRole('button',{name:'添加规则'}).click();
  const add=page.getByRole('dialog',{name:'添加规则'});
  await add.getByLabel('执行动作').selectOption('brief');
- await add.getByLabel('额度用尽时换到有剩余额度的账号').check();
+ await expect(add.getByRole('checkbox')).toHaveCount(0);
  await add.getByLabel('触发条件 1',{exact:true}).selectOption('account_remaining_percent');
  await add.getByLabel('Provider 范围').selectOption('selected');
  await add.getByLabel('Codex · 备用').check();
@@ -65,7 +65,7 @@ test('shows complete rules per row and edits Provider scope in the centered edit
  await add.getByRole('button',{name:'应用到表格'}).click();
  await expect(table.getByRole('row')).toHaveCount(3);
  const action=table.getByRole('cell',{name:/简要压缩/});
- await expect(action).toContainText('额度用尽时切换账号');
+ await expect(action).toHaveText('简要压缩');
  await action.click();
  const edit=page.getByRole('dialog',{name:'编辑规则 1'});
  await expect(edit.getByLabel('触发条件 1数值')).toHaveValue('0');
@@ -80,7 +80,7 @@ test('shows complete rules per row and edits Provider scope in the centered edit
  await expect(platform.getByText('发送保护规则已保存')).toBeVisible();
  const saved=await (await page.request.get('/api/settings')).json();
  const policy=JSON.parse(saved.settings.conversation_send_guard);
- expect(policy.rules[0]).toEqual({action:'brief',target:'available_account',provider_ids:['codex:backup'],conditions:{operator:'and',conditions:[{type:'account_remaining_percent',value:0}]}});
+ expect(policy.rules[0]).toEqual({action:'brief',provider_ids:['codex:backup'],conditions:{operator:'and',conditions:[{type:'account_remaining_percent',value:0}]}});
  expect(policy.rules[1]).toMatchObject({action:'remind',provider_ids:['codex:native','claude:anthropic'],conditions:{operator:'or'}});
  expect(policy.rules[1].conditions.conditions).toHaveLength(5);
  expect(policy.rules[1].conditions.conditions[1]).toEqual({operator:'and',conditions:[{type:'idle_minutes',value:30},{type:'context_percent',value:35}]});

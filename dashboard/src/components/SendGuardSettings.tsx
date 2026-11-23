@@ -100,7 +100,7 @@ export function SendGuardSettings({value,canEdit}:{value:string|undefined;canEdi
     <div className="settings-panel-section-heading">
       <div>
         <h4 className="text-sm font-semibold">发送保护</h4>
-        <p className="mt-1 text-xs leading-5" style={{color:'var(--text-secondary)'}}>发送前按当前 Provider 检查规则。首条命中的自动规则优先执行，任一适用的提醒规则命中时弹出提醒。</p>
+        <p className="mt-1 text-xs leading-5" style={{color:'var(--text-secondary)'}}>当前账号额度用尽时自动换号。发送前按当前 Provider 检查规则，首条命中的自动规则优先执行。</p>
       </div>
     </div>
     {!canEdit&&<p className="mb-3 text-xs" style={{color:'var(--text-muted)'}}>只有管理员可以修改此平台规则。</p>}
@@ -132,7 +132,6 @@ export function SendGuardSettings({value,canEdit}:{value:string|undefined;canEdi
               <span className="line-clamp-2 [overflow-wrap:anywhere]">{summary}</span>
             </button></td>
             <td><span className="block whitespace-normal">{actionLabels[rule.action]}</span>
-              {rule.target==='available_account'&&<span className="block whitespace-normal" style={{color:'var(--text-secondary)'}}>额度用尽时切换账号</span>}
               {!automatic&&policy.reminder_enabled===false&&<span style={{color:'var(--text-secondary)'}}>已停用</span>}
             </td>
             {canEdit&&<td><div className="flex gap-1">
@@ -170,18 +169,11 @@ export function SendGuardSettings({value,canEdit}:{value:string|undefined;canEdi
             <label className="flex items-center gap-2">执行动作
               <select className="settings-panel-control" style={{width:'auto'}} value={editor.rule.action} onChange={event=>{
                 const action=event.target.value as SendGuardRule['action'];
-                const target=action==='new'||action==='brief'?editor.rule.target:undefined;
-                setEditor({...editor,rule:{...editor.rule,action,target}});
+                setEditor({...editor,rule:{...editor.rule,action}});
               }}>
                 {Object.entries(actionLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}
               </select>
             </label>
-            {(editor.rule.action==='brief'||editor.rule.action==='new')&&<label className="flex items-center gap-2">
-              <input type="checkbox" checked={editor.rule.target==='available_account'} onChange={event=>{
-                setEditor({...editor,rule:{...editor.rule,target:event.target.checked?'available_account':undefined}});
-              }}/>
-              额度用尽时换到有剩余额度的账号
-            </label>}
           </div>
           {editor.rule.provider_ids&&<fieldset className="rounded border px-2 pb-2" style={{borderColor:'var(--border)'}}>
             <legend className="px-1 text-xs">适用 Provider（可多选）</legend>

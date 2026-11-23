@@ -85,7 +85,7 @@ it('opens a configured rule and discards draft conditions and Provider scope cha
  mount(true,scopedValue);
  fireEvent.click(table().getByRole('button',{name:/编辑规则 1/}));
  const dialog=editor('编辑规则 1');
- expect(dialog.getByLabelText('额度用尽时换到有剩余额度的账号')).toBeChecked();
+ expect(dialog.queryByLabelText(/换到有剩余额度/)).not.toBeInTheDocument();
  expect(await dialog.findByLabelText('Codex · Provider A')).toBeChecked();
  fireEvent.click(dialog.getByLabelText('Codex · Provider A'));
  fireEvent.change(dialog.getByLabelText('触发条件 2分组 2数值'),{target:{value:'23'}});
@@ -93,6 +93,16 @@ it('opens a configured rule and discards draft conditions and Provider scope cha
  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
  expect(table().getAllByRole('row')[1]).toHaveTextContent('闲置时间 ≥ 30 分钟');
  expect(table().getAllByRole('row')[1]).toHaveTextContent('Codex · Provider A');
+});
+
+it('keeps legacy rules editable and omits their former switch setting on save',async()=>{
+ const save=saveSettings();
+ mount(true,scopedValue);
+ fireEvent.click(screen.getByRole('button',{name:'保存发送保护规则'}));
+ await waitFor(()=>expect(save).toHaveBeenCalledOnce());
+ expect(JSON.parse(save.mock.calls[0][0].conversation_send_guard).rules).toEqual([
+  {action:'brief',provider_ids:['codex:one'],conditions:legacyConditions},
+ ]);
 });
 
 it('lets members inspect a complete rule without enabling editing',()=>{

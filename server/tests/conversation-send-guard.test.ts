@@ -183,16 +183,50 @@ it('selects a funded account immediately after a failed turn on a depleted accou
   source:'fixture',session_id:'native',state:'failed',last_turn_ended_at:now.toISOString(),
   last_activity_at:now.toISOString(),observed_at:now.toISOString(),reason:'usage limit',
  });
- const policy={enabled:true,rules:[{
-  action:'brief',target:'available_account',
-  conditions:{operator:'and',conditions:[{type:'account_remaining_percent',value:0}]},
- }]};
- db.prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY,JSON.stringify(policy));
  const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
  expect(response.statusCode).toBe(200);
  const check=response.json();
  expect(check).toMatchObject({required_action:'brief',can_new:true,switch_account:true,account_remaining_percent:0,target_account:{id:'native'}});
  expect(check.idle_minutes).toBeLessThan(1);
+});
+
+it('blocks dispatch if quota is exhausted after a reminder was confirmed, even with the default policy',async()=>{
+ const remaining=vi.spyOn(codexAdapter.quota,'accountRemaining').mockReturnValue(25);
+ vi.spyOn(codexAdapter.quota,'alternateAccount').mockReturnValue({id:'account:backup',label:'备用账号'});
+ const checked=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ expect(checked.json()).toMatchObject({required_action:null,token:expect.any(String)});
+ remaining.mockReturnValue(0);
+ const denied=await app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{...input,guard_token:checked.json().token}});
+ expect(denied.statusCode).toBe(409);
+ expect(denied.json()).toMatchObject({submission:'rejected',send_guard:{required_action:'brief',switch_account:true,token:null}});
+ expect(stream.submitStreamingCodexInput).not.toHaveBeenCalled();
+});
+
+it.each([['new','new'],['compact','brief']] as const)('resolves a matched %s rule as %s when switching away from an exhausted account',async(action,requiredAction)=>{
+ vi.spyOn(codexAdapter.quota,'accountRemaining').mockReturnValue(0);
+ vi.spyOn(codexAdapter.quota,'alternateAccount').mockReturnValue({id:'account:backup',label:'备用账号'});
+ const policy={enabled:true,rules:[{action,conditions:{operator:'and',conditions:[{type:'context_percent',value:80}]}}]};
+ getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY,JSON.stringify(policy));
+ const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ expect(response.json()).toMatchObject({required_action:requiredAction,switch_account:true,target_account:{id:'account:backup'}});
+});
+
+it('chooses a fresh conversation when a depleted account has yet to run its first turn',async()=>{
+ vi.spyOn(codexAdapter.quota,'accountRemaining').mockReturnValue(0);
+ vi.spyOn(codexAdapter.quota,'alternateAccount').mockReturnValue({id:'account:backup',label:'备用账号'});
+ vi.mocked(codexAdapter.runtime.read).mockResolvedValue({
+  source:'fixture',session_id:'native',state:'ready',last_activity_at:null,observed_at:new Date().toISOString(),reason:'fresh',
+ });
+ const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ expect(response.json()).toMatchObject({required_action:'new',can_new:true,can_compact:false,switch_account:true,target_account:{id:'account:backup'}});
+});
+
+it('keeps automatic account switching under the send protection master switch',async()=>{
+ const remaining=vi.spyOn(codexAdapter.quota,'accountRemaining').mockReturnValue(0);
+ getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY,JSON.stringify({enabled:false,rules:[]}));
+ const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ expect(response.json()).toMatchObject({required_action:null,switch_account:false,token:expect.any(String)});
+ expect(remaining).not.toHaveBeenCalled();
 });
 
 it.each([

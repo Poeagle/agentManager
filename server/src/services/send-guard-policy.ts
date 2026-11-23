@@ -47,7 +47,8 @@ export function validateSendGuard(value:unknown):asserts value is LegacySendGuar
   if(!rule||typeof rule!=='object'||Array.isArray(rule)||Object.keys(rule).some(k=>!fields.includes(k))
    ||typeof rule.action!=='string'||!(scoped&&rule.action==='remind'||Object.hasOwn(SEND_GUARD_ACTION_LABELS,rule.action)))
     throw Error('请选择支持的发送保护操作');
-  if(rule.target!==undefined&&(rule.target!=='available_account'||!['new','brief'].includes(rule.action)))throw Error('更换账号须选择新开或简要压缩');
+  // Accept the former opt-in for older saved policies and clients.
+  if(rule.target!==undefined&&(rule.target!=='available_account'||!['new','brief'].includes(rule.action)))throw Error('旧版换号字段无效');
   const ids=rule.provider_ids;
   if(ids!==undefined&&(!Array.isArray(ids)||!ids.length||ids.length>MAX_SEND_GUARD_PROVIDERS||
    ids.some(id=>typeof id!=='string'||id.length>200||!/^[\w.-]+:[\w.:-]+$/.test(id))||new Set(ids).size!==ids.length))
@@ -67,9 +68,6 @@ export function validateSendGuard(value:unknown):asserts value is LegacySendGuar
  if(!Array.isArray(policy.automatic_rules)||policy.automatic_rules.length>MAX_AUTOMATIC_SEND_RULES)
   throw Error(`自动规则最多 ${MAX_AUTOMATIC_SEND_RULES} 条`);
  for(const rule of policy.automatic_rules)validateRule(rule,false);
-}
-export function usesAccountQuota(group:SendGuardGroup):boolean {
- return group.conditions.some(c=>'conditions' in c?usesAccountQuota(c):c.type==='account_remaining_percent');
 }
 type SendGuardValues=Record<Exclude<SendGuardCondition['type'],'account_remaining_percent'>,number|null>&{account_remaining_percent?:number|null};
 export function evaluateSendGuard(group:SendGuardGroup,values:SendGuardValues):boolean|null {

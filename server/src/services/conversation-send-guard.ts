@@ -3,11 +3,11 @@ import {createHash,createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
 import {getDb} from '../db/index.js';
 import {isAdmin} from '../auth.js';
 import {agentForSession} from './agents/index.js';
-import {sessionAgentContext} from './agents/session.js';
+import {sessionAgentContext,canReplaceAgentConversation} from './agents/session.js';
 import type {AgentAdapter,AgentSession} from './agents/types.js';
 import {normalizeSendGuardPolicy,sendGuardProviderKey,type SendGuardAction,type SendGuardRule} from '../shared/send-guard.js';
 import {nativeConversationId} from './session-identity.js';
-import {DEFAULT_SEND_GUARD,SEND_GUARD_KEY,validateSendGuard,evaluateSendGuard,usesAccountQuota} from './send-guard-policy.js';
+import {DEFAULT_SEND_GUARD,SEND_GUARD_KEY,validateSendGuard,evaluateSendGuard} from './send-guard-policy.js';
 const secret=randomBytes(32),TTL=5*60_000;
 export function sendGuardPolicy(){
  const row=getDb().prepare('SELECT value FROM settings WHERE key=?').get(SEND_GUARD_KEY) as {value:string}|undefined;
@@ -44,21 +44,20 @@ export async function inspectSendGuard(session:AgentSession,userId:string,payloa
  const applicable=policy.enabled?policy.rules.filter(rule=>!rule.provider_ids||(provider!==null&&rule.provider_ids.includes(provider))):[];
  const reminders=policy.reminder_enabled===false?[]:applicable.filter(rule=>rule.action==='remind');
  const automatic=applicable.filter((rule):rule is SendGuardRule&{action:SendGuardAction}=>rule.action!=='remind');
- // A cross-account send must also confirm quota after entering a Provider
- // outside the original rule's scope.
- const needsQuota=policy.enabled&&(policy.rules.some(rule=>rule.target)||
-   [...automatic,...reminders].some(rule=>usesAccountQuota(rule.conditions)));
  let accountRemaining:number|null=null;
- try{if(needsQuota)accountRemaining=finite(adapter.quota.accountRemaining?.(context));}catch{/* No confirmed quota snapshot. */}
+ try{if(policy.enabled)accountRemaining=finite(adapter.quota.accountRemaining?.(context));}catch{/* No confirmed quota snapshot. */}
  const values={context_percent:percent,context_tokens:tokens,idle_minutes:runtime&&['running','waiting_for_input'].includes(runtime.state)?0:idleMinutes,account_remaining_percent:accountRemaining};
  const rule=automatic.find(rule=>evaluateSendGuard(rule.conditions,values)===true);
- const requiredAction=rule?.action??null;
+ const switchAccount=accountRemaining===0;
+ const requiredAction:SendGuardAction|null=switchAccount
+  ? (rule?.action==='new'||runtime?.state==='ready'?'new':'brief')
+  : rule?.action??null;
  const matched=requiredAction?true:evaluateSendGuard({operator:'or',conditions:reminders.map(rule=>rule.conditions)},values);
- const owned=session.created_by_user_id===userId,canTransform=isAdmin(userId)&&owned&&idle;
- const switchAccount=rule?.target==='available_account'&&accountRemaining===0;
+ const canTransform=isAdmin(userId)&&session.created_by_user_id===userId;
+ const canNew=canTransform&&canReplaceAgentConversation(runtime)&&!!adapter.descriptor.capabilities.newConversation;
  let targetAccount:{id:string;label:string}|null=null;
  try{
-  if(switchAccount&&canTransform&&adapter.descriptor.capabilities.newConversation&&adapter.lifecycle.prepareFreshInEnvironment)
+  if(switchAccount&&canNew&&adapter.lifecycle.prepareFreshInEnvironment)
    targetAccount=adapter.quota.alternateAccount?.(context)??null;
  }catch{/* No authorized candidate with confirmed quota. */}
  const inputTokens=finite(usage?.usage?.last.input_tokens);
@@ -78,8 +77,8 @@ export async function inspectSendGuard(session:AgentSession,userId:string,payloa
   context_tokens:tokens,context_window:window,context_percent:percent,
   idle_minutes:idleMinutes,last_completed_at:idle?runtime?.last_turn_ended_at??null:null,
   observed_at:usage?.observed_at??null,native_id:context.nativeId,checked_at:new Date(now).toISOString(),
-  can_compact:canTransform&&!!adapter.descriptor.capabilities.compact,
-  can_new:canTransform&&!!adapter.descriptor.capabilities.newConversation,
+  can_compact:canTransform&&idle&&!!adapter.descriptor.capabilities.compact,
+  can_new:canNew,
   token:requiredAction?null:guardToken(session,userId,payload,now,policy),
  };
 }
@@ -90,7 +89,7 @@ export async function checkSendGuardSubmission(session:AgentSession,userId:strin
  const policy=sendGuardPolicy();
  if(!policy.enabled&&token===undefined)return null;
  const valid=validGuardToken(token,session,userId,payload,Date.now(),policy);
- if(valid&&!(queued&&policy.enabled&&policy.rules.some(rule=>rule.action!=='remind')))return null;
+ if(valid&&!(queued&&policy.enabled&&(agentForSession(session).quota.accountRemaining||policy.rules.some(rule=>rule.action!=='remind'))))return null;
  const check=await inspectSendGuard(session,userId,payload,policy);
  const policyChanged=JSON.stringify(policy)!==JSON.stringify(sendGuardPolicy());
  if(check.required_action||policyChanged)return check;

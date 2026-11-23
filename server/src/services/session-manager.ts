@@ -2,7 +2,7 @@ import {userInfo as hostUserInfo} from 'os';
 import {isManagedAgentActive,attachManagedAgent,detachManagedAgent} from './agents/host.js';
 import {storeAgentNativeId} from './agents/identity-store.js';
 import {agentForSession,getAgent,agentDescriptors} from './agents/index.js';
-import {sessionAgentContext,presentAgentSession} from './agents/session.js';
+import {sessionAgentContext,presentAgentSession,canReplaceAgentConversation} from './agents/session.js';
 import {runtimeNames} from './runtime-namespace.js';
 import {fork,execFile,execFileSync,spawn,type ChildProcess} from 'child_process';
 import {promisify} from 'util';
@@ -2976,7 +2976,7 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
       try{checkTarget();}catch(error){return {ok:false,error:error instanceof Error?error.message:'目标账号不可用'};}
     }
     if(expectedNativeId){
-      try{const runtime=await adapter.runtime.read(context);if(!runtime||!['idle','interrupted','failed'].includes(runtime.state))return {ok:false,error:'原会话尚未结束，请等待当前任务完成后再新开'};}
+      try{if(!canReplaceAgentConversation(await adapter.runtime.read(context)))return {ok:false,error:'原会话尚未结束，请等待当前任务完成后再新开'};}
       catch{return {ok:false,error:'无法确认原会话状态，请稍后再试'};}
     }
     const project=getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined;
@@ -3010,8 +3010,7 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
       };
       checkSource();
       if(expectedNativeId){
-        const runtime=await adapter.runtime.read(context);
-        if(!runtime||!['idle','interrupted','failed'].includes(runtime.state))throw Error('准备期间原会话开始运行，未发送简要历史');
+        if(!canReplaceAgentConversation(await adapter.runtime.read(context)))throw Error('准备期间原会话开始运行，未发送简要历史');
         checkSource();
       }
       if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');

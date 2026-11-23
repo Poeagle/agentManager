@@ -14,6 +14,7 @@ export const MAX_AUTOMATIC_SEND_RULES = 8;
 
 export interface AutomaticSendGuardRule {
   action: SendGuardAction;
+  /** Legacy policy field. Exhaustion-based switching is now built in. */
   target?: 'available_account';
   conditions: SendGuardGroup;
 }
@@ -40,12 +41,12 @@ export interface SendGuardPolicy {
 }
 
 export function normalizeSendGuardPolicy(policy: LegacySendGuardPolicy | SendGuardPolicy): SendGuardPolicy {
-  if('rules' in policy)return policy;
-  return {
+  const normalized:SendGuardPolicy='rules' in policy?policy:{
     enabled:policy.enabled,
     ...(policy.reminder_enabled!==undefined?{reminder_enabled:policy.reminder_enabled}:{}),
     rules:[...(policy.automatic_rules??[]),{action:'remind',conditions:policy.conditions}],
   };
+  return {...normalized,rules:normalized.rules.map(({target:_legacyTarget,...rule})=>rule)};
 }
 
 /** Agent IDs qualify Provider IDs from their management catalog. */
