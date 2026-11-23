@@ -55,18 +55,11 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
  },[rows,apiMode,pricing?.currency]);
  const rangeTotal=estimatedMoney(datedRows),byPeriod=['hour','day','week','month','total'].includes(dimension);
  const displayTable=apiMode?{...table,columns:table.columns.filter(column=>!['cost','share'].includes(column.key))}:table;
- const tokenColumnCount=displayTable.columns.filter(column=>!['label','cwd','cost','share'].includes(column.key)).length;
  const periodName=dimension==='total'?'范围':dimension==='hour'?'小时':dimension==='day'?'日期':dimension==='week'?'周期':'月份';
  const cards=resets.data?.resets;
  const refresh=()=>{void usage.refetch();if(!apiMode)void resets.refetch();};
  const tabs=<nav className="ci-tabs" aria-label="账号详情栏目"><button aria-selected={tab==='usage'} onClick={()=>setTab('usage')}>每日项目用量</button><button aria-selected={tab==='cards'} onClick={()=>setTab('cards')}>重置卡{cards?` (${cards.availableCount})`:''}</button></nav>;
- const usageColumns=<colgroup>
-  <col style={{width:'12%'}}/><col style={{width:'8%'}}/>
-  {displayTable.columns.slice(2).map(column=>{
-   const width=column.key==='cost'?'15%':column.key==='share'?'5%':`${60/tokenColumnCount}%`;
-   return <col key={column.key} style={{width}}/>;
-  })}
- </colgroup>;
+ const usageColumns=<colgroup>{displayTable.columns.map(({key})=><col key={key} className={`ci-usage-col-${key}`}/>)}</colgroup>;
  return <Dialog appearance="manager" title={`${name} ${apiMode?'上游':'账号'}详情`} size="image" width={1450} maxWidth="96vw" onClose={onClose} actions={!apiMode?<div className="ci-header-details"><div className="ci-identity"><span>{resets.data?.account.email||name}</span><span className="ci-tag">{resets.data?.account.plan||'套餐未提供'}</span></div><div className="ci-overview ci-overview-account">
     <section>{resets.data?.windows?.length?resets.data.windows.map((w,i)=><div className="ci-quota" key={i}><span>{w.windowDurationMins===10080?'周额度':w.windowDurationMins?`${w.windowDurationMins/60} 小时`:'额度'}</span><strong>剩余 {numeric(Math.max(0,100-w.usedPercent))}%</strong><small title="当前额度窗口的下次重置时刻；不是采样统计的起止时间">重置 {time(w.resetsAt)}</small></div>):<p>{resets.isPending?'正在读取…':'额度暂不可用'}</p>}</section>
     <section><span className="ci-token-summary">Token {summaryMetrics.map(({label,key},index)=><Fragment key={key}>{index>0&&'｜'}<span title={usageFieldDescriptions[key]}>{label}</span></Fragment>)}：{summaryMetrics.map(({key,count,cost},index)=><Fragment key={key}>{index>0&&'｜'}<span title={`${numeric(count)} Token · 预估金额 ${cost}`}>{compact(count??null)} ({cost})</span></Fragment>)}</span><span className="ci-cache-rate" title="筛选范围内缓存输入除以输入 Token；输入为零或数据缺失时未知" aria-label={`缓存率 ${cacheRate===null?'未知':`${cacheRate.toFixed(1)}%`}`}><span aria-hidden="true"/>缓存率 <strong>{cacheRate===null?'—':`${cacheRate.toFixed(1)}%`}</strong></span></section>
@@ -99,7 +92,7 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
       {(reportRange.from||reportRange.to)&&<span className="ci-report-range" title={dimension==='week'?'日期选择扩展为完整自然周（周一至周日）':dimension==='month'?'日期选择扩展为完整自然月':'严格按所选起止日期统计，包含起止当天'}>统计范围：{usageRangeLabel(reportRange)}</span>}
     </div>
     {rows.some(row=>!row.models?.length)&&<p className="ci-notice" role="status">部分项目的模型明细未返回，请刷新；若仍未恢复，请检查后台服务版本。</p>}
-    <TableFrame label="用量统计" className="ci-table-scroll ci-usage-table-scroll" tableClassName="ci-table ci-usage-table" columns={usageColumns} header={<TableHeaders model={displayTable}/> }>
+    <TableFrame label="用量统计" className="ci-table-scroll ci-usage-table-scroll" tableClassName={`ci-table ci-usage-table${apiMode?' ci-usage-table-api':''}`} columns={usageColumns} header={<TableHeaders model={displayTable}/> }>
      {!groups.length&&<TableStateRow columnCount={displayTable.columns.length}>{usage.isPending?'正在读取缓存…':'所选范围暂无用量记录'}</TableStateRow>}
      {shown.map((node,index)=><Group key={node.key} node={node} amountTotal={byPeriod?amountTotals.get(node.key)??null:rangeTotal} depth={0} apiMode={apiMode} currency={pricing?.currency} defaultOpen={currentPage===0&&index===0} expansion={expansion} setExpansion={setExpansion}/>)}
     </TableFrame>

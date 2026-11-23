@@ -27,18 +27,40 @@ for(const api of [false,true])test(`selected dates expand for weeks/months and r
  expect(reads).toBe(1);await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });
 
-test('combined amount and quota cells remain readable on desktop and mobile',async({page},info)=>{
- const metrics={estimated_credits:3757.13,estimated_usd:3757.13/25,actual_quota:15,tokens:{input_tokens:852254294,cached_input_tokens:837980928,output_tokens:2856707,total_tokens:855111001}};
- await page.route('**/api/codex/**',route=>route.fulfill({json:route.request().url().includes('/insights')?{usage:{initialized:true,partial:false,timezone:'UTC',rows:[{date:'2026-11-16',cwd:'/fixture/combined',project_name:'Combined',...metrics,models:[{model:'fixture-model',...metrics}]}]}}:{account:{email:'fixture@example.invalid',plan:'pro'},resets:null}}));
+test('allocates one line to project names, paths and numeric values at desktop and mobile widths',async({page},info)=>{
+ const project='quantitative_strategy',directory='/workspace/quantitative/strategy-engine/market-data';
+ const metrics={estimated_credits:3757.13,estimated_usd:3757.13/25,actual_quota:15,
+  tokens:{input_tokens:852254294,cached_input_tokens:837980928,output_tokens:2856707,total_tokens:855111001}};
+ const rows=[{date:'2026-11-16',cwd:directory,project_name:project,...metrics,models:[{model:'fixture-model',...metrics}]}];
+ await page.route('**/api/codex/**',route=>route.fulfill({json:route.request().url().includes('/insights')
+  ?{usage:{initialized:true,partial:false,timezone:'UTC',rows}}
+  :{account:{email:'fixture@example.invalid',plan:'pro'},resets:null}}));
+ await page.setViewportSize({width:1548,height:850});
  await page.goto('/tests/fixtures/usage-insights.html');
- const table=page.getByRole('table',{name:'用量统计'}),row=table.getByRole('row').filter({has:page.getByText('/fixture/combined',{exact:true})}),cost=row.locator('td').nth(9);
- await expect(table.getByRole('columnheader')).toHaveCount(11);await expect(table.getByRole('columnheader',{name:'预估金额 | 额度',exact:true})).toBeVisible();
- await expect(cost).toHaveText('150.29 | 15 (10.02)');await cost.scrollIntoViewIfNeeded();
- expect(await cost.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+
+ const table=page.getByRole('table',{name:'用量统计'});
+ const scroll=page.getByRole('region',{name:'用量统计，可横向滚动查看全部列'});
+ const row=table.getByRole('row').filter({has:page.getByText(directory,{exact:true})});
+ const label=row.getByText(project,{exact:true}),path=row.getByText(directory,{exact:true}),cost=row.locator('td').nth(9);
+ await expect(table.getByRole('columnheader')).toHaveCount(11);
+ await expect(table.getByRole('columnheader',{name:'预估金额 | 额度',exact:true})).toBeVisible();
+ await expect(cost).toHaveText('150.29 | 15 (10.02)');
+ await expect(label).toHaveCSS('white-space','nowrap');
+ await expect(path).toHaveCSS('white-space','nowrap');
+ await expect(path).toHaveAttribute('title',directory);
+ expect(await label.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+ expect(await path.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+ expect(await row.locator('td').evaluateAll(cells=>cells.slice(2).every(cell=>cell.scrollWidth<=cell.clientWidth))).toBe(true);
+ expect(await scroll.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);
  await page.screenshot({path:info.outputPath('combined-usage-cost.png')});
- await page.getByRole('button',{name:'展开 Combined 模型'}).click();
+
+ await page.getByRole('button',{name:`展开 ${project} 模型`}).click();
  await expect(table.getByRole('row').filter({has:page.getByText('fixture-model',{exact:true})}).locator('td').nth(9)).toHaveText('150.29 | 15 (10.02)');
- await page.setViewportSize({width:390,height:844});await cost.scrollIntoViewIfNeeded();
- expect(await cost.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+ await page.setViewportSize({width:390,height:844});
+ await expect(path).toHaveCSS('text-overflow','ellipsis');
+ expect(await scroll.evaluate(node=>node.scrollWidth>node.clientWidth)).toBe(true);
+ await cost.scrollIntoViewIfNeeded();
+ expect(await cost.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
  await page.screenshot({path:info.outputPath('combined-usage-cost-mobile.png')});
 });

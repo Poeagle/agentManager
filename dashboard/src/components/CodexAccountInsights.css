@@ -38,16 +38,24 @@
 .ci-collection-progress progress{width:64px;flex-shrink:0;}
 .ci-notice{padding:6px 10px;margin:0 0 8px;background:var(--bg-secondary);border-left:3px solid #d99a24;color:var(--text-secondary);font-size:12px;line-height:18px;}
 .ci-table-scroll{overflow:auto;max-height:58vh;}
-.ci-usage-table-scroll{overflow-x:hidden;}
 .ci-table{width:100%;table-layout:fixed;min-width:720px;}
-.ci-usage-table{min-width:0;}
+/* Reserve widths for numeric fields and give the remaining space to the directory. */
+.ci-usage-table{min-width:1240px;}
+.ci-usage-table-api{min-width:1022px;}
+.ci-usage-table col{width:92px;}
+.ci-usage-table .ci-usage-col-label{width:226px;}
+.ci-usage-table .ci-usage-col-cwd{width:auto;}
+.ci-usage-table .ci-usage-col-uncached{width:100px;}
+.ci-usage-table .ci-usage-col-hit{width:68px;}
+.ci-usage-table .ci-usage-col-cost{width:160px;}
+.ci-usage-table .ci-usage-col-share{width:58px;}
 .ci-table th{position:sticky;top:0;z-index:1;text-align:left;border-bottom:1px solid var(--border);}
 .ci-table tr:last-child td{border-bottom:0;}
 .ci-usage-table th:nth-child(n+3),.ci-usage-table td:nth-child(n+3){text-align:right;font-variant-numeric:tabular-nums;}
 .ci-day{background:var(--bg-secondary);font-weight:400;}
 .ci-usage-table th,.ci-usage-table td{font-size:11px!important;font-weight:400!important;}
 .ci-count{font-size:11px;font-weight:400;color:var(--text-secondary);white-space:nowrap;flex-shrink:0;}
-.ci-directory-cell{font-size:11px!important;color:var(--text-secondary);font-weight:400;}
+.ci-directory-cell{color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .ci-group-label{display:flex;align-items:center;gap:6px;min-width:0;}
 .ci-group-label>svg{color:var(--accent);flex-shrink:0;}
 .ci-group-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -106,19 +114,12 @@
 .ci-toolbar>input{min-width:130px;}
 .ci-toolbar :is(input,select){height:28px;}
 .ci-observation{margin-bottom:4px;}
-.ci-usage-table .smart-table-heading{justify-content:flex-start;gap:1px;}
+.ci-usage-table .smart-table-heading{justify-content:flex-start;gap:0;}
+.ci-usage-table th:nth-child(n+3) .smart-table-heading{justify-content:flex-end;}
 .ci-usage-table .smart-table-sort{gap:2px;overflow:visible;}
 .ci-usage-table .smart-table-sort>span{overflow:visible;text-overflow:clip;}
-.ci-usage-table .smart-table-filter{padding:2px;}
-.ci-usage-table .ci-group-title{white-space:normal;overflow-wrap:anywhere;}
-.manager-ui .ci-usage-table>tbody>tr:not(.table-detail-row)>td.ci-directory-cell{white-space:normal;overflow-wrap:anywhere;}
-@media(max-width:800px){.ci-token-summary{white-space:normal;overflow-wrap:anywhere;}.ci-toolbar .ci-tabs{width:100%;}}
-@media(max-width:800px){.ci-usage-table{min-width:720px;}.ci-usage-table-scroll{overflow-x:auto;}}
-.manager-ui .ci-usage-table th,.manager-ui .ci-usage-table td,.manager-ui .ci-usage-table th:nth-child(n+3),.manager-ui .ci-usage-table td:nth-child(n+3){text-align:center;}
-.ci-usage-table .smart-table-heading,.ci-usage-table .ci-group-label{justify-content:center;}
-.ci-usage-table .smart-table-heading{gap:0;}
 .ci-usage-table .smart-table-filter{padding:1px;}
-.ci-usage-cost{white-space:nowrap;}
+@media(max-width:800px){.ci-token-summary{white-space:normal;overflow-wrap:anywhere;}.ci-toolbar .ci-tabs{width:100%;}}
 .manager-ui .ci-header-details,.manager-ui .ci-header-details :is(span,strong,small,button,p){font-family:inherit;font-size:12px;font-weight:400;line-height:20px;}
 .manager-ui .ci-toolbar :is(input,select,button){box-sizing:border-box;height:28px;min-height:28px;font-family:inherit;font-size:12px;line-height:20px;}
 .manager-dialog header:has(.ci-header-details){padding:3px 8px;gap:4px;}
@@ -129,10 +130,6 @@
 .manager-ui .ci-toolbar :is(input,select,button){height:25px;min-height:25px;font-size:11px;line-height:18px;}
 .manager-ui .ci-toolbar label,.ci-toolbar .ci-tabs button{font-size:11px;}
 .ci-toolbar .ci-button{padding:1px 6px;}
-/* Tree levels need a common left edge so indentation remains visible. */
-.ci-usage-table .ci-group-label{justify-content:flex-start;}
-
-.ci-usage-table th:first-child .smart-table-heading{justify-content:flex-start;}
 .ci-model-toggle-spacer{width:16px;height:16px;flex:none;}
 .ci-toolbar select[aria-label="统计维度"]{text-align:center;text-align-last:center;}
 
