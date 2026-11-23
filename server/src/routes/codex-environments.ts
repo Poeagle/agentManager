@@ -231,7 +231,7 @@ export const codexEnvironmentRoutes:FastifyPluginAsync=async app=>{
   if(!requirePermission(req,reply,'agent_api','write'))return;
   const session=own(req.params.id,req.user!.id);if(!session)return reply.code(404).send({error:'Session not found'});
   const p=req.body;if(!p||typeof p.environment_id!=='string'||typeof p.model!=='string'||typeof p.effort!=='string'||p.model.length>200||p.effort.length>30||p.provider!==undefined&&typeof p.provider!=='string')return reply.code(400).send({error:'请选择环境、模型和推理强度'});
-  if(!/^[a-z][a-z0-9_.-]{0,63}$/.test(p.environment_id.replace(/^claude-provider:/,''))||p.model!==p.model.trim()||/[\x00-\x1f\x7f]/.test(p.model))return reply.code(400).send({error:'Provider 或模型格式无效'});
+  if(!/^[a-z][a-z0-9_.-]{0,63}(?::[a-z0-9][a-z0-9_.-]{0,63})?$/.test(p.environment_id)||p.environment_id!==p.environment_id.trim()||p.model!==p.model.trim()||/[\x00-\x1f\x7f]/.test(p.model))return reply.code(400).send({error:'Provider 或模型格式无效'});
   try{
    if(session.cli_type==='claude'){
     const {readAgentRuntime}=await import('../services/agents/session.js');

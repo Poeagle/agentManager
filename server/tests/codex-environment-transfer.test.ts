@@ -1,9 +1,11 @@
 import {readFile,writeFile,copyFile,unlink} from 'fs/promises';
 import {join} from 'path';
+import Fastify from 'fastify';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
-import {createUser} from '../src/auth.js';
+import {authHook,createSession,createUser} from '../src/auth.js';
 import {getDb} from '../src/db/index.js';
+import {codexEnvironmentRoutes} from '../src/routes/codex-environments.js';
 import {saveCodexEnvironment} from '../src/services/agents/codex/environments.js';
 import {currentCodexEngine} from '../src/services/agents/codex/engine-context.js';
 import {transferCodexEnvironment} from '../src/services/agents/codex/environment-transfer.js';
@@ -42,6 +44,30 @@ beforeEach(async()=>{
 });
 afterEach(()=>{db.cleanup();});
 describe('full native environment transfer preparation',()=>{
+ it('accepts the listed account ID through preflight and copies history through the switch API',async()=>{
+  const app=Fastify();app.addHook('onRequest',authHook);await app.register(codexEnvironmentRoutes,{prefix:'/api'});
+  const headers={cookie:'agentmanager_session='+createSession(owner)};
+  const url='/api/sessions/s/environment';
+  try{
+   const list=await app.inject({url:`${url}s`,headers});
+   expect(list.statusCode).toBe(200);
+   const target=list.json().environments.find((environment:{id:string})=>environment.id===targetId);
+   expect(target).toMatchObject({kind:'account',can_control:true});
+   fixture.rpc.mockImplementationOnce(async()=>({account:{type:'chatgpt'}}));
+   const preflight=await app.inject({method:'POST',url:`${url}s/${encodeURIComponent(target.id)}/preflight`,headers,payload:{}});
+   expect(preflight.json()).toMatchObject({ok:true,models:[expect.objectContaining({model:preference.model})]});
+   const privateAccount=await saveCodexEnvironment({name:'private',connection:{username:'private',port:22},allowed_user_ids:[]});
+   const denied=await app.inject({method:'POST',url,headers,payload:{environment_id:privateAccount.id,...preference}});
+   expect(denied.statusCode).toBe(403);
+   const invalid=await app.inject({method:'POST',url,headers,payload:{environment_id:target.id,...preference,model:`${preference.model}\n`}});
+   expect(invalid.statusCode).toBe(400);
+   expect(fixture.rpc).not.toHaveBeenCalledWith('thread/fork',expect.anything());
+   const switched=await app.inject({method:'POST',url,headers,payload:{environment_id:target.id,...preference}});
+   expect(switched.statusCode,switched.body).toBe(200);
+   expect(switched.json()).toMatchObject({ok:true});
+   expect(fixture.rpc).toHaveBeenCalledWith('thread/fork',expect.objectContaining({threadId:native,model:preference.model}));
+  }finally{await app.close();}
+ });
  it('copies tool and conversation records, preserves permissions and never submits a turn',async()=>{
   expect(await transferCodexEnvironment('s',owner,targetId,preference)).toMatchObject({ok:true});
   expect(fixture.rpc).toHaveBeenCalledWith('thread/fork',expect.objectContaining({model:'fixture-model',modelProvider:'openai',sandbox:'workspace-write',approvalPolicy:'on-request',deferGoalContinuation:true}));
