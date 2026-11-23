@@ -37,6 +37,7 @@ const END = '\n</agentmanager_brief_context>\n\n当前需求：\n';
 const MAX_CONTEXT_BYTES = 32 * 1024;
 const MAX_INPUT_BYTES = 64 * 1024;
 const MAX_PAGES = 12;
+const MAX_EMPTY_PAGES = 12;
 const MAX_FIELD_CHARS = 8192;
 const MAX_PROGRESS_CHARS = 320;
 const MAX_PROMPT_KEYS_BYTES = 8 * 1024 * 1024;
@@ -223,13 +224,23 @@ export async function prepareBriefSend(sessionId: string, nativeId: string, payl
     promptKeys.set(key, id); promptKeysBytes += size;
     return id;
   };
-  for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber++) {
+  for (let pageNumber = 0, emptyPages = 0; pageNumber < MAX_PAGES;) {
     const page = await readPage({limit: '80', ...(before ? {before} : {})});
     if (!page.available || page.native_id !== nativeId || page.session_id !== sessionId)
       throw Error('无法读取原会话历史，简要压缩未执行，草稿已保留。');
-    if (pageNumber && (page.reset || page.generation !== generation))
+    if (generation !== undefined && (page.reset || page.generation !== generation))
       throw Error('会话历史已变化，请重新发送后再试。');
     generation = page.generation;
+    if (!page.messages.length) {
+      if (!page.has_more) break;
+      // The file reader scans a bounded slice per read. Tool-only slices can
+      // advance that scan without yielding a message to use as a new cursor.
+      if (++emptyPages > MAX_EMPTY_PAGES) throw Error('会话历史分页不完整，简要压缩未执行。');
+      continue;
+    }
+    const next = page.messages[0].id;
+    if (!next || cursors.has(next)) throw Error('会话历史分页不完整，简要压缩未执行。');
+    pageNumber++;
     // Keep bounded excerpts in memory even when individual native messages are large.
     pages.push(page.messages.map(message => {
       const prior = parseBriefContext(message.text);
@@ -249,11 +260,9 @@ export async function prepareBriefSend(sessionId: string, nativeId: string, payl
         ...(key === undefined ? {} : {promptKey:key})};
     }));
     if (!page.has_more) break;
-    const next = page.messages[0]?.id;
-    if (!next || cursors.has(next)) throw Error('会话历史分页不完整，简要压缩未执行。');
     cursors.add(next);
     before = next;
-    if (pageNumber === MAX_PAGES - 1) olderOmitted = true;
+    if (pageNumber === MAX_PAGES) olderOmitted = true;
   }
   const history = historyTurns(pages.reverse().flat(), promptKey, freshKey);
   if (!history.turns.length) throw Error('没有可用的对话记录，简要压缩未执行。');
