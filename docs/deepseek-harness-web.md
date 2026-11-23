@@ -2,6 +2,8 @@
 
 OctoAlly 可以从项目列表的「打开」和项目内的「＋」打开 DeepSeek Harness 标签。标签使用 Harness 原版网页。首次打开时，Harness 将 OctoAlly 已授权项目的目录注册为工作区，或复用同目录的现有工作区，然后打开其中的对话。每个项目有一个 Harness 标签，同一浏览器刷新后会恢复标签。已经打开的标签在切换项目时保留网页状态，关闭标签不会删除 Harness 的工作区或对话。
 
+在项目内的会话标签栏拖动 Harness 标签可调整顺序。双击标签名称，或在标签获得键盘焦点时按 `F2`，即可重命名。名称和位置按项目保存在当前浏览器，刷新后会恢复。
+
 ```mermaid
 sequenceDiagram
     participant O as OctoAlly 项目标签
@@ -48,6 +50,6 @@ Harness 插件仅对已登录的所有者网页启用，并检查父窗口与配
 
 ## 验证
 
-`e2e/deepseek-harness.spec.ts` 的常规测试使用隔离网页验证设置保存、两个项目分别定位、项目切换、刷新与关闭。用受控的 loopback Harness 实例启动 OctoAlly 插件并授权测试页面来源后，可通过 `E2E_DEEPSEEK_HARNESS_LOG` 指定该临时实例自己的启动日志，运行真实 Web 校验。日志含一次实例启动凭据，测试结束后随隔离实例一并清理。常规测试无需购买模型额度或访问线上服务。
+`e2e/deepseek-harness.spec.ts` 的常规测试使用隔离网页验证设置保存、两个项目分别定位、项目切换、标签重命名及排序、刷新与关闭。用受控的 loopback Harness 实例启动 OctoAlly 插件并授权测试页面来源后，可通过 `E2E_DEEPSEEK_HARNESS_LOG` 指定该临时实例自己的启动日志，运行真实 Web 校验。日志含一次实例启动凭据，测试结束后随隔离实例一并清理。常规测试无需购买模型额度或访问线上服务。
 
 可同时设置 `E2E_DEEPSEEK_HARNESS_MODEL`，验证已经配置的模型发送对话、显示答复和刷新恢复。使用线上模型时，此步骤会产生真实模型请求。

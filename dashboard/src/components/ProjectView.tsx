@@ -69,10 +69,18 @@ interface ExplorerInstance {
 
 type ActiveMode = 'terminal' | 'explorer' | 'events' | 'git' | 'history' | 'skills' | 'scheduled' | 'harness';
 
+const HARNESS_TAB = { id: 'deepseek-harness', label: 'DeepSeek Harness' };
+
+interface HarnessTabState {
+  customLabel?: string;
+  followingSessionIds?: string[];
+}
+
 interface PersistedState {
   activeMode: ActiveMode;
   fileTreeOpen?: boolean;
   harnessOpen?: boolean;
+  harnessTab?: HarnessTabState;
   explorerInstances: ExplorerInstance[];
   activeExplorerId: string | null;
   terminalInstances: TerminalInstance[];
@@ -231,6 +239,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     initialized?.activeMode ?? 'terminal'
   );
   const [harnessOpen, setHarnessOpen] = useState(initialized?.harnessOpen === true);
+  const [harnessTab, setHarnessTab] = useState<HarnessTabState>(initialized?.harnessTab ?? {});
   const openHarness = useCallback(() => {
     setHarnessOpen(true);
     setActiveMode('harness');
@@ -256,6 +265,19 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const [terminalInstances, setTerminalInstances] = useState<TerminalInstance[]>(
     initialized?.terminalInstances ?? []
   );
+  const workspaceTabs = useMemo(() => {
+    if (!harnessOpen) return terminalInstances;
+    // Anchor to the first surviving tab on the right so closing a neighbor
+    // leaves the Harness in place relative to the other open tabs.
+    const followingIds = new Set(harnessTab.followingSessionIds);
+    const next = terminalInstances.findIndex(tab => followingIds.has(tab.id));
+    const index = next === -1 ? terminalInstances.length : next;
+    return [
+      ...terminalInstances.slice(0, index),
+      { ...HARNESS_TAB, customLabel: harnessTab.customLabel },
+      ...terminalInstances.slice(index),
+    ];
+  }, [harnessOpen, harnessTab, terminalInstances]);
   useEffect(() => {
     setTerminalInstances(previous => {
       const seen: TerminalInstance[] = [];
@@ -334,55 +356,67 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     setActiveTerminalId((prev) => prev && !allowed.has(prev) && !locallyCreatedSessionIds.current.has(prev) ? null : prev);
   }, [sessionsLoaded, projectHistoryLoaded, sessionsData, allSessionLookup, projHydrated]);
 
-  // ── Inline session-tab rename ──────────────────────────────────────
+  // ── Inline tab rename ──────────────────────────────────────────────
   // ProjectView refocuses the active terminal (xterm) on session updates / tab
   // clicks via the `agentmanager:focus-terminal` event, which steals focus from a
   // rename <input> and would dismiss it on blur. So we never commit on blur —
   // blur just grabs focus back. Commit = Enter or a real outside mousedown;
   // cancel = Escape.
-  const [editingTerminalId, setEditingTerminalId] = useState<string | null>(null);
-  const [editingTerminalValue, setEditingTerminalValue] = useState('');
-  const [draggingTerminalId, setDraggingTerminalId] = useState<string | null>(null);
-  const [terminalDropTargetId, setTerminalDropTargetId] = useState<string | null>(null);
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [editingTabValue, setEditingTabValue] = useState('');
+  const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+  const [tabDropTargetId, setTabDropTargetId] = useState<string | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
-  const beginTerminalRename = useCallback((inst: TerminalInstance) => {
-    setEditingTerminalId(inst.id);
-    setEditingTerminalValue(inst.customLabel?.trim() || inst.label);
+  const beginTabRename = useCallback((tab: TerminalInstance) => {
+    setEditingTabId(tab.id);
+    setEditingTabValue(tab.customLabel?.trim() || tab.label);
   }, []);
-  const commitTerminalRename = useCallback((id: string) => {
-    const requested = editingTerminalValue.trim();
-    const currentTab = terminalInstances.find(tab => tab.id === id);
-    const v = uniqueTabName(requested || currentTab?.label || '', terminalInstances, id);
-    // Keep the synced label map in lockstep so reconciliation can re-apply it.
-    if (v) terminalLabelsRef.current[id] = v;
-    else delete terminalLabelsRef.current[id];
-    setTerminalInstances((prev) =>
-      prev.map((t) =>
-        t.id === id ? { ...t, customLabel: v || undefined } : t,
-      ),
-    );
-    setEditingTerminalId(null);
-    setEditingTerminalValue('');
-  }, [editingTerminalValue, terminalInstances]);
-  const cancelTerminalRename = useCallback(() => {
-    setEditingTerminalId(null);
-    setEditingTerminalValue('');
+  const cancelTabRename = useCallback(() => {
+    setEditingTabId(null);
+    setEditingTabValue('');
   }, []);
-  const reorderTerminalTabs = useCallback((targetId: string) => {
-    if (!draggingTerminalId || draggingTerminalId === targetId) return;
-    setTerminalInstances((current) => moveItemByKey(current, draggingTerminalId, targetId, (tab) => tab.id));
-  }, [draggingTerminalId]);
+  const commitTabRename = useCallback((id: string) => {
+    const currentTab = workspaceTabs.find(tab => tab.id === id);
+    if (currentTab) {
+      const customLabel = uniqueTabName(editingTabValue.trim() || currentTab.label, workspaceTabs, id);
+      if (id === HARNESS_TAB.id) {
+        setHarnessTab(current => ({ ...current, customLabel }));
+      } else {
+        // Keep the synced label map in lockstep so reconciliation can re-apply it.
+        if (customLabel) terminalLabelsRef.current[id] = customLabel;
+        else delete terminalLabelsRef.current[id];
+        setTerminalInstances(current => current.map(tab => tab.id === id
+          ? { ...tab, customLabel: customLabel || undefined }
+          : tab));
+      }
+    }
+    cancelTabRename();
+  }, [editingTabValue, workspaceTabs, cancelTabRename]);
+  const reorderTabs = useCallback((targetId: string) => {
+    if (!draggingTabId || draggingTabId === targetId) return;
+    const next = moveItemByKey(workspaceTabs, draggingTabId, targetId, tab => tab.id);
+    const harnessIndex = next.findIndex(tab => tab.id === HARNESS_TAB.id);
+    if (harnessIndex !== -1) {
+      const followingSessionIds = next.slice(harnessIndex + 1).map(tab => tab.id);
+      setHarnessTab(current => ({ ...current, followingSessionIds }));
+    }
+    const sessionOrder = next.filter(tab => tab.id !== HARNESS_TAB.id).map(tab => tab.id);
+    setTerminalInstances(current => {
+      const ordered = orderItemsByKeys(current, sessionOrder, tab => tab.id);
+      return ordered.every((tab, index) => tab === current[index]) ? current : ordered;
+    });
+  }, [draggingTabId, workspaceTabs]);
   // Commit when the user mousedowns anywhere outside the rename input.
   useEffect(() => {
-    if (editingTerminalId === null) return;
+    if (editingTabId === null) return;
     const onDocPointerDown = (e: MouseEvent) => {
       if (renameInputRef.current && !renameInputRef.current.contains(e.target as Node)) {
-        commitTerminalRename(editingTerminalId);
+        commitTabRename(editingTabId);
       }
     };
     document.addEventListener('mousedown', onDocPointerDown, true);
     return () => document.removeEventListener('mousedown', onDocPointerDown, true);
-  }, [editingTerminalId, commitTerminalRename]);
+  }, [editingTabId, commitTabRename]);
 
   const [showNewSession, setShowNewSession] = useState(false);
   const closeNewSession = useCallback(() => setShowNewSession(false), []);
@@ -710,6 +744,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     persistState(currentUserId, projectId, {
       activeMode,
       harnessOpen,
+      harnessTab,
       fileTreeOpen,
       explorerInstances,
       activeExplorerId,
@@ -717,7 +752,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       activeTerminalId,
       hiddenSessionIds: [...closedSessionIds.current],
     });
-  }, [currentUserId, projectId, activeMode, harnessOpen, fileTreeOpen, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion]);
+  }, [currentUserId, projectId, activeMode, harnessOpen, harnessTab, fileTreeOpen, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion]);
 
   // ── Cross-device sync: the terminal tab list uses stable AgentManager
   // session IDs. Persisting it (plus hidden/active IDs) makes the tab-to-native
@@ -1053,6 +1088,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     persistState(currentUserId, projectId, {
       activeMode,
       harnessOpen,
+      harnessTab,
       explorerInstances,
       activeExplorerId,
       terminalInstances: remaining,
@@ -1253,47 +1289,51 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           >
             {showSubTabs && (
               <>
-                {/* Sessions and files share one tab strip. */}
-                {terminalInstances.map((inst) => {
-                  const isActive = activeMode==='terminal' && inst.id === activeTerminalId;
+                {workspaceTabs.map((inst) => {
+                  const isHarness = inst.id === HARNESS_TAB.id;
+                  const isActive = isHarness ? activeMode === 'harness' : activeMode === 'terminal' && inst.id === activeTerminalId;
+                  const label = inst.customLabel?.trim() || inst.label;
                   const session = sessionLookup.get(inst.id) || allSessionLookup.get(inst.id);
                   // Status signal light — a leaf component subscribes to just this
                   // session's live state, so a state tick doesn't re-render the view.
                   const sigSession = allSessionLookup.get(inst.id);
                   const tabKind = session ? sessionTabKind(session) : 'session';
                   const isTerminal = tabKind === 'terminal';
-                  const tabIcon=isTerminal?<TerminalSquare className="workspace-tab-icon w-3 h-3 shrink-0" style={{color:'#f59e0b'}}/>:<AgentIcon session={session||{}} className="workspace-tab-icon w-3 h-3 shrink-0"/>;
+                  const iconClass = 'workspace-tab-icon w-3 h-3 shrink-0';
+                  const tabIcon = isHarness ? <Globe className={iconClass} aria-hidden="true" />
+                    : isTerminal ? <TerminalSquare className={iconClass} style={{ color: '#f59e0b' }} />
+                    : <AgentIcon session={session || {}} className={iconClass} />;
                   return (
                     <div
                       key={inst.id}
-                      draggable={editingTerminalId !== inst.id}
+                      draggable={editingTabId !== inst.id}
                       onDragStart={(event) => {
                         event.dataTransfer.effectAllowed = 'move';
                         event.dataTransfer.setData('text/plain', inst.id);
-                        setDraggingTerminalId(inst.id);
+                        setDraggingTabId(inst.id);
                       }}
                       onDragEnd={() => {
-                        setDraggingTerminalId(null);
-                        setTerminalDropTargetId(null);
+                        setDraggingTabId(null);
+                        setTabDropTargetId(null);
                       }}
                       className="workspace-tab group touch-none"
-                      data-session-id={inst.id}
+                      data-session-id={isHarness ? undefined : inst.id}
                       data-active={isActive}
                       onDragOver={(event) => {
-                        if (!draggingTerminalId || draggingTerminalId === inst.id) return;
+                        if (!draggingTabId || draggingTabId === inst.id) return;
                         event.preventDefault();
                         event.dataTransfer.dropEffect = 'move';
-                        setTerminalDropTargetId(inst.id);
+                        setTabDropTargetId(inst.id);
                       }}
                       onDrop={(event) => {
                         event.preventDefault();
-                        reorderTerminalTabs(inst.id);
-                        setDraggingTerminalId(null);
-                        setTerminalDropTargetId(null);
+                        reorderTabs(inst.id);
+                        setDraggingTabId(null);
+                        setTabDropTargetId(null);
                       }}
                       style={{
                         background: isActive ? 'var(--bg-tertiary)' : 'transparent',
-                        outline: terminalDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
+                        outline: tabDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
                       }}
                     >
                       {sigSession && (
@@ -1302,14 +1342,15 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                           {!!notificationUnread?.[inst.id]&&<span className="notification-tab-count" aria-label={`${notificationUnread[inst.id]} 条未读通知`}>{notificationUnread[inst.id]}</span>}
                         </span>
                       )}
-                      {editingTerminalId === inst.id ? (
+                      {editingTabId === inst.id ? (
                         <div className="workspace-tab-button">
                           {tabIcon}
                           <input
                             ref={renameInputRef}
+                            aria-label="标签名称"
                             autoFocus
-                            value={editingTerminalValue}
-                            onChange={(e) => setEditingTerminalValue(e.target.value)}
+                            value={editingTabValue}
+                            onChange={(e) => setEditingTabValue(e.target.value)}
                             onFocus={(e) => e.target.select()}
                             onBlur={() => {
                               // Terminals steal focus on session updates — grab it back if we're
@@ -1317,8 +1358,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                               requestAnimationFrame(() => renameInputRef.current?.focus());
                             }}
                             onKeyDown={(e) => {
-                              if (e.key === 'Enter') { e.preventDefault(); commitTerminalRename(inst.id); }
-                              else if (e.key === 'Escape') { e.preventDefault(); cancelTerminalRename(); }
+                              if (e.key === 'Enter') { e.preventDefault(); commitTabRename(inst.id); }
+                              else if (e.key === 'Escape') { e.preventDefault(); cancelTabRename(); }
                             }}
                             className="bg-transparent outline-none border-b text-xs font-medium w-[110px]"
                             style={{ color: 'var(--text-primary)', borderColor: 'var(--accent)' }}
@@ -1326,50 +1367,56 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                         </div>
                       ) : (
                         <button
+                          type="button"
+                          aria-pressed={isHarness ? isActive : undefined}
                           onClick={(e) => {
                             if (e.detail > 1) return; // 2nd click of a double-click → that's a rename
+                            if (isHarness) {
+                              openHarness();
+                              return;
+                            }
                             setActiveTerminalId(inst.id);
                             setActiveMode('terminal');
 
                             // Focus the terminal after switching tabs.
                             focusTerminalById(inst.id);
                           }}
-                          onDoubleClick={() => beginTerminalRename(inst)}
+                          onDoubleClick={() => beginTabRename(inst)}
+                          onKeyDown={(event) => {
+                            if (event.key !== 'F2') return;
+                            event.preventDefault();
+                            beginTabRename(inst);
+                          }}
                           className="workspace-tab-button"
                           style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-                          title="双击重命名"
+                          title={isHarness ? `${label} · 双击或按 F2 重命名` : '双击重命名'}
                         >
                           {tabIcon}
-                          <SessionTabLabel session={sigSession} label={inst.customLabel?.trim() || inst.label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session||{}).label}`} />
+                          {isHarness ? <span className="truncate">{label}</span>
+                            : <SessionTabLabel session={sigSession} label={label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session || {}).label}`} />}
                         </button>
                       )}
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          const type = session ? sessionTabKind(session) : 'session';
-                          setCloseConfirm({ id: inst.id, label: inst.customLabel?.trim() || inst.label, type });
+                          if (isHarness) {
+                            setHarnessOpen(false);
+                            setActiveMode(mode => mode === 'harness' ? 'terminal' : mode);
+                            return;
+                          }
+                          setCloseConfirm({ id: inst.id, label, type: tabKind });
                         }}
                         className="workspace-tab-close"
                         style={{ color: 'var(--text-secondary)' }}
-                        title="Close session"
+                        aria-label={isHarness ? `关闭 ${label}` : undefined}
+                        title={isHarness ? undefined : 'Close session'}
                       >
                         <X className="w-3 h-3" />
                       </button>
                     </div>
                   );
                 })}
-
-                {harnessOpen && <div className="workspace-tab group" data-active={activeMode === 'harness'}>
-                  <button type="button" aria-pressed={activeMode === 'harness'} className="workspace-tab-button" onClick={openHarness}>
-                    <Globe className="workspace-tab-icon w-3 h-3 shrink-0" aria-hidden="true" />
-                    <span>DeepSeek Harness</span>
-                  </button>
-                  <button type="button" className="workspace-tab-close" aria-label="关闭 DeepSeek Harness"
-                    onClick={() => {
-                      setHarnessOpen(false);
-                      setActiveMode(mode => mode === 'harness' ? 'terminal' : mode);
-                    }}><X className="w-3 h-3" /></button>
-                </div>}
 
                 {/* Create directly through the same dialog as the project list. */}
                 <button

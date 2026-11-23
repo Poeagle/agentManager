@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { once } from 'node:events';
 import { mkdir, realpath } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 
@@ -14,6 +15,7 @@ async function prepareProjects(page: Page) {
     data: { username: 'e2e-admin', password: 'test-password' },
   });
   expect(response.ok()).toBeTruthy();
+  const { user } = await response.json();
   const settings = await page.request.put('/api/settings', {
     data: { settings: { statusline_prompted: 'true', deepseek_harness_url: '' } },
   });
@@ -30,7 +32,9 @@ async function prepareProjects(page: Page) {
     const created = await page.request.post('/api/projects', { data: { name, path } });
     expect(created.ok() || created.status() === 409).toBeTruthy();
   }
-  return paths;
+  const { projects: existing } = await (await page.request.get('/api/projects')).json();
+  const projectIds = paths.map(path => existing.find((project: { path: string }) => project.path === path).id);
+  return { paths, projectIds, userId: user.id };
 }
 
 async function configure(page: Page, url: string) {
@@ -74,8 +78,26 @@ function visibleHarness(page: Page) {
   return page.locator('iframe[title="DeepSeek Harness"]:visible').contentFrame();
 }
 
-test('configures Harness, binds each project, and restores and closes its tab', async ({ page }) => {
-  const paths = await prepareProjects(page);
+test('configures Harness and restores its workspace, custom tab name and order', async ({ page }) => {
+  const { paths, projectIds, userId } = await prepareProjects(page);
+  const otherTabs = [
+    { id: 'harness-neighbor-codex', label: 'Codex 工作记录', agent: 'codex' },
+    { id: 'harness-neighbor-claude', label: 'Claude 工作记录', agent: 'claude' },
+  ];
+  const Database = createRequire(import.meta.url)('../server/node_modules/better-sqlite3');
+  const db = new Database(join(process.cwd(), '.test-data', 'e2e', 'agentmanager.db'));
+  const now = new Date().toISOString();
+  try {
+    const insert = db.prepare(`INSERT INTO sessions
+      (id, project_id, task, status, mode, cli_type, created_by_user_id, created_at, updated_at, completed_at)
+      VALUES (?, ?, ?, 'completed', 'session', ?, ?, ?, ?, ?)`);
+    for (const tab of otherTabs) insert.run(tab.id, projectIds[0], tab.label, tab.agent, userId, now, now, now);
+  } finally {
+    db.close();
+  }
+  expect((await page.request.put(`/api/user-state/${encodeURIComponent(`project:${projectIds[0]}`)}`, {
+    data: { value: { terminalInstances: otherTabs.map(({ id, label }) => ({ id, label })), hiddenSessionIds: [] } },
+  })).ok()).toBeTruthy();
   const received: string[] = [];
   const server = createServer(async (req, res) => {
     if (req.method === 'POST') {
@@ -110,12 +132,42 @@ test('configures Harness, binds each project, and restores and closes its tab', 
     await expect(visibleHarness(page).getByLabel('Project path')).toHaveText(paths[0]);
     expect(received.filter(path => path === paths[0])).toHaveLength(1);
 
+    const strip = page.getByLabel('会话标签', { exact: true }).filter({ visible: true });
+    const tabButtons = strip.locator('.workspace-tab-button');
+    const [codexLabel, claudeLabel] = otherTabs.map(tab => tab.label);
+    const harnessLabel = '项目调研';
+    const harnessTab = strip.getByRole('button', { name: 'DeepSeek Harness', exact: true });
+    await expect(tabButtons).toHaveText([codexLabel, claudeLabel, 'DeepSeek Harness']);
+    await harnessTab.dblclick();
+    const rename = strip.getByRole('textbox', { name: '标签名称' });
+    await expect(rename).toBeVisible({ timeout: 4_000 });
+    await rename.fill(`  ${harnessLabel}  `);
+    await rename.press('Enter');
+    const renamed = strip.getByRole('button', { name: harnessLabel, exact: true });
+    await renamed.press('F2');
+    await rename.fill('取消重命名');
+    await rename.press('Escape');
+    await expect(renamed).toBeVisible();
+
+    const codexTab = strip.getByRole('button', { name: codexLabel, exact: true });
+    await renamed.dragTo(codexTab);
+    await expect(tabButtons).toHaveText([harnessLabel, codexLabel, claudeLabel]);
+    await codexTab.dragTo(renamed);
+    await expect(tabButtons).toHaveText([codexLabel, harnessLabel, claudeLabel]);
+    await expect(visibleHarness(page).getByLabel('Project path')).toHaveText(paths[0]);
+    expect(received.filter(path => path === paths[0])).toHaveLength(1);
+
+    await page.reload();
+    await expect(tabButtons).toHaveText([codexLabel, harnessLabel, claudeLabel]);
+    await expect(visibleHarness(page).getByLabel('Project path')).toHaveText(paths[0]);
+
     await page.getByRole('navigation', { name: '项目标签' }).getByRole('button', { name: 'Projects', exact: true }).click();
     await openHarness(page, projects[1]);
     await expect(visibleHarness(page).getByLabel('Project path')).toHaveText(paths[1]);
     const projectTabs = page.getByRole('navigation', { name: '项目标签' });
     await projectTabs.getByText(projects[0], { exact: true }).click();
     await expect(visibleHarness(page).getByLabel('Project path')).toHaveText(paths[0]);
+    await expect(tabButtons).toHaveText([codexLabel, harnessLabel, claudeLabel]);
     await projectTabs.getByText(projects[1], { exact: true }).click();
     await expect(visibleHarness(page).getByLabel('Project path')).toHaveText(paths[1]);
 
@@ -127,11 +179,12 @@ test('configures Harness, binds each project, and restores and closes its tab', 
     await expect(page.getByRole('button', { name: '关闭 DeepSeek Harness' }).filter({ visible: true })).toHaveCount(0);
     expect((await (await page.request.get('/api/settings')).json()).settings.deepseek_harness_url).toBe(url);
     const { sessions } = await (await page.request.get('/api/sessions')).json();
-    expect(sessions.filter((session: { project_path: string }) => paths.includes(session.project_path))).toHaveLength(0);
+    expect(sessions.filter((session: { project_id: string }) => projectIds.includes(session.project_id))
+      .map((session: { id: string }) => session.id).sort()).toEqual(otherTabs.map(tab => tab.id).sort());
   } finally {
-    await page.request.put('/api/settings', { data: { settings: { deepseek_harness_url: '' } } });
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
+    await page.request.put('/api/settings', { data: { settings: { deepseek_harness_url: '' } } });
   }
 });
 
