@@ -30,6 +30,24 @@ test('shows Agent-specific settings for Codex and Claude', async ({ page }) => {
   await page.getByTitle('My account').click();
   await page.getByRole('button', { name: 'Agent 配置' }).click();
   await expect(page.locator('.manager-section-heading')).toHaveText('Agent 配置');
+  const navigation = page.locator('.agent-management-navigation');
+  const tabs = navigation.getByRole('tablist', { name: 'Agent 配置页面' });
+  const desktop = page.viewportSize()!;
+  for (const width of [desktop.width, 768, 390]) {
+    await page.setViewportSize({width, height: desktop.height});
+    const tabBox = await tabs.boundingBox();
+    for (const control of [
+      navigation.getByText('2 个 Provider'),
+      navigation.getByRole('button', {name: '重新检测'}),
+      navigation.getByRole('button', {name: '新增 Provider'}),
+    ]) {
+      await expect(control).toBeVisible();
+      const box = (await control.boundingBox())!;
+      expect(Math.abs(tabBox!.y + tabBox!.height / 2 - box.y - box.height / 2)).toBeLessThan(2);
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+    }
+  }
+  await page.setViewportSize(desktop);
   await expect(page.getByRole('button', { name: '编辑 xindu · Codex' })).toBeVisible();
   await page.getByRole('button', { name: '展开Provider xindu 的模型' }).click();
   const modelTable = page.getByRole('table', { name: 'Provider 模型' });
@@ -45,8 +63,6 @@ test('shows Agent-specific settings for Codex and Claude', async ({ page }) => {
   const inputRates = gptRow.getByRole('cell').nth(4).locator('.agent-model-price-line');
   await expect(inputRates).toHaveText(['$2输入 ≤272K', '$4输入 >272K']);
   for (const rate of ['$15', '$0.2']) await expect(gptRow.getByText(rate, {exact: true})).toBeVisible();
-  const tabs = page.getByRole('tablist', { name: 'Agent 配置页面' });
-  const navigation = page.locator('.agent-management-navigation');
   await expect(navigation.getByText('1 个模型')).toBeVisible();
   const refreshButton = navigation.getByRole('button', {name: '更新资料'});
   await expect(refreshButton).toBeVisible();
@@ -54,7 +70,6 @@ test('shows Agent-specific settings for Codex and Claude', async ({ page }) => {
     const wrapper = table.parentElement!;
     return table.getBoundingClientRect().width <= wrapper.clientWidth + 1 && wrapper.scrollWidth <= wrapper.clientWidth + 1;
   });
-  const desktop = page.viewportSize()!;
   for (const width of [desktop.width, 768, 390]) {
     await page.setViewportSize({width, height: desktop.height});
     await expect.poll(fitsWidth).toBe(true);

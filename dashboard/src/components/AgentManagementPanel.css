@@ -33,15 +33,10 @@
   line-height: 19px;
 }
 .agent-management-agent-icon { width: 16px; height: 16px; color: var(--accent); flex: none; }
-.agent-provider-toolbar, .agent-provider-toolbar > div {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
 .agent-management-navigation {
   display:flex;
   align-items:center;
+  flex-wrap:wrap;
   gap:8px;
   margin-bottom:10px;
   border-bottom:1px solid var(--border);
@@ -50,7 +45,7 @@
 .agent-management-tabs button { min-height:32px; padding:0 10px; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--text-secondary); font:inherit; cursor:pointer; }
 .agent-management-tabs button[aria-selected="true"] { border-bottom-color:var(--accent); color:var(--text-primary); }
 .agent-management-tabs button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
-.agent-model-information-toolbar {
+:is(.agent-provider-toolbar,.agent-model-information-toolbar) {
   display:flex;
   align-items:center;
   justify-content:flex-end;
@@ -59,7 +54,20 @@
   min-width:0;
   padding-block:2px;
 }
-.agent-model-information-toolbar .agent-management-button { flex:none; min-height:28px; }
+.agent-provider-toolbar { flex:1 1 auto; flex-wrap:wrap; }
+:is(.agent-provider-toolbar,.agent-model-information-toolbar) .agent-management-button { flex:none; min-height:28px; }
+.agent-provider-toolbar > span {
+  color:var(--text-secondary);
+  font-size:11px;
+  white-space:nowrap;
+}
+@media (max-width:480px) {
+  .agent-management-navigation { column-gap:4px; }
+  .agent-management-tabs button { padding-inline:6px; }
+  .agent-provider-toolbar { gap:4px; }
+  .agent-provider-toolbar .agent-management-button { padding-inline:5px; }
+  .agent-provider-toolbar .agent-management-button svg { display:none; }
+}
 .agent-model-information-summary {
   display:flex;
   justify-content:flex-end;
@@ -116,9 +124,6 @@
   .agent-model-information .agent-model-information-table td[colspan] { grid-column:1/-1; }
   .agent-model-information .agent-model-information-table tbody td:nth-child(-n+4):not([colspan]) { border-bottom:0; }
 }
-.agent-provider-toolbar { justify-content: space-between; margin-bottom: 10px; }
-.agent-provider-toolbar > span { color: var(--text-secondary); font-size: 12px; }
-.agent-provider-toolbar .agent-management-button { min-height: 32px; }
 .agent-provider-agent, .agent-provider-status {
   display: inline-flex;
   align-items: center;
