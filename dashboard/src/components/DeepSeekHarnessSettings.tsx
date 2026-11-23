@@ -3,8 +3,9 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { HARNESS_URL_SETTING } from '../lib/deepseek-harness';
 
-export function DeepSeekHarnessSettings({ url, onSaved, onBusyChange, onDirtyChange }: {
+export function DeepSeekHarnessSettings({ url, readOnly = false, onSaved, onBusyChange, onDirtyChange }: {
   url: string;
+  readOnly?: boolean;
   onSaved: () => void;
   onBusyChange: (busy: boolean) => void;
   onDirtyChange: (dirty: boolean) => void;
@@ -26,11 +27,11 @@ export function DeepSeekHarnessSettings({ url, onSaved, onBusyChange, onDirtyCha
       onSaved();
     },
   });
-  return <form onSubmit={event => { event.preventDefault(); save.mutate(value.trim()); }}>
+  return <form onSubmit={event => { event.preventDefault(); if (!readOnly) save.mutate(value.trim()); }}>
     <label className="agent-management-field">
       <span>Harness 网页地址</span>
       <input type="url" value={value} maxLength={2048} placeholder="https://harness.example.com/"
-        disabled={save.isPending} onChange={event => {
+        readOnly={readOnly} disabled={save.isPending} onChange={event => {
           setValue(event.target.value);
           onDirtyChange(event.target.value.trim() !== url);
         }} />
@@ -39,11 +40,11 @@ export function DeepSeekHarnessSettings({ url, onSaved, onBusyChange, onDirtyCha
       填写 Harness 的访问地址。在 Harness 实例启用 OctoAlly 插件后，项目标签会自动打开对应工作区。
     </p>
     {save.isError && <p role="alert" className="agent-management-error-box">{save.error.message}</p>}
-    <div className="mt-4 flex justify-end gap-2">
+    {!readOnly && <div className="mt-4 flex justify-end gap-2">
       {url && <button type="button" className="agent-management-button" disabled={save.isPending}
         onClick={() => save.mutate('')}>移除接入</button>}
       <button type="submit" className="agent-management-button agent-management-button-primary"
         disabled={save.isPending || !value.trim() || value.trim() === url}>保存</button>
-    </div>
+    </div>}
   </form>;
 }

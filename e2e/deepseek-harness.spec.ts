@@ -43,6 +43,19 @@ async function configure(page: Page, url: string) {
   await dialog.getByLabel('Harness 网页地址').fill(url);
   await dialog.getByRole('button', { name: '保存', exact: true }).click();
   await expect(dialog).toHaveCount(0);
+
+  const table = page.getByRole('table', { name: 'Agent Provider' });
+  const providers = table.locator('tbody > tr');
+  const row = table.getByRole('row').filter({ has: page.getByRole('cell', { name: 'DeepSeek Harness', exact: true }) });
+  await expect(row).toHaveCount(1);
+  await expect(row.getByRole('cell', { name: url })).toBeVisible();
+  await expect(page.getByText(`${await providers.count()} 个 Provider`, { exact: true })).toBeVisible();
+  await row.getByRole('button', { name: '编辑 DeepSeek Harness', exact: true }).click();
+  const edit = page.getByRole('dialog', { name: '编辑 Provider · DeepSeek Harness' });
+  await expect(edit.getByLabel('Harness 网页地址')).toHaveValue(url);
+  await expect(edit.getByRole('combobox', { name: 'Agent', exact: true })).toHaveCount(0);
+  await edit.getByRole('button', { name: '关闭编辑 Provider · DeepSeek Harness' }).click();
+
   await page.getByRole('button', { name: '关闭平台管理' }).click();
 }
 
