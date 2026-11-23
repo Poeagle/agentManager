@@ -169,3 +169,22 @@ it('rejects automatic compaction when the original conversation was replaced',as
  expect(result.json()).toMatchObject({submission:'rejected'});
  expect(compact).not.toHaveBeenCalled();
 });
+
+it.each(['codex','claude'] as const)('estimates the cached input at risk for the %s reminder from neutral telemetry',async agentId=>{
+ const adapter=getAgent(agentId);
+ if(agentId==='claude'){
+  getDb().prepare("UPDATE sessions SET cli_type='claude',codex_session_id=NULL,claude_session_id='native' WHERE id='s'").run();
+  vi.spyOn(adapter.telemetry,'read');
+ }
+ const check=()=>app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ const telemetry=(cached_input_tokens:number|null,total_tokens=800)=>({usage:{total:{},last:{input_tokens:760,cached_input_tokens,total_tokens},window:1000},observed_at:null});
+ vi.mocked(adapter.telemetry.read).mockResolvedValue(telemetry(540));
+ expect((await check()).json()).toMatchObject({needs_confirmation:true,cache_miss_estimate:{tokens:540,cost:null}});
+ for(const cached of [null,0,761]){
+  vi.mocked(adapter.telemetry.read).mockResolvedValue(telemetry(cached));
+  expect((await check()).json()).toMatchObject({needs_confirmation:true,cache_miss_estimate:null});
+ }
+ vi.mocked(adapter.telemetry.read).mockResolvedValue(telemetry(540,760));
+ getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY,JSON.stringify({...DEFAULT_SEND_GUARD,reminder_enabled:false}));
+ expect((await check()).json()).toMatchObject({needs_confirmation:false,cache_miss_estimate:null});
+});

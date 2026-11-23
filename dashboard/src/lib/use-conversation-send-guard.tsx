@@ -7,6 +7,19 @@ import {Dialog} from '../components/Dialog';
 import {parseBriefContext,prepareBriefSend} from './conversation-brief-context';
 import {BriefOptions} from '../components/ConversationBriefOptions';
 import {SEND_GUARD_ACTION_LABELS,type SendGuardAction} from '../../../server/src/shared/send-guard';
+const estimateAmount = new Intl.NumberFormat('en', {maximumSignificantDigits:3});
+const estimateTokens = new Intl.NumberFormat('en');
+const billingUnits:Record<string,string> = {USD:'美元',CNY:'元',credits:'Credits'};
+
+function cacheMissWarning(estimate: SendGuardCheck['cache_miss_estimate']) {
+ if(!estimate)return '原样发送的额外消耗暂无法量化，实际费用取决于本次缓存命中。';
+ const {tokens,cost}=estimate;
+ const amount=cost
+  ? `按上次费率约多 ${estimateAmount.format(cost.amount)} ${billingUnits[cost.unit]??cost.unit}`
+  : '金额暂无法估算';
+ return `原样发送时，若上次命中的缓存这次全部失效，约有 ${estimateTokens.format(tokens)} 个输入 Token 改按普通输入计费，${amount}。`;
+}
+
 interface Confirmation {token:string;nativeId:string|null;payload:SendGuardPayload}
 interface Pending {sessionId:string;payload:SendGuardPayload;resolve:(result:Confirmation|null)=>void;reject:(error:unknown)=>void;controller:AbortController;check:SendGuardCheck|null;phase:'checking'|'choice'|'select'|'preparing'|'compacting'|'new'|'unknown';detached?:boolean;brief?:boolean;automatic?:SendGuardAction;error?:string;startedAt?:number}
 export function useConversationSendGuard(sessionId:string,active:boolean,compaction:{state:CompactionPresentation|null;start:(expectedNativeId?:string)=>Promise<void>},onNew?:(expectedNativeId?:string,preference?:AgentModelPreference,environmentId?:string)=>Promise<string|void>){
@@ -128,7 +141,9 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
  const dialog=showDialog?(view.phase==='select'?<BriefOptions sessionId={sessionId} onCancel={()=>{if(current.current)finish(current.current,null);}} onConfirm={options=>{const p=current.current;if(p&&p.phase==='select'){p.phase='choice';void choose('brief',options);}}}/>:<Dialog title="发送前检查" size="lg" busy={view.phase==='new'} onClose={()=>{if(current.current)finish(current.current,null);}}>
   <p className="text-sm" style={{color:'var(--text-secondary)'}}>{check.matched===null?'部分会话用量或闲置状态无法核实。':check.matched?'当前会话达到平台设置的发送提醒条件。':''}请选择如何发送；草稿会保留到实际提交。</p>
   <dl className="my-4 grid grid-cols-2 gap-x-6 gap-y-2 text-xs"><dt>当前上下文 / 窗口</dt><dd>{check.context_tokens??'未知'} / {check.context_window??'未知'} Token</dd><dt>窗口占用</dt><dd>{check.context_percent===null?'未知':`${check.context_percent.toFixed(1)}%`}</dd><dt>上轮结束后闲置</dt><dd>{check.idle_minutes===null?'未知':`${Math.floor(check.idle_minutes)} 分钟`}</dd><dt>用量采集时间</dt><dd>{formatDisplayTimestamp(check.observed_at)}</dd>{typeof check.account_remaining_percent==='number'&&<><dt>账号额度剩余</dt><dd>{check.account_remaining_percent}%</dd></>}</dl>
-  <p className="text-xs" style={{color:'var(--text-muted)'}}>这是发送风险提醒，缓存是否仍可复用无法由闲置时间准确判断。</p>
+  {check.needs_confirmation&&<p className="text-sm font-medium" style={{color:'var(--error)'}}>
+   {cacheMissWarning(check.cache_miss_estimate)}
+  </p>}
   {view.phase==='new'&&<p role="status" className="my-3 text-xs">正在创建新会话，确认成功后发送。</p>}
   {view.error&&<p role="alert" className="my-3 text-xs" style={{color:'var(--error)'}}>{view.error}</p>}
   <div className="mt-4 flex flex-wrap justify-end gap-2"><button className="settings-panel-button" disabled={view.phase==='new'} onClick={()=>{if(current.current)finish(current.current,null);}}>取消</button><button className="settings-panel-button" disabled={view.phase!=='choice'||!check.can_new||!onNew} onClick={()=>void choose('new')}>新开后发送</button><button className="settings-panel-button" title="整理已有输入、结论和少量过程，在新会话中发送" disabled={view.phase!=='choice'||!check.can_new||!onNew||!!parseBriefContext(view.payload.input)} onClick={()=>void choose('brief')}>简要压缩后发送</button><button className="settings-panel-button" disabled={view.phase!=='choice'||!check.can_compact} onClick={()=>void choose('compact')}>压缩后发送</button><button className="settings-panel-button settings-panel-button--primary" disabled={view.phase!=='choice'} onClick={()=>void choose('continue')}>原样发送</button></div>

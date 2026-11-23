@@ -1,3 +1,4 @@
+import {readSessionCacheMissCost} from './session-statistics.js';
 import {createHash,createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
 import {getDb} from '../db/index.js';
 import {isAdmin} from '../auth.js';
@@ -38,12 +39,19 @@ export async function inspectSendGuard(session:AgentSession,userId:string,payloa
   if(switchAccount&&canTransform&&adapter.descriptor.capabilities.newConversation&&adapter.lifecycle.prepareFreshInEnvironment)
    targetAccount=adapter.quota.alternateAccount?.(context)??null;
  }catch{/* No authorized candidate with confirmed quota. */}
+ const inputTokens=finite(usage?.usage?.last.input_tokens);
+ const cachedTokens=finite(usage?.usage?.last.cached_input_tokens);
+ const cacheMissEstimate=matched===true&&!requiredAction&&inputTokens!==null&&Number.isSafeInteger(inputTokens)
+   &&cachedTokens!==null&&Number.isSafeInteger(cachedTokens)&&cachedTokens>0&&cachedTokens<=inputTokens
+  ? {tokens:cachedTokens,cost:readSessionCacheMissCost(context,inputTokens,cachedTokens)}
+  : null;
  return {
   needs_confirmation:matched===true,
   required_action:requiredAction,
   switch_account:switchAccount,
   target_account:targetAccount,
   account_remaining_percent:accountRemaining,
+  cache_miss_estimate:cacheMissEstimate,
   matched,enabled:policy.enabled,
   context_tokens:tokens,context_window:window,context_percent:percent,
   idle_minutes:idleMinutes,last_completed_at:idle?runtime?.last_turn_ended_at??null:null,

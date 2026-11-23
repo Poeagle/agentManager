@@ -36,6 +36,30 @@ test('model controls use native capabilities and a docked file stays readable wh
   await page.goto('/');const modelSelect=page.getByRole('combobox',{name:'选择模型'}),strength=page.getByRole('combobox',{name:'选择推理强度'}),input=page.getByRole('textbox',{name:'发送给当前 Agent 的消息'});await expect(modelSelect).toHaveValue(modelKey('model-a'));await expect(page.getByText('Context 40K | 30%',{exact:true})).toBeVisible();await expect(page.getByLabel('Weekly remaining 75%')).toHaveCount(0);
   await page.getByRole('button',{name:'开启 Fast 模式'}).click();await expect(page.getByRole('button',{name:'关闭 Fast 模式'})).toHaveAttribute('aria-pressed','true');expect(tier).toBe('priority');
   await page.getByRole('button',{name:'关闭 Fast 模式'}).click();await expect(page.getByRole('button',{name:'开启 Fast 模式'})).toHaveAttribute('aria-pressed','false');expect(tier).toBe('default');expect(inputs).toHaveLength(0);
+  const settings=(await (await page.request.get('/api/settings')).json()).settings;
+  const warningPolicy={enabled:true,conditions:{operator:'and',conditions:[{type:'context_percent',value:30}]}};
+  expect((await page.request.put('/api/settings',{data:{settings:{conversation_send_guard:JSON.stringify(warningPolicy)}}})).ok()).toBe(true);
+  try{
+   await input.fill('检查原样发送的消耗');
+   await page.getByRole('button',{name:'发送消息',exact:true}).click();
+   const guard=page.getByRole('dialog',{name:'发送前检查'});
+   const warning=guard.getByText(/^原样发送时/);
+   await expect(warning).toContainText('10,000 个输入 Token');
+   await expect(warning).toContainText('金额暂无法估算');
+   expect(await warning.evaluate(el=>{
+    const [red,green,blue]=getComputedStyle(el).color.match(/[0-9.]+/g)!.map(Number);
+    return red>green&&red>blue;
+   })).toBe(true);
+   await page.setViewportSize({width:390,height:844});
+   await expect(warning).toBeVisible();
+   expect(await guard.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+   await guard.getByRole('button',{name:'取消',exact:true}).click();
+   await expect(input).toHaveText('检查原样发送的消耗');
+   expect(inputs).toHaveLength(0);
+  }finally{
+   await page.setViewportSize({width:1280,height:720});
+   await page.request.put('/api/settings',{data:{settings:{conversation_send_guard:settings.conversation_send_guard}}});
+  }
   working=true;for(const client of wss.clients)client.send(JSON.stringify({method:'turn/started',params:{threadId:native,turn:{id:'work',status:'inProgress'}}}));
   await input.fill('运行中实时插入');await page.getByRole('button',{name:'发送消息',exact:true}).click();await expect.poll(()=>steered.length).toBe(1);expect(steered[0].expectedTurnId).toBe('work');
   const inserted=page.locator('.session-chat-message.user').filter({hasText:'运行中实时插入'});

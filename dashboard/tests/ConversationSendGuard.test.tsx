@@ -205,3 +205,20 @@ it('stops a quota switch if the new account quota becomes unknown before sending
  expect(newSession).toHaveBeenCalledExactlyOnceWith('native',undefined,'account:backup');
  expect(done).not.toHaveBeenCalled();
 });
+
+it.each([
+ [{tokens:12000,cost:{amount:0.24,unit:'USD'}},'按上次费率约多 0.24 美元'],
+ [{tokens:12000,cost:null},'金额暂无法估算'],
+ [null,'额外消耗暂无法量化'],
+] as const)('shows a red, conditional cost warning before the original send',async(estimate,expected)=>{
+ vi.mocked(api.agent.checkSend).mockResolvedValue({...check,cache_miss_estimate:estimate});
+ render(<Harness/>);
+ fireEvent.click(screen.getByRole('button',{name:'发送'}));
+ const warning=await screen.findByText(/^原样发送[时的]/);
+ expect(warning).toHaveTextContent(expected);
+ expect(warning).toHaveAttribute('style','color: var(--error);');
+ if(estimate)expect(warning).toHaveTextContent('12,000');
+ expect(done).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'原样发送'}));
+ await waitFor(()=>expect(done).toHaveBeenCalledExactlyOnceWith('original'));
+});

@@ -16,6 +16,7 @@ export interface SendGuardCheck {
   switch_account: boolean;
   target_account: {id:string;label:string} | null;
   account_remaining_percent: number | null;
+  cache_miss_estimate?: {tokens:number;cost:{amount:number;unit:string}|null} | null;
   matched: boolean | null;
   enabled: boolean;
   context_tokens: number | null;

@@ -6,7 +6,7 @@ import { closeDb, getDb, initDb } from '../src/db/index.js';
 import { agentContext, getAgent } from '../src/services/agents/index.js';
 import { nativeItemId } from '../src/services/agents/session-fact-values.js';
 import { beginSessionAction, collectSessionStatisticsInventory, readChangedSessionStatistics, readSessionCacheDrops, readSessionMetadata, readSessionMetadataDetails,
-  readSessionProgress, readSessionUsageIntervals, stopSessionStatistics, updateSessionFacts, type SessionUsagePageQuery } from '../src/services/session-statistics.js';
+  readSessionCacheMissCost, readSessionProgress, readSessionUsageIntervals, stopSessionStatistics, updateSessionFacts, type SessionUsagePageQuery } from '../src/services/session-statistics.js';
 import type { AgentStatisticsInterval } from '../src/services/agents/types.js';
 import { createTestDatabase } from './helpers/database.js';
 import { updateAgentManagement } from '../src/services/agents/management-store.js';
@@ -60,6 +60,11 @@ describe('persisted session statistics',()=>{
       event(1,'task_started',{turn_id:'a'})+row(2,'turn_context',{turn_id:'a',model:'deepseek-flash'})+
       user(3,'input')+answer(4,'progress','commentary')+receipt(5,'r1','a',usage)+legacy(6,usage.total_tokens,usage));
     await updateSessionFacts(api,file);
+    const surcharge=readSessionCacheMissCost(api,1_000_000,500_000);
+    expect(surcharge?.unit).toBe('CNY');
+    expect(surcharge?.amount).toBeCloseTo(0.98,10);
+    expect(readSessionCacheMissCost(api,1_000_000,400_000)).toBeNull();
+    expect(readSessionCacheMissCost(codex,1_000_000,500_000)).toBeNull();
     expect(readSessionProgress(api)?.segment?.cost).toMatchObject(expected);
     expect(readChangedSessionStatistics(api,0)[0].interval?.cost).toMatchObject(expected);
     await appendFile(file,answer(7,'final','final_answer')+receipt(8,'r2','a',usage)+event(9,'task_complete',{turn_id:'a'}));
@@ -323,7 +328,12 @@ describe('persisted session statistics',()=>{
         cache_creation:{ephemeral_5m_input_tokens:write5,ephemeral_1h_input_tokens:write60},
       }},
     });
-    await writeFile(file,human(1,'first')+reply(2,'before',21953,192,0,577)+human(3,'second')+reply(4,'after',0,short,long,471));
+    await writeFile(file,human(1,'first')+reply(2,'before',21953,192,0,577));
+    await updateSessionFacts(context,file);
+    const surcharge=readSessionCacheMissCost(context,4+21953+192,21953);
+    expect(surcharge?.unit).toBe('USD');
+    expect(surcharge?.amount).toBeCloseTo(21953*(2-0.10)/1e6,12);
+    await appendFile(file,human(3,'second')+reply(4,'after',0,short,long,471));
     await updateSessionFacts(context,file);
     const [drop]=readSessionMetadataDetails(context,true)!.cache_drops;
     expect(drop.extra_cost?.unit).toBe('USD');

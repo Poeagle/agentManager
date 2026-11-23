@@ -6,7 +6,7 @@ import { getDb } from '../db/index.js';
 import { agentDescriptors, agentForSession, getAgent } from './agents/index.js';
 import { factId, factTime, consistentUsage } from './agents/session-fact-values.js';
 import type {
-  AgentSessionFactsPort, RequestDimensions, SessionAction, SessionActionState, SessionCacheDrop,
+  AgentSessionFactsPort, NativeRequestFact, RequestDimensions, SessionAction, SessionActionState, SessionCacheDrop,
   SessionCoverageReason, SessionLifecycleFact, SessionMetadata, SessionMetadataDetails,
   SessionUsageIntervalPage, SessionUsageIntervalRow,
 } from './agents/session-facts.js';
@@ -375,6 +375,25 @@ export function readSessionMetadata(context: AgentContext, available = true): Se
   }
   if (saved.reasons.includes('source_unavailable')) return saved;
   return {...saved, status: saved.totals ? 'partial' : 'unavailable', reasons: [...saved.reasons, 'source_unavailable']};
+}
+
+/** Estimate the ordinary-input surcharge using the matching request's recorded rates. */
+export function readSessionCacheMissCost(context: AgentContext, inputTokens: number, cachedTokens: number) {
+  const source = sourceFor(context);
+  if (!source) return null;
+  const row = source.db.prepare(`
+    SELECT json_extract(projection_state, '$.latest') AS request
+    FROM session_statistics_sources
+    WHERE source=? AND codec_version=? AND caught_up=1
+  `).get(source.key, checkpointVersion(source.codec)) as {request:string|null} | undefined;
+  if (!row?.request) return null;
+  const request = readJson<NativeRequestFact>(row.request);
+  const pricing = request.cache_input_pricing;
+  if (request.inherited || !pricing || !request.cost?.complete ||
+      request.tokens?.input_tokens !== inputTokens || request.tokens.cached_input_tokens !== cachedTokens) return null;
+  const delta = pricing.uncached_per_token - pricing.cached_per_token;
+  const amount = cachedTokens * delta;
+  return Number.isFinite(amount) && amount >= 0 ? {amount, unit:request.cost.unit} : null;
 }
 
 export function readSessionProgress(context: AgentContext) {
