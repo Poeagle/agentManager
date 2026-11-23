@@ -85,8 +85,9 @@ async function streamProviderOperation(
 
 // XMLHttpRequest reports file upload progress; fetch does not expose it.
 // `onProgress` receives a 0..1 fraction.
-function uploadWithProgress<T>(url: string, file: File, onProgress?: (fraction: number) => void): Promise<T> {
+function uploadWithProgress<T>(url: string, file: File, onProgress?: (fraction: number) => void, signal?: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
+    signal?.throwIfAborted();
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${API_BASE}${url}`);
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
@@ -107,6 +108,9 @@ function uploadWithProgress<T>(url: string, file: File, onProgress?: (fraction: 
     };
     xhr.onerror = () => reject(new Error('Network error during upload'));
     xhr.onabort = () => reject(new Error('Upload cancelled'));
+    const abort = () => xhr.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    xhr.onloadend = () => signal?.removeEventListener('abort', abort);
     xhr.send(file);
   });
 }
@@ -439,10 +443,10 @@ export const api = {
       fetchJSON<{ ok: boolean; path: string }>(`/sessions/${encodeURIComponent(id)}/paste-image`, {
         method: 'POST', body: JSON.stringify({ dataUrl }), signal,
       }),
-    pasteFile: (id: string, dataUrl: string, filename: string, signal?: AbortSignal) =>
-      fetchJSON<{ ok: boolean; path: string }>(`/sessions/${encodeURIComponent(id)}/paste-file`, {
-        method: 'POST', body: JSON.stringify({ dataUrl, filename }), signal,
-      }),
+    pasteFile: (id: string, file: File, filename: string, signal?: AbortSignal, onProgress?: (fraction: number) => void) =>
+      uploadWithProgress<{ ok: boolean; path: string }>(
+        `/sessions/${encodeURIComponent(id)}/paste-file?filename=${encodeURIComponent(filename)}`, file, onProgress, signal,
+      ),
     // Resume an ended Claude/Codex conversation; reuses the same app session id.
     resume: (id: string, automatic = false) =>
       fetchJSON<{ ok: boolean; session: Session }>(`/sessions/${id}/resume`, {

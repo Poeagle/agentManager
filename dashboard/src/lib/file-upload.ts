@@ -1,4 +1,5 @@
-export const MAX_FILE_UPLOAD_BYTES = 50 * 1024 * 1024;
+export const MAX_FILE_UPLOAD_MB = 500;
+export const MAX_FILE_UPLOAD_BYTES = MAX_FILE_UPLOAD_MB * 1024 * 1024;
 
 export interface FileUploadRequest {
   files: File[];

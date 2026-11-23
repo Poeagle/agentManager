@@ -112,8 +112,8 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.25.0',
-    updatedAt:'2026-11-22',
+    version:'3.26.0',
+    updatedAt:'2026-11-23',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
@@ -352,7 +352,7 @@ export function getAgentApiContract() {
       },
       {
         category: 'Files', method: 'POST', path: '/api/files/upload',
-        description: 'Upload raw application/octet-stream bytes (maximum 50 MiB). Query path selects an authorized project directory; the server maps it to central platform storage. Existing central files are never overwritten; project files are never changed.',
+        description: 'Upload raw application/octet-stream bytes (maximum 500 MiB). Query path selects an authorized project directory; the server maps it to central platform storage. Existing central files are never overwritten; project files are never changed.',
         response: {ok:'boolean',path:'string — actual central file path',size:'number — bytes'},
       },
       {
@@ -387,7 +387,7 @@ export function getAgentApiContract() {
           expected_native_id:{type:'string',required:false,description:'Opaque native conversation ID expected by a notification reply. A changed or missing binding is rejected before input submission with 409 submission=rejected.'},
           guard_token:{type:'string',required:false,description:'Short-lived input-check confirmation token, bound to user, native session, exact input/attachments/batch and current policy. A required/mismatched confirmation returns 409 with submission=rejected and send_guard; no input is dispatched.'},
           batch: {type:'array',required:false,description:'Optional 1–100 {length,attachments} segments of the input (UTF-16 lengths, attachment counts), separated by two newlines. Requires source=conversation and client_id. Persisted as message.batch parts for history and streaming cards.'},
-          attachments: {type:'array',required:false,description:'Up to 8 {kind: image|file, name, path} references returned by this session’s paste-image/paste-file endpoints. New uploads are stored outside project/Git directories; paths are opaque and project-authorized. Existing project-local attachments remain readable. Images total at most 10 MiB, each file and all attachments at most 100 MiB.'},
+          attachments: {type:'array',required:false,description:'Up to 8 {kind: image|file, name, path} references returned by this session’s paste-image/paste-file endpoints. New uploads are stored outside project/Git directories; paths are opaque and project-authorized. Existing project-local attachments remain readable. Images total at most 10 MiB, each file and all attachments at most 500 MiB. Session file uploads above 100 MiB use application/octet-stream with the filename query parameter.'},
         },
         response: {id:'Session id',status:'submitted — handed to the terminal; not proof of agent acceptance or task completion'},
       },

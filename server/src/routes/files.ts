@@ -1,6 +1,7 @@
 import { FastifyPluginAsync, type FastifyRequest } from 'fastify';
-import { readdir, stat, lstat, readFile, writeFile, rm, rename, cp, open, realpath, mkdir } from 'fs/promises';
+import { readdir, stat, lstat, readFile, writeFile, rm, rename, cp, realpath, mkdir } from 'fs/promises';
 import { createReadStream, realpathSync } from 'fs';
+import { Readable } from 'node:stream';
 import { join, resolve, extname, dirname, basename, relative, isAbsolute, sep } from 'path';
 import { execFile } from 'child_process';
 import { userOwnsFilesystemPath, userOwnsProject, userProjectIds } from '../auth.js';
@@ -9,6 +10,7 @@ import { isProjectAttachment, isProjectUploadPath, projectUploadDirectory } from
 import { privateResourcePath } from '../services/shared-resources/path-guard.js';
 import { createDirectoryExport } from '../services/file-export-process.js';
 import { DocumentPreviewError, previewOfficeDocumentDetailed, OFFICE_EXTENSIONS, SPREADSHEET_EXTENSIONS } from '../services/document-preview.js';
+import { BinaryUploadError, binaryUploadLength, binaryUploadParser, saveBinaryUpload } from '../services/file-upload.js';
 
 const IMAGE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml', ico: 'image/x-icon', avif: 'image/avif' };
 
@@ -69,9 +71,7 @@ async function withinProjectScope(path: string, scope: ProjectFileScope): Promis
 export const fileRoutes: FastifyPluginAsync = async (app) => {
   const projectScopes = new WeakMap<FastifyRequest, ProjectFileScope>();
   // Scoped to the file API; upload raw bytes without base64 expansion.
-  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => {
-    done(null, body);
-  });
+  app.addContentTypeParser('application/octet-stream', binaryUploadParser);
   app.addHook('preHandler', async (req, reply) => {
     const query = (req.query || {}) as Record<string, unknown>;
     const body = (req.body || {}) as Record<string, unknown>;
@@ -165,8 +165,8 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
 
   app.post<{
     Querystring: { path: string; filename: string };
-    Body: Buffer;
-  }>('/files/upload', { bodyLimit: 50 * 1024 * 1024 }, async (req, reply) => {
+    Body: Readable;
+  }>('/files/upload', async (req, reply) => {
     const { path: directory, filename } = req.query;
     if (typeof directory !== 'string' || !directory) {
       return reply.status(400).send({ error: 'Upload directory is required' });
@@ -175,25 +175,21 @@ export const fileRoutes: FastifyPluginAsync = async (app) => {
       || /[\\/\x00-\x1f\x7f]/.test(filename)) {
       return reply.status(400).send({ error: 'Invalid filename' });
     }
-    if (!Buffer.isBuffer(req.body)) {
+    if (!(req.body instanceof Readable)) {
       return reply.status(400).send({ error: 'Expected binary file content' });
     }
 
     try {
+      const expected = binaryUploadLength(req.headers['content-length']);
       const targetDirectory = await uploadDirectory(req, directory);
       const target = join(targetDirectory, filename);
-      // Exclusive creation also rejects existing symlinks and concurrent uploads.
-      const handle = await open(target, 'wx', 0o600);
-      try {
-        await handle.writeFile(req.body);
-      } catch (error) {
-        await rm(target).catch(() => {});
-        throw error;
-      } finally {
-        await handle.close();
-      }
-      return { ok: true, path: target, size: req.body.length };
+      const size = await saveBinaryUpload(req.body, target, expected, 0o600);
+      return { ok: true, path: target, size };
     } catch (error: any) {
+      if (error instanceof BinaryUploadError) {
+        if (error.statusCode === 413) reply.header('Connection', 'close');
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
       if (error.code === 'EEXIST') return reply.status(409).send({ error: '同名文件已存在，未覆盖；请重命名后上传' });
       if (error.code === 'ENOENT') return reply.status(404).send({ error: 'Upload directory not found' });
       if (error.code === 'ENOTDIR') return reply.status(400).send({ error: 'Upload path is not a directory' });

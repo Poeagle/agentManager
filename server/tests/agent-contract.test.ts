@@ -7,7 +7,9 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.25.0');
+    expect(contract.version).toBe('3.26.0');
+    expect(contract.endpoints.find(e=>e.path==='/api/files/upload')?.description).toContain('maximum 500 MiB');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request?.attachments?.description).toContain('500 MiB');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/controls')?.response).toMatchObject({models:expect.stringContaining('reference_only')});
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/controls')?.response?.models).toContain('provider_multiplier');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation')?.description).toContain('verified project attachment references');

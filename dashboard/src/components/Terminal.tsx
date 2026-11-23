@@ -1,5 +1,6 @@
 import {sessionAgent,type AgentDescriptor} from '../lib/agents';
 import {readFileAsDataUrl} from '../lib/file-data-url';
+import {MAX_FILE_UPLOAD_BYTES,MAX_FILE_UPLOAD_MB} from '../lib/file-upload';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Terminal as XTerm } from '@xterm/xterm';
@@ -697,26 +698,26 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
     const uploadFile = async (file: File) => {
       const id = ++pasteUploadSeqRef.current;
       const image = /^(image\/(png|jpeg|gif|webp))$/i.test(file.type);
-      const maxBytes = image ? 10 * 1024 * 1024 : 100 * 1024 * 1024;
+      const maxBytes = image ? 10 * 1024 * 1024 : MAX_FILE_UPLOAD_BYTES;
       const name = file.name || (image ? '截图' : '文件');
       const patch = (change: Partial<PasteUpload>) => {
         if (!disposed) setPasteUploads(previous => previous.map(item => item.id === id ? { ...item, ...change } : item));
       };
-      setPasteUploads(previous => [...previous.filter(item => item.sessionId === sessionId && item.phase !== 'error'), { id, sessionId, name, phase: 'reading' }]);
+      setPasteUploads(previous => [...previous.filter(item => item.sessionId === sessionId && item.phase !== 'error'), { id, sessionId, name, phase: image ? 'reading' : 'uploading' }]);
       if (file.size > maxBytes) {
-        patch({ phase: 'error', error: `文件过大，最大允许 ${image ? 10 : 100} MB` });
+        patch({ phase: 'error', error: `文件过大，最大允许 ${image ? 10 : MAX_FILE_UPLOAD_MB} MB` });
         return;
       }
 
       const controller = new AbortController();
       activePasteUploads.add(controller);
       try {
-        const dataUrl = await readFileAsDataUrl(file, controller.signal);
+        const dataUrl = image ? await readFileAsDataUrl(file, controller.signal) : undefined;
         if (controller.signal.aborted) return;
         patch({ phase: 'uploading' });
-        const result = image
+        const result = dataUrl !== undefined
           ? await api.sessions.pasteImage(sessionId, dataUrl, controller.signal)
-          : await api.sessions.pasteFile(sessionId, dataUrl, file.name, controller.signal);
+          : await api.sessions.pasteFile(sessionId, file, file.name, controller.signal);
         if (disposed || controller.signal.aborted || sessionIdRef.current !== sessionId
           || !visibleRef.current || isSuspendedRef.current) return;
         const path = result.path;

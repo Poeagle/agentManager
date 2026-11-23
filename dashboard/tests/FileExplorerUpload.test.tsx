@@ -106,7 +106,7 @@ describe('FileExplorer drag-and-drop upload', () => {
     const largeFile = new File(['x'], 'large.bin');
     Object.defineProperty(largeFile, 'size', { value: MAX_FILE_UPLOAD_BYTES + 1 });
     fireEvent.drop(zone, { dataTransfer: transfer([largeFile]) });
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('50 MB'));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('500 MB'));
     expect(api.files.upload).not.toHaveBeenCalled();
   });
 
