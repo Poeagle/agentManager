@@ -1,4 +1,5 @@
-import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+import {act,cleanup,fireEvent,render as renderView,screen,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {useConversationSendGuard} from '../src/lib/use-conversation-send-guard';
 import {api,ApiError,type SendGuardCheck} from '../src/lib/api';
@@ -6,9 +7,13 @@ import type {CompactionPresentation} from '../src/lib/use-conversation-compactio
 import {parseBriefContext} from '../src/lib/conversation-brief-context';
 const check:SendGuardCheck={needs_confirmation:true,required_action:null,switch_account:false,target_account:null,account_remaining_percent:null,matched:true,enabled:true,context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,last_completed_at:null,observed_at:null,native_id:'native',checked_at:'',can_compact:true,can_new:true,token:'original'};
 const done=vi.fn(),start=vi.fn(),newSession=vi.fn();
+let client:QueryClient;
+function render(child:React.ReactElement) {
+ return renderView(child,{wrapper:({children})=><QueryClientProvider client={client}>{children}</QueryClientProvider>});
+}
 function Harness({state=null,active=true,sessionId='s'}:{state?:CompactionPresentation|null;active?:boolean;sessionId?:string}){const guard=useConversationSendGuard(sessionId,active,{state,start},newSession);return <><output aria-label="后台等待">{String(guard.background)}</output><button onClick={()=>void guard.confirm({input:'draft'}).then(result=>done(result?.token??null))}>发送</button>{guard.dialog}{guard.notice}</>;}
-beforeEach(()=>{vi.spyOn(api.agent,'checkSend').mockResolvedValue(check);start.mockResolvedValue(undefined);newSession.mockResolvedValue('fresh');});
-afterEach(async()=>{cleanup();await act(async()=>{});vi.restoreAllMocks();done.mockReset();start.mockReset();newSession.mockReset();});
+beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}});vi.spyOn(api.agent,'checkSend').mockResolvedValue(check);start.mockResolvedValue(undefined);newSession.mockResolvedValue('fresh');});
+afterEach(async()=>{cleanup();client.clear();await act(async()=>{});vi.restoreAllMocks();done.mockReset();start.mockReset();newSession.mockReset();});
 it('only submits after compaction completion, using a newly checked token',async()=>{
  const view=render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));fireEvent.click(await screen.findByRole('button',{name:'压缩后发送'}));await waitFor(()=>expect(start).toHaveBeenCalledOnce());expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(screen.getByText('正在压缩，确认完成后自动发送。')).toBeVisible();expect(done).not.toHaveBeenCalled();
  vi.mocked(api.agent.checkSend).mockResolvedValue({...check,token:'after-compact'});
@@ -45,6 +50,19 @@ it('uses the chosen authorized account and model for the new brief conversation'
  await screen.findByRole('option',{name:'目标模型'});fireEvent.change(screen.getByRole('combobox',{name:'简要压缩模型'}),{target:{value:JSON.stringify(['target','target-model'])}});
  fireEvent.click(screen.getByRole('button',{name:'开始简要压缩'}));await waitFor(()=>expect(done).toHaveBeenCalledExactlyOnceWith('after'));
  expect(newSession).toHaveBeenCalledExactlyOnceWith('native',{model:'target-model',provider:'target',effort:'high'},'account:other');
+});
+it('uses the active toolbar catalog immediately when opening brief compaction',async()=>{
+ const readControls=vi.spyOn(api.agent,'controls');
+ const readEnvironments=vi.spyOn(api.codexEnvironments,'forSession');
+ client.setQueryData(['conversation-controls','s'],{provider:'current',supports_fresh_model:true,models:[{model:'alternate',provider:'current',name:'已加载的模型',defaultEffort:'medium',efforts:[]}]});
+ client.setQueryData(['session-environments','s'],{current:'native',environments:[{id:'native',name:'默认账号',enabled:true,can_control:true},{id:'other',name:'可切换账号',enabled:true,can_control:true}]});
+ render(<Harness/>);
+ fireEvent.click(screen.getByRole('button',{name:'发送'}));
+ fireEvent.click(await screen.findByRole('button',{name:'简要压缩后发送'}));
+ expect(screen.getByRole('option',{name:'已加载的模型'})).toBeVisible();
+ expect(screen.getByRole('option',{name:'可切换账号'})).toBeVisible();
+ expect(readControls).not.toHaveBeenCalled();
+ expect(readEnvironments).not.toHaveBeenCalled();
 });
 it('changes only the model when the current account is retained',async()=>{
  vi.spyOn(api.agent,'controls').mockResolvedValue({provider:'current',supports_fresh_model:true,models:[{model:'another',provider:'current',name:'另一个模型',defaultEffort:'medium',efforts:[{value:'medium'}]}]} as any);

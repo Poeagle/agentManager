@@ -1,11 +1,15 @@
 import {useEffect,useState} from 'react';
+import {useQuery} from '@tanstack/react-query';
 import {api,type AgentModelPreference} from '../lib/api';
 import {Dialog} from './Dialog';
 
 export function BriefOptions({sessionId,onCancel,onConfirm}:{sessionId:string;onCancel:()=>void;onConfirm:(options:{preference?:AgentModelPreference;environmentId?:string})=>void}) {
  const [environmentId,setEnvironmentId]=useState(''),[modelKey,setModelKey]=useState('');
- const [controls,setControls]=useState<Awaited<ReturnType<typeof api.agent.controls>>>(),[environments,setEnvironments]=useState<Awaited<ReturnType<typeof api.codexEnvironments.forSession>>>(),[target,setTarget]=useState<{id:string;result?:Awaited<ReturnType<typeof api.codexEnvironments.sessionPreflight>>;failed?:boolean}>(),[catalogFailed,setCatalogFailed]=useState(false);
- useEffect(()=>{let live=true;void api.agent.controls(sessionId).then(v=>{if(live)setControls(v);}).catch(()=>{if(live)setCatalogFailed(true);});void api.codexEnvironments.forSession(sessionId).then(v=>{if(live)setEnvironments(v);}).catch(()=>{if(live)setCatalogFailed(true);});return()=>{live=false;};},[sessionId]);
+ const controlsQuery=useQuery({queryKey:['conversation-controls',sessionId],queryFn:()=>api.agent.controls(sessionId),staleTime:300000,retry:false});
+ const environmentsQuery=useQuery({queryKey:['session-environments',sessionId],queryFn:()=>api.codexEnvironments.forSession(sessionId),staleTime:30000,retry:false});
+ const controls=controlsQuery.data,environments=environmentsQuery.data;
+ const catalogFailed=controlsQuery.isError||environmentsQuery.isError;
+ const [target,setTarget]=useState<{id:string;result?:Awaited<ReturnType<typeof api.codexEnvironments.sessionPreflight>>;failed?:boolean}>();
  useEffect(()=>{let live=true;if(environmentId)void api.codexEnvironments.sessionPreflight(sessionId,environmentId).then(v=>{if(live)setTarget({id:environmentId,result:v});}).catch(()=>{if(live)setTarget({id:environmentId,failed:true});});return()=>{live=false;};},[sessionId,environmentId]);
  const loading=!!environmentId&&target?.id!==environmentId;
  const models=environmentId?(target?.id===environmentId?target.result?.models||[]:[]):controls?.models?.filter(m=>!m.provider||m.provider===controls?.provider)||[];

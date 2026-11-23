@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,9 +16,9 @@ const project: Project = {
 };
 const created: Session = { id: 'new-session', project_id: 'p1', task: 'Test task', status: 'pending', pid: null, started_at: null, completed_at: null, exit_code: null, created_at: '2026-10-14T00:00:00Z' };
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(api.sessions.create).mockResolvedValue({ ok: true, session: created }); });
-function mount() {
+function mount(selectSession?: (client: QueryClient) => void) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  const onClose = vi.fn(), onSessionCreated = vi.fn();
+  const onClose = vi.fn(), onSessionCreated = vi.fn(() => selectSession?.(client));
   const view = render(<QueryClientProvider client={client}><ProjectSessionCreateDialog project={project} onClose={onClose} onSessionCreated={onSessionCreated} /></QueryClientProvider>);
   return { client, onClose, onSessionCreated, dispose: () => { view.unmount(); client.clear(); } };
 }
@@ -41,6 +41,31 @@ describe('shared project creation dialog', () => {
       expect(api.sessions.create).toHaveBeenCalledWith({project_id:'p1',project_path:project.path,mode:'session',cli_type:'codex',environment_id:'native'});
       expect(mounted.client.getQueryData(['sessions'])).toEqual({ sessions: [created] });
     } finally { mounted.dispose(); }
+  });
+  it('refreshes the authoritative lists after the workspace selects the new tab', async () => {
+    const keys = [['sessions'], ['project-sessions', project.id]];
+    const mounted = mount(client => {
+      // The workspace discards stale in-flight lists when it opens the returned session.
+      for (const queryKey of keys) void client.cancelQueries({ queryKey, exact: true });
+    });
+    const running = { ...created, status: 'running' as const };
+    const subscriptions = keys.map(queryKey => {
+      mounted.client.setQueryData(queryKey, { sessions: [] });
+      return new QueryObserver(mounted.client, {
+        queryKey, queryFn: async () => ({ sessions: [running] }), staleTime: Infinity,
+      }).subscribe(() => {});
+    });
+    try {
+      const submit = screen.getByRole('button', { name: '新建会话' });
+      await waitFor(() => expect(submit).toBeEnabled());
+      fireEvent.click(submit);
+      await waitFor(() => {
+        for (const queryKey of keys) expect(mounted.client.getQueryData(queryKey)).toEqual({ sessions: [running] });
+      });
+    } finally {
+      for (const unsubscribe of subscriptions) unsubscribe();
+      mounted.dispose();
+    }
   });
   it('creates Terminal without a client or task flag', async () => {
     const user = userEvent.setup(), mounted = mount();

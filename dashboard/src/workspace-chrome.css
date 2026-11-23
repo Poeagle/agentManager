@@ -67,7 +67,8 @@
 .workspace-tab:hover .workspace-tab-close,
 .workspace-tab:focus-within .workspace-tab-close { opacity: .65; }
 .workspace-tab .workspace-tab-close:hover,
-.workspace-tab .workspace-tab-close:focus-visible { opacity: 1; }
+.workspace-tab .workspace-tab-close:focus-visible,
+.workspace-tab .workspace-tab-close[aria-busy="true"] { opacity: 1; }
 .workspace-tab-standalone { padding: 0 7px; }
 .workspace-tab-signal { display: flex; align-items: center; flex-shrink: 0; }
 .workspace-tab-icon { opacity: .65; }

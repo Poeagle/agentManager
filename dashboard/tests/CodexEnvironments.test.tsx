@@ -1,12 +1,12 @@
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
-import {render,screen,fireEvent,waitFor,within} from '@testing-library/react';
+import {render,screen,fireEvent,waitFor,within,act} from '@testing-library/react';
 import {beforeEach,afterEach,describe,it,expect,vi} from 'vitest';
 import {CodexAccountProviderEditor} from '../src/components/CodexAccountProviderEditor';
 import {EnvironmentDiagnostic} from '../src/components/CodexEnvironmentPanel';
 import {ConversationEnvironmentSelector} from '../src/components/ConversationEnvironmentSelector';
 import {ProjectSessionCreateDialog} from '../src/components/ProjectSessionCreateDialog';
 import {copyConversationText} from '../src/lib/conversation-clipboard';
-import {api,type Project,type CodexEnvironment} from '../src/lib/api';
+import {api,type Project,type CodexEnvironment,type Session} from '../src/lib/api';
 vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,projects:{...actual.api.projects,list:vi.fn(async()=>({projects:[]}))},codexEnvironments:{management:vi.fn(),list:vi.fn(),save:vi.fn(),checkConnection:vi.fn(),preflight:vi.fn(),forSession:vi.fn(),sessionPreflight:vi.fn(),transfer:vi.fn(),usage:vi.fn(),remove:vi.fn(),closeTabs:vi.fn()},claudeEnvironments:{list:vi.fn()},sessions:{...actual.api.sessions,create:vi.fn()}}};});
 vi.mock('../src/lib/conversation-clipboard',()=>({copyConversationText:vi.fn(async()=>{})}));
 const native:CodexEnvironment={id:'native',name:'xlli 默认账号',kind:'native',enabled:true,allowed_user_ids:null};
@@ -76,6 +76,30 @@ describe('Codex environments UI',()=>{
   mount(<EnvironmentDiagnostic message={'权限不足\nsudo repair-command'}/>);
   fireEvent.click(screen.getByRole('button',{name:'复制诊断与命令'}));
   expect(await screen.findByRole('status')).toHaveTextContent('复制失败，请手动选择文本复制');expect(screen.getByText(/sudo repair-command/)).toBeVisible();
+ });
+ it.each(['codex','claude'] as const)('shows %s switch progress and applies the confirmed environment before background refresh',async(agent)=>{
+  const isClaude=agent==='claude';
+  const target=isClaude?{...account,id:'claude-provider:other',kind:'provider' as const}:account;
+  const source=isClaude?{...native,id:'claude-provider:anthropic'}:native;
+  const selectName=isClaude?'选择 Claude Provider':'选择 Codex 账号环境';
+  vi.mocked(api.codexEnvironments.forSession).mockResolvedValueOnce({current:source.id,environments:[{...source,can_control:true},{...target,can_control:true}]});
+  let complete!:(result:{ok:boolean;session:Session})=>void;
+  vi.mocked(api.codexEnvironments.transfer).mockReturnValueOnce(new Promise(resolve=>{complete=resolve;}));
+  const onTransferred=vi.fn();
+  mount(<ConversationEnvironmentSelector sessionId="s" busy={false} onTransferred={onTransferred}/>);
+  const select=await screen.findByRole('combobox',{name:selectName});
+  fireEvent.change(select,{target:{value:target.id}});
+  const dialog=screen.getByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button',{name:isClaude?'读取 Provider 模型':'预检连接、登录、模型与项目权限'}));
+  await within(dialog).findByRole('combobox',{name:'目标环境模型'});
+  vi.mocked(api.codexEnvironments.forSession).mockImplementationOnce(()=>new Promise(()=>{}));
+  fireEvent.click(within(dialog).getByRole('button',{name:isClaude?'切换 Provider':'复制历史并切换'}));
+  expect(within(dialog).getByText(/正在切换/)).toHaveAttribute('role','status');
+  expect(select).toHaveValue(source.id);
+  await act(async()=>complete({ok:true,session:{id:'s',project_id:'p',agent_environment_id:target.id} as Session}));
+  await waitFor(()=>expect(select).toHaveValue(target.id));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(onTransferred).toHaveBeenCalledOnce();
  });
  it('disables account switching while a task is running',async()=>{mount(<ConversationEnvironmentSelector sessionId="s" busy/>);expect(await screen.findByRole('combobox',{name:'选择 Codex 账号环境'})).toBeDisabled();});
  it('creates a new Codex tab with the authorized account instead of falling back to native',async()=>{

@@ -32,10 +32,10 @@ export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated,
     },
     onSuccess: ({ session }) => {
       client.setQueryData<{ sessions: Session[] }>(['sessions'], (current) => ({ sessions: [session, ...(current?.sessions ?? []).filter((item) => item.id !== session.id)] }));
-      void client.invalidateQueries({ queryKey: ['sessions'] });
-      void client.invalidateQueries({ queryKey: ['project-sessions', project.id] });
       onSessionCreated(session);
       onClose();
+      void client.invalidateQueries({ queryKey: ['sessions'] });
+      void client.invalidateQueries({ queryKey: ['project-sessions', project.id] });
     },
   });
   return <ProjectOpenDialog project={project} title={title} onClose={onClose} busy={mutation.isPending} error={mutation.error?.message}

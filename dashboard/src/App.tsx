@@ -6,7 +6,7 @@ import { api, type AuthUser } from './lib/api';
 import { AuthGate } from './components/AuthGate';
 import { cleanupProjectStorage } from './lib/project-view-storage';
 import { confirmDiscardProject } from './lib/unsaved-files';
-import { X, LayoutGrid, ArrowUpCircle, Plus } from 'lucide-react';
+import { X, LayoutGrid, ArrowUpCircle, Plus, Loader2 } from 'lucide-react';
 import { hasPermission, usePermissions } from './lib/permissions';
 import type { PlatformSection } from './components/PlatformCenter';
 import { CloseTabModal } from './components/CloseTabModal';
@@ -197,6 +197,15 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     || allowedProjectIds.has(activeTabState.replace(/^project-/, ''))
     ? activeTabState
     : 'home';
+  const activeProjectId = activeTab === 'home' ? null : activeTab.replace(/^project-/, '');
+  const [visitedProjectIds, setVisitedProjectIds] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    // Cold project tabs stay in the strip while their workspace loads on demand.
+    setVisitedProjectIds((current) => {
+      const next = new Set(projectTabs.filter(tab => current.has(tab.projectId) || tab.projectId === activeProjectId).map(tab => tab.projectId));
+      return next.size === current.size && [...next].every(id => current.has(id)) ? current : next;
+    });
+  }, [activeProjectId, projectTabs]);
 
   // Copy update command to clipboard and show brief confirmation.
   const [updateCopied, setUpdateCopied] = useState(false);
@@ -323,7 +332,13 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
 
   const [confirmClose, setConfirmClose] = useState<{ projectId: string; count: number } | null>(null);
 
+  const [checkingProjectId, setCheckingProjectId] = useState<string | null>(null);
+  const checkingProjectRef = useRef(false);
+
   const closeProjectTab = useCallback(async (projectId: string) => {
+    if (checkingProjectRef.current) return;
+    checkingProjectRef.current = true;
+    setCheckingProjectId(projectId);
     // Fetch fresh session list — cached data may be stale (e.g. right after quick-launch)
     let runningSessions = sessions.filter(
       (s) => s.project_id === projectId && isActiveSessionStatus(s.status)
@@ -334,6 +349,10 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         (s) => s.project_id === projectId && isActiveSessionStatus(s.status)
       );
     } catch { /* cached sessions remain the fallback */ }
+    finally {
+      checkingProjectRef.current = false;
+      setCheckingProjectId(null);
+    }
 
     if (runningSessions.length > 0) {
       setConfirmClose({ projectId, count: runningSessions.length });
@@ -345,10 +364,8 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
 
     cleanupProjectStorage(authUser.id, projectId);
     setProjectTabs((prev) => prev.filter((t) => t.projectId !== projectId));
-    if (activeTab === `project-${projectId}`) {
-      setActiveTab('home');
-    }
-  }, [activeTab, authUser.id, projects, sessions]);
+    setActiveTab(current => current === `project-${projectId}` ? 'home' : current);
+  }, [authUser.id, projects, sessions]);
 
   // ── Inline tab rename ──────────────────────────────────────────────
   const beginTabRename = useCallback((tab: ProjectTab) => {
@@ -399,7 +416,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     }
     cleanupProjectStorage(authUser.id, projectId);
     setProjectTabs((prev) => prev.filter((t) => t.projectId !== projectId));
-    if (activeTab === `project-${projectId}`) setActiveTab('home');
+    setActiveTab(current => current === `project-${projectId}` ? 'home' : current);
     setConfirmClose(null);
     await queryClient.invalidateQueries({ queryKey: ['sessions'] });
   }
@@ -587,8 +604,12 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                 className="workspace-tab-close"
                 style={{ color: 'var(--text-secondary)' }}
                 title="Close tab"
+                aria-busy={checkingProjectId === tab.projectId}
+                disabled={checkingProjectId !== null}
               >
-                <X className="w-3 h-3" />
+                {checkingProjectId === tab.projectId
+                  ? <Loader2 aria-label="正在检查项目会话" className="w-3 h-3 animate-spin" />
+                  : <X className="w-3 h-3" />}
               </button>
             </div>
           );
@@ -604,7 +625,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         </button>}
       </nav>
 
-      {/* Content — all project tabs stay mounted to preserve terminal state */}
+      {/* Keep visited workspaces mounted to preserve terminal state. */}
       <main className="flex-1 min-h-0 overflow-hidden relative isolate">
         <div
           className="h-full"
@@ -629,6 +650,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         {mountedProjectTabs.map((tab) => {
           const tabId = `project-${tab.projectId}`;
           const isActive = activeTab === tabId;
+          if (!isActive && !visitedProjectIds.has(tab.projectId)) return null;
           const project = projects.find((p) => p.id === tab.projectId);
           const projectPath = project?.path || '';
           const projectName = tab?.projectName || project?.name || 'Project';

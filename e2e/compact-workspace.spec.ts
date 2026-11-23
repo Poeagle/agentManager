@@ -34,6 +34,14 @@ test('compact workspace preserves readable labels, activity details and keyboard
     activeMode:'terminal',terminalInstances:labels.map((label,index)=>({id:`compact-${index}`,label,customLabel:label})),
     terminalLabels:Object.fromEntries(labels.map((label,index)=>[`compact-${index}`,label])),activeTerminalId:'compact-0',explorerInstances:[],hiddenSessionIds:[],
   }}});
+  const projectHistoryRequests = new Set<string>();
+  page.on('request', request => {
+    const url = new URL(request.url());
+    const projectId = url.searchParams.get('project_id');
+    if (request.method() === 'GET' && url.pathname === '/api/sessions' && projectId) {
+      projectHistoryRequests.add(projectId);
+    }
+  });
   await page.goto('/');
   const header = page.locator('.workspace-header');
   const projectTabs = page.getByRole('navigation',{name:'项目标签'});
@@ -65,6 +73,33 @@ test('compact workspace preserves readable labels, activity details and keyboard
   const rename = sessions.getByRole('textbox');
   await rename.fill('界面设计'); await rename.press('Enter');
   await expect(sessions.getByRole('button',{name:'界面设计',exact:true})).toBeVisible();
+  expect([...projectHistoryRequests]).toEqual([projects[0].id]);
+  const secondHistory = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/sessions' && url.searchParams.get('project_id') === projects[1].id;
+  });
+  await projectTabs.getByRole('button', { name: 'backuprestore', exact: true }).click();
+  expect((await secondHistory).ok()).toBe(true);
+  await projectTabs.getByRole('button', { name: 'dolphindb_manager', exact: true }).click();
+  await expect(sessions.getByRole('button', { name: '界面设计', exact: true })).toBeVisible();
+  const secondProject = projectTabs.locator('.workspace-tab').filter({ hasText: 'backuprestore' });
+  const closeProject = secondProject.getByTitle('Close tab');
+  let releaseCheck!: () => void;
+  const pendingCheck = new Promise<void>(resolve => { releaseCheck = resolve; });
+  await page.route(url => url.pathname === '/api/sessions' && !url.search, async route => {
+    await pendingCheck;
+    await route.continue();
+  });
+  try {
+    await secondProject.getByRole('button', { name: 'backuprestore', exact: true }).click();
+    await closeProject.click();
+    await expect(closeProject).toHaveAttribute('aria-busy', 'true');
+    await projectTabs.getByRole('button', { name: 'dolphindb_manager', exact: true }).click();
+  } finally {
+    releaseCheck();
+  }
+  await expect(secondProject).toHaveCount(0);
+  await expect(sessions.getByRole('button', { name: '界面设计', exact: true })).toBeVisible();
   await page.mouse.move(1200,300);
   await page.screenshot({path:testInfo.outputPath('compact-workspace-desktop.png')});
   await page.setViewportSize({width:390,height:844});

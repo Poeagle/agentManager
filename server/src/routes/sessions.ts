@@ -142,21 +142,20 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const visible = all
       .filter((s: any) => !s.project_id || owned.has(s.project_id))
       .filter((s: any) => canAccessSessionByRow(req.user!.id, s)&&canUseSessionEnvironment(s,req.user!.id));
-    const outputActivity = new Map<string, { createdAt: string; data: string }>();
+    const outputActivity = new Map<string, string>();
     if (visible.length > 0) {
-      const placeholders = visible.map(() => '?').join(',');
+      // The (session_id, seq) index can seek directly to the newest chunk per
+      // session. The list only needs its timestamp, regardless of output size.
       const rows = getDb().prepare(`
-        SELECT p.session_id, p.created_at, p.data
-        FROM pty_output p
-        INNER JOIN (
-          SELECT session_id, MAX(seq) AS latest_seq
-          FROM pty_output
-          WHERE session_id IN (${placeholders})
-          GROUP BY session_id
-        ) latest ON latest.session_id = p.session_id AND latest.latest_seq = p.seq
-      `).all(...visible.map((session: any) => session.id)) as Array<{ session_id: string; created_at: string; data: string }>;
+        SELECT requested.value AS session_id, (
+          SELECT created_at FROM pty_output
+          WHERE session_id = requested.value
+          ORDER BY seq DESC LIMIT 1
+        ) AS created_at
+        FROM json_each(?) AS requested
+      `).all(JSON.stringify(visible.map(session => session.id))) as Array<{ session_id: string; created_at: string | null }>;
       for (const row of rows) {
-        outputActivity.set(row.session_id, { createdAt: row.created_at, data: row.data });
+        if (row.created_at !== null) outputActivity.set(row.session_id, row.created_at);
       }
     }
     const present = sessionPresenter(req.user!.id);
@@ -177,7 +176,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
 
         const lastActivityAt = st?.lastActivity
           ? new Date(st.lastActivity).toISOString()
-          : sqliteUtcToIso(outputActivity.get(s.id)?.createdAt ?? s.updated_at ?? s.completed_at ?? s.started_at ?? s.created_at);
+          : sqliteUtcToIso(outputActivity.get(s.id) ?? s.updated_at ?? s.completed_at ?? s.started_at ?? s.created_at);
         return {
           ...s,
           ...present(s),...presentAgentSession(s),
