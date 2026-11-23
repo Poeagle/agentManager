@@ -10,14 +10,16 @@ export const aggregateKey=(row:{day:string;cwd:string;model:string|null;tier:str
 export function projectedUsageAggregates(account:string,from:string|null=null,before:string|null=null):UsageAggregate[]{
  const columns=tokenFields.map(k=>`CASE WHEN COUNT(json_extract(tokens,'$.${k}'))=COUNT(*) THEN SUM(json_extract(tokens,'$.${k}')) ELSE NULL END AS ${k}`).join(',');
  const masks=tokenFields.map(k=>`json_extract(tokens,'$.${k}') IS NULL`).join(',');
- const rows=getDb().prepare(`SELECT day,cwd,model,tier,COUNT(*) requests,${columns} FROM codex_usage_dedup_events WHERE account=? AND COALESCE(json_extract(tokens,'$._timezone'),'UTC')=COALESCE((SELECT timezone FROM codex_usage_ledger WHERE account=?),'UTC') AND (? IS NULL OR day>=?) AND (? IS NULL OR day<?) GROUP BY day,cwd,model,tier,${masks}`).all(account,account,from,from,before,before) as Array<{day:string;cwd:string;model:string|null;tier:string|null;requests:number}&Record<(typeof tokenFields)[number],number|null>>;
+ const rows=getDb().prepare(`SELECT day,cwd,model,tier,COUNT(*) requests,${columns} FROM codex_usage_dedup_events WHERE account=? AND COALESCE(json_extract(tokens,'$._timezone'),'UTC')=COALESCE((SELECT timezone FROM codex_usage_ledger WHERE account=?),'UTC')${from?' AND day>=?':''}${before?' AND day<?':''} GROUP BY day,cwd,model,tier,${masks}`)
+  .all(account,account,...(from?[from]:[]),...(before?[before]:[])) as Array<{day:string;cwd:string;model:string|null;tier:string|null;requests:number}&Record<(typeof tokenFields)[number],number|null>>;
  return rows.map(row=>{const tokens={...Object.fromEntries(tokenFields.map(k=>[k,row[k]])),requests:row.requests};return {event_key:aggregateKey(row,tokens),day:row.day,cwd:row.cwd,model:row.model,tier:row.tier,tokens:JSON.stringify(tokens)};});
 }
 
-export function usageAggregates(account:string,from:string|null=null):UsageAggregate[]{
- const stored=getDb().prepare('SELECT event_key,day,cwd,model,tier,tokens FROM codex_usage_events WHERE account=? AND (? IS NULL OR day>=?)').all(account,from,from) as UsageAggregate[];
+export function usageAggregates(account:string,from:string|null=null,before:string|null=null):UsageAggregate[]{
+ const stored=getDb().prepare(`SELECT event_key,day,cwd,model,tier,tokens FROM codex_usage_events WHERE account=?${from?' AND day>=?':''}${before?' AND day<?':''}`)
+  .all(account,...(from?[from]:[]),...(before?[before]:[])) as UsageAggregate[];
  const archived=new Set((getDb().prepare('SELECT event_key FROM codex_usage_archived_aggregates WHERE account=?').all(account) as {event_key:string}[]).map(row=>row.event_key));
  if(!archived.size)return stored;
  const existing=new Set(stored.map(row=>aggregateKey(row,JSON.parse(row.tokens))));
- return [...stored,...projectedUsageAggregates(account,from).filter(row=>archived.has(row.event_key)&&!existing.has(row.event_key))];
+ return [...stored,...projectedUsageAggregates(account,from,before).filter(row=>archived.has(row.event_key)&&!existing.has(row.event_key))];
 }

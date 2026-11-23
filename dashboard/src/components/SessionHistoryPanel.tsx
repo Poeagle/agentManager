@@ -134,13 +134,11 @@ export function SessionHistoryPanel({
   openTabIds,
   displayNames = {},
   onOpen,
-  onDeleted,
 }: {
   projectId: string;projectPath?:string;
   openTabIds: Set<string>;
   displayNames?: Record<string, string>;
   onOpen: (session: Session) => void;
-  onDeleted?: (sessionId: string) => void;
 }) {
   const queryClient = useQueryClient();
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({ queryKey: ['project-sessions', projectId], queryFn: ({ signal }) => api.sessions.list(undefined, projectId, signal), staleTime: 10_000 });
@@ -149,30 +147,26 @@ export function SessionHistoryPanel({
   const providerLabel=(session:Session)=>{if(session.cli_type!=='codex')return sessionKind(session);const id=session.agent_environment_id||'native';return environments.data?.environments.find(env=>env.id===id)?.name||(id.startsWith('provider:')?id.slice(9):id==='native'?'本机默认 Engine':id);};
   const [selected,setSelected]=useState<Set<string>>(()=>new Set());
   const [bulkTargets, setBulkTargets] = useState<string[] | null>(null);
-  const [bulkResult, setBulkResult] = useState<{ accepted: number; rejected: number } | null>(null);
-  useEffect(() => { setSelected(new Set()); setBulkTargets(null); setBulkResult(null); }, [projectId]);
-
+  const [submissionResult, setSubmissionResult] = useState<{ accepted: number; rejected: number } | null>(null);
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
-  function removeRecord(sessionId:string){
-      // Update only after the server confirms deletion; failed requests preserve the row and tab.
-      for (const key of [['sessions'], ['project-sessions', projectId]]) {
-        queryClient.setQueryData<{ sessions: Session[] }>(key, (current) => current
-          ? { ...current, sessions: current.sessions.filter((session) => session.id !== sessionId) } : current);
+  useEffect(() => { setSelected(new Set()); setBulkTargets(null); setDeleteTarget(null); setSubmissionResult(null); }, [projectId]);
+  const deletion = useMutation({
+    mutationFn: async ({ ids, single }: { ids: string[]; single: boolean }) => {
+      const result = await api.sessions.queueEndedRecordDeletions(projectId, ids);
+      if (single && !result.accepted_ids.includes(ids[0])) {
+        void queryClient.invalidateQueries({ queryKey: ['project-sessions', projectId] });
+        throw new Error('未能提交这条会话记录，请刷新列表后重试。');
       }
-      queryClient.removeQueries({ queryKey: ['project-session-detail', sessionId] });
-      setExpandedIds((current) => { const next = new Set(current); next.delete(sessionId); return next; });
-
-      onDeleted?.(sessionId);
-      setSelected(current=>{const next=new Set(current);next.delete(sessionId);return next;});
-  }
-  const bulkDeletion = useMutation({
-    mutationFn: (ids: string[]) => api.sessions.queueEndedRecordDeletions(projectId, ids),
+      return result;
+    },
     onSuccess: ({ accepted_ids, rejected_ids }) => {
       const accepted = new Set(accepted_ids);
       setBulkTargets(null);
-      setBulkResult({ accepted: accepted.size, rejected: rejected_ids.length });
+      setDeleteTarget(null);
+      setSubmissionResult({ accepted: accepted.size, rejected: rejected_ids.length });
       setSelected(current => new Set([...current].filter(id => !accepted.has(id))));
+      setExpandedIds(current => new Set([...current].filter(id => !accepted.has(id))));
       for (const key of [['sessions'], ['project-sessions', projectId]]) {
         queryClient.setQueryData<{ sessions: Session[] }>(key, current => current && ({
           ...current,
@@ -180,16 +174,6 @@ export function SessionHistoryPanel({
         }));
         void queryClient.invalidateQueries({ queryKey: key });
       }
-    },
-  });
-  const deletion = useMutation({
-    mutationFn: (sessionId: string) => api.sessions.deleteRecord(sessionId),
-    onSuccess: (_result, sessionId) => {
-      removeRecord(sessionId);
-      setDeleteTarget(null);
-      void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      void queryClient.invalidateQueries({ queryKey: ['project-sessions', projectId] });
-      void queryClient.invalidateQueries({ queryKey: ['admin-monitor'] });
     },
   });
   const table = useTableModel(sessions, [
@@ -203,7 +187,7 @@ export function SessionHistoryPanel({
   const eligible=visibleSessions.filter(canDeleteRecord);
   const selectedIds=sessions.filter(session=>selected.has(session.id)&&canDeleteRecord(session)).map(session=>session.id);
   const allSelected=eligible.length>0&&eligible.every(session=>selected.has(session.id));
-  const busy=deletion.isPending||bulkDeletion.isPending;
+  const busy=deletion.isPending;
 
 
   const toggleExpanded = (id: string) => setExpandedIds((current) => {
@@ -217,14 +201,14 @@ export function SessionHistoryPanel({
       <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>项目会话记录</span>
       <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{visibleSessions.length}/{sessions.length}</span>
       <TableActionButton disabled={!selectedIds.length||busy} onClick={() => {
-        bulkDeletion.reset();
-        setBulkResult(null);
+        deletion.reset();
+        setSubmissionResult(null);
         setBulkTargets(selectedIds);
       }}>批量删除{selectedIds.length?` (${selectedIds.length})`:''}</TableActionButton>
-      {bulkResult && <span role={bulkResult.rejected ? 'alert' : 'status'} className="text-xs"
-        style={{ color: bulkResult.rejected ? 'var(--error)' : 'var(--text-secondary)' }}>
-        {bulkResult.accepted > 0 && `已提交 ${bulkResult.accepted} 条后台删除。`}
-        {bulkResult.rejected > 0 && `${bulkResult.rejected} 条未提交，可刷新后重试。`}
+      {submissionResult && <span role={submissionResult.rejected ? 'alert' : 'status'} className="text-xs"
+        style={{ color: submissionResult.rejected ? 'var(--error)' : 'var(--text-secondary)' }}>
+        {submissionResult.accepted > 0 && `已提交 ${submissionResult.accepted} 条后台删除。`}
+        {submissionResult.rejected > 0 && `${submissionResult.rejected} 条未提交，可刷新后重试。`}
       </span>}
       <button onClick={() => refetch()} title="刷新" className="ml-auto rounded p-1 hover:opacity-80" style={{ color: 'var(--text-secondary)' }}><RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} /></button>
     </div>
@@ -233,28 +217,28 @@ export function SessionHistoryPanel({
         loading={isLoading} error={isError ? `加载失败: ${(error as Error)?.message || '未知错误'}` : undefined} onRetry={() => { void refetch(); }}
         empty={visibleSessions.length === 0} emptyMessage={sessions.length ? '没有匹配的会话' : '这个项目还没有会话'}>
                 {visibleSessions.map((session) => <ProjectSessionRow key={session.id} session={session} projectPath={projectPath} isOpen={openTabIds.has(session.id)} displayName={displayNames[session.id]} expanded={expandedIds.has(session.id)} onToggle={() => toggleExpanded(session.id)} onOpen={onOpen}
-                  selected={selected.has(session.id)&&canDeleteRecord(session)} onSelect={()=>setSelected(current=>{const next=new Set(current);if(next.has(session.id))next.delete(session.id);else next.add(session.id);return next;})} providerLabel={providerLabel(session)} deleting={busy} onDelete={(target) => { deletion.reset(); setDeleteTarget(target); }} />)}
+                  selected={selected.has(session.id)&&canDeleteRecord(session)} onSelect={()=>setSelected(current=>{const next=new Set(current);if(next.has(session.id))next.delete(session.id);else next.add(session.id);return next;})} providerLabel={providerLabel(session)} deleting={busy} onDelete={(target) => { deletion.reset(); setSubmissionResult(null); setDeleteTarget(target); }} />)}
       </DataTable>
     </div>
-    {bulkTargets && <Dialog title="批量删除会话记录" busy={bulkDeletion.isPending} onClose={() => setBulkTargets(null)}>
+    {bulkTargets && <Dialog title="批量删除会话记录" busy={busy} onClose={() => setBulkTargets(null)}>
       <p>确定删除选中的 {bulkTargets.length} 条会话记录？</p>
       <p className="mt-2 text-xs">平台会话记录、保存的输出和 Agent 原始对话文件将在后台永久删除。</p>
-      {bulkDeletion.error && <p role="alert" className="mt-3 text-xs" style={{ color: 'var(--error)' }}>{bulkDeletion.error.message}</p>}
+      {deletion.error && <p role="alert" className="mt-3 text-xs" style={{ color: 'var(--error)' }}>{deletion.error.message}</p>}
       <footer className="mt-4 flex justify-end gap-2">
-        <TableActionButton disabled={bulkDeletion.isPending} onClick={() => setBulkTargets(null)}>取消</TableActionButton>
-        <TableActionButton disabled={bulkDeletion.isPending} onClick={() => {
-          if (!bulkDeletion.isPending) bulkDeletion.mutate(bulkTargets);
-        }}>{bulkDeletion.isPending ? '提交中…' : '确认批量删除'}</TableActionButton>
+        <TableActionButton disabled={busy} onClick={() => setBulkTargets(null)}>取消</TableActionButton>
+        <TableActionButton disabled={busy} onClick={() => {
+          if (!busy) deletion.mutate({ ids: bulkTargets, single: false });
+        }}>{busy ? '提交中…' : '确认批量删除'}</TableActionButton>
       </footer>
     </Dialog>}
     {deleteTarget && <Dialog title="删除记录" busy={deletion.isPending} onClose={() => setDeleteTarget(null)}>
       <p className="break-words text-sm">确定删除“{sessionTitle(deleteTarget, displayNames[deleteTarget.id])}”？</p>
-      <p className="mt-2 text-xs" style={{ color: 'var(--text-secondary)' }}>平台会话记录、保存的输出和 Agent 原始对话文件将被永久删除。</p>
-      {deletion.error && <p role="alert" className="mt-3 text-xs" style={{ color: 'var(--error)' }}>删除失败：{deletion.error.message}</p>}
+      <p className="mt-2 text-xs" style={{ color: 'var(--text-secondary)' }}>平台会话记录、保存的输出和 Agent 原始对话文件将在后台永久删除。</p>
+      {deletion.error && <p role="alert" className="mt-3 text-xs" style={{ color: 'var(--error)' }}>{deletion.error.message}</p>}
       <footer className="mt-4 flex justify-end gap-2">
         <TableActionButton disabled={deletion.isPending} onClick={() => setDeleteTarget(null)}>取消</TableActionButton>
         <TableActionButton disabled={deletion.isPending} style={{ background: 'var(--error)', borderColor: 'var(--error)', color: '#fff' }}
-          onClick={() => { if (!deletion.isPending) deletion.mutate(deleteTarget.id); }}>{deletion.isPending ? '删除中…' : '删除记录'}</TableActionButton>
+          onClick={() => { if (!busy) deletion.mutate({ ids: [deleteTarget.id], single: true }); }}>{busy ? '提交中…' : '删除记录'}</TableActionButton>
       </footer>
     </Dialog>}
   </div>;

@@ -1810,7 +1810,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                 openTabIds={new Set(terminalInstances.map((t) => t.id))}
                 displayNames={sessionDisplayNames}
                 onOpen={handleOpenProjectSession}
-                onDeleted={removeTerminalTabFromState}
               />
             )}
           </div>

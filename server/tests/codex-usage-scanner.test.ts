@@ -11,6 +11,34 @@ const context=JSON.stringify({type:'turn_context',payload:{model:'gpt-6.1-sol'}}
 const record=(stamp:string,total:number,last:number)=>JSON.stringify({type:'event_msg',timestamp:stamp,payload:{type:'token_count',info:{total_token_usage:{total_tokens:total},last_token_usage:{total_tokens:last,input_tokens:last,output_tokens:0}}}})+'\n';
 beforeEach(async()=>{home=await mkdtemp(join(tmpdir(),'codex-usage-test-'));await mkdir(join(home,'sessions'));file=join(home,'sessions','rollout-test.jsonl');});
 afterEach(async()=>{await rm(home,{recursive:true,force:true});});
+
+it('reuses an unchanged verified target checkpoint and rereads on file or provenance changes', async () => {
+ const nativeId = '019ff001-1111-7111-8111-111111111111';
+ const target = join(home, 'sessions', `rollout-${nativeId}.jsonl`);
+ const header = JSON.stringify({ type: 'session_meta', payload: { id: nativeId, cwd: '/project' } }) + '\n';
+ const timestamp = '2026-01-02T12:00:00Z';
+ const fixedMtime = new Date(timestamp);
+ await writeFile(target, header + context + record(timestamp, 30, 30));
+ await utimes(target, fixedMtime, fixedMtime);
+ const first = await scan('full', '2026-01-02', { save_checkpoints: true, checkpoint_version: 6 });
+ const options = { target_candidates: true, native_id: nativeId, target_checkpoints: first.checkpoints, checkpoint_version: 6 };
+ const unchanged = await scan('full', '2026-01-02', options);
+ expect(unchanged.progress).toMatchObject({ files_complete: 1, bytes_read: 0 });
+ expect(unchanged.candidates).toEqual([]);
+ const excluded = await scan('full', '2026-01-02', { ...options, origins: { [nativeId]: { exclude: true } } });
+ expect(excluded.progress.bytes_read).toBeGreaterThan(0);
+ expect(excluded.candidates).toEqual([]);
+
+ await writeFile(target, header + context + record(timestamp, 50, 50));
+ await utimes(target, fixedMtime, fixedMtime);
+ const rewritten = await scan('full', '2026-01-02', options);
+ expect(rewritten.progress.bytes_read).toBeGreaterThan(0);
+ expect(rewritten.candidates).toMatchObject([{ tokens: { total_tokens: 50 } }]);
+ await appendFile(target, '{"type":"token_usage_record"');
+ const partial = await scan('full', '2026-01-02', options);
+ expect(partial.partial).toBe(true);
+});
+
 describe('account-scoped complete-file scanner',()=>{
  it('uses native settings events to attribute Fast and standard requests separately',async()=>{
   const setting=(tier:string)=>JSON.stringify({type:'event_msg',payload:{type:'thread_settings_applied',thread_settings:{service_tier:tier}}})+'\n';

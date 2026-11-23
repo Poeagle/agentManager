@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
-test('project history deletes a confirmed ended record and removes its persisted tab', async ({ page }, testInfo) => {
+test('project history queues a confirmed ended record and removes its persisted tab after cleanup', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1800, height: 1000 });
   await page.routeWebSocket((url) => url.port === (process.env.E2E_UI_PORT || '43111') && url.pathname === '/', () => {});
   const status = await (await page.request.get('/api/auth/status')).json();
@@ -18,22 +18,20 @@ test('project history deletes a confirmed ended record and removes its persisted
   const session = { id: 'history-delete-fixture', project_id: project.id, task: '历史测试任务', status: 'cancelled', mode: 'session', cli_type: 'codex',
     created_by_user_id: user.id, pid: null, exit_code: null, started_at: null, completed_at: '2026-10-14T09:00:00Z', created_at: '2026-10-14T08:00:00Z' };
   const other = { ...session, id: 'history-keep-fixture', task: '保留的会话' };
-  let records = [session, other];
+  const Database = createRequire(import.meta.url)('../server/node_modules/better-sqlite3');
+  const db = new Database(join(process.cwd(), '.test-data', 'e2e', 'agentmanager.db'));
+  try {
+    const insert = db.prepare(`INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id,created_at,completed_at)
+      VALUES (@id,@project_id,@task,@status,@mode,@cli_type,@created_by_user_id,@created_at,@completed_at)`);
+    insert.run(session);
+    insert.run(other);
+  } finally { db.close(); }
   let deletes = 0;
-  // Exercise UI deletion and persistence without launching a CLI or deleting a real conversation.
-  await page.route('**/api/sessions**', async (route) => {
-    const url = new URL(route.request().url());
-    if (url.pathname === '/api/sessions') return route.fulfill({ json: { sessions: records } });
-    if (url.pathname === `/api/sessions/${session.id}/record`) {
-      expect(route.request().method()).toBe('DELETE');
-      deletes++;
-      if (deletes === 1) return route.fulfill({ status: 500, json: { error: '删除接口测试失败' } });
-      records = records.filter((row) => row.id !== session.id);
-      return route.fulfill({ json: { ok: true } });
-    }
-    if (url.pathname.endsWith('/rendered-output')) return route.fulfill({ json: { rendered: 'Saved conversation' } });
-    if (url.pathname.endsWith('/output')) return route.fulfill({ json: { chunks: [], hasMore: false, oldestSeq: null } });
-    if (url.pathname === `/api/sessions/${session.id}`) return route.fulfill({ json: { session } });
+  await page.route('**/api/sessions/records/ended', async (route) => {
+    expect(route.request().method()).toBe('POST');
+    expect(route.request().postDataJSON()).toEqual({ project_id: project.id, session_ids: [session.id] });
+    deletes++;
+    if (deletes === 1) return route.fulfill({ status: 409, json: { error: '删除接口测试失败' } });
     return route.continue();
   });
   const snapshot = { activeMode: 'history', terminalInstances: [{ id: session.id, label: 'Session 1', customLabel: '历史测试会话' }],
@@ -60,8 +58,11 @@ test('project history deletes a confirmed ended record and removes its persisted
   await dialog.getByRole('button', { name: '删除记录', exact: true }).click();
   await expect(dialog.getByRole('alert')).toContainText('删除接口测试失败');
   await expect(remove).toBeVisible();
+  const accepted = page.waitForResponse(response => new URL(response.url()).pathname === '/api/sessions/records/ended' && response.status() === 202);
   await dialog.getByRole('button', { name: '删除记录', exact: true }).click();
+  await accepted;
   await expect(dialog).toHaveCount(0);
+  await expect(page.getByText('已提交 1 条后台删除。', { exact: true })).toBeVisible();
   await expect(remove).toHaveCount(0);
   await expect(table.getByRole('button', { name: '删除会话 保留的会话' })).toBeVisible();
   expect(deletes).toBe(2);

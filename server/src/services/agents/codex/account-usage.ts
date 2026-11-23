@@ -8,12 +8,13 @@ export const USAGE_RULE_VERSION=6;
 import {quotaSamples,initAccountStatus,collectAccountStatus,stopAccountStatus} from './account-status.js';
 import {allocateQuota} from './quota-allocation.js';
 import {quotaHours} from './quota-periods.js';
-import {exportUsageCsv} from './usage-csv-export.js';
-import {readUsageCsv,csvUsageBreakdown,csvHourlyEvents} from './usage-csv.js';
+import {exportUsageCsv,markUsageCsvPending,projectUsageCsv,usageCsvPending} from './usage-csv-export.js';
+import {readUsageCsv,csvUsageBreakdown,csvHourlyEvents,type UsageCsvSnapshot} from './usage-csv.js';
 import {allCodexEnvironments,environmentConnection,getCodexEnvironment} from './environments.js';
 import {localHome} from './account-files.js';
 import {accountCommandInput,localCommandInput} from './account-transport.js';
 import {USAGE_EVENT_LIMIT,USAGE_SCAN} from './usage-scanner.js';
+import {resolveTargetUsage} from './usage-target.js';
 import {tokenFields} from '../../conversation-usage.js';
 import {creditRateDate,usdReferenceRateDate,estimateUsageCredits,estimateUsageBreakdown,estimateUsageUsd,estimateUsageUsdBreakdown} from './usage-credits.js';
 import {estimatePublicApiCost,pricingSnapshot,publicApiModel,type PublicApiCatalog} from '../model-pricing.js';
@@ -38,6 +39,11 @@ const controllers=new Map<string,AbortController>();
 const databaseStorage=()=>({kind:'database' as const,path:config.dbPath});
 const csvStorage=(id:string)=>({kind:'csv' as const,path:usageCsvDirectory(id)});
 function safeUsageCsv(id:string){try{return readUsageCsv(id);}catch{try{return readUsageCsv(id,true);}catch{return null;}}}
+function pendingUsageProjection(id:string):UsageCsvSnapshot|null|undefined {
+ const pending=usageCsvPending(id);
+ if(!pending)return undefined;
+ try{return projectUsageCsv(id,{fromDay:pending.from_day,timezone:usageStoredTimezone(id)});}catch{return null;}
+}
 function usageHome(e:ReturnType<typeof getCodexEnvironment>){if(e.kind!=='provider')return localHome(e);const provider=readAgentManagement('codex').providers.find(p=>p.id===e.provider);return provider?externalProviderCodexHome(provider):'';}
 /** Resolve aliases only for report grouping. Raw event paths and fingerprints
  * remain unchanged so normalization cannot merge distinct request identities. */
@@ -78,6 +84,8 @@ export function initAccountUsage(){initUsageProvenance();getDb().exec(`
  CREATE TABLE IF NOT EXISTS codex_usage_dedup_events(account TEXT NOT NULL,event_key TEXT NOT NULL,day TEXT NOT NULL,cwd TEXT NOT NULL,model TEXT,tier TEXT,provider TEXT,tokens TEXT NOT NULL,PRIMARY KEY(account,event_key));
  CREATE TABLE IF NOT EXISTS codex_usage_dedup_status(account TEXT PRIMARY KEY,ready INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS codex_usage_file_checkpoints(account TEXT NOT NULL,file_id TEXT NOT NULL,checkpoint TEXT NOT NULL,PRIMARY KEY(account,file_id));
+ CREATE INDEX IF NOT EXISTS codex_usage_target_checkpoints ON codex_usage_file_checkpoints(account,lower(json_extract(checkpoint,'$.settings[8]'))) WHERE json_valid(checkpoint);
+ CREATE TABLE IF NOT EXISTS codex_usage_csv_pending(account TEXT PRIMARY KEY,from_day TEXT NOT NULL,revision INTEGER NOT NULL);
  CREATE INDEX IF NOT EXISTS codex_usage_detail_days ON codex_usage_dedup_events(account,day);
 `);
  initUsageTimeStorage();
@@ -118,6 +126,7 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
   const missedDays=!!previousLedger&&previousLedger.last_day<previousDay;
   const recoveryFrom=initialized&&dedupStatus?.ready===1&&!rebin&&missedDays?previousLedger!.last_day:null;
   const mode=options.nativeId?'full':recoveryFrom?'catchup':initialized&&dedupStatus?.ready===1&&!rebin?'daily':'full';
+  const targeted=!!options.nativeId&&!options.rebuild&&!options.preserveExisting;
   const controller=new AbortController();controllers.set(id,controller);
   try{
    const home=e.kind==='account'?e.connection?.codexHome:usageHome(e);
@@ -132,15 +141,34 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
    const incremental=!options.rebuild&&!rebin&&!options.nativeId&&(!initialized||dedupStatus?.ready===1);
    const checkpointRows=incremental?db.prepare('SELECT file_id,checkpoint FROM codex_usage_file_checkpoints WHERE account=? LIMIT 20000').all(id) as Array<{file_id:string;checkpoint:string}>:[];
    const checkpoints=incremental?Object.fromEntries(checkpointRows.map(row=>[row.file_id,JSON.parse(row.checkpoint)])):undefined;
-   const known=options.rebuild&&!options.preserveExisting?[]:db.prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=? AND (? OR timezone!=? OR day>=? AND day<=?) LIMIT 2000001').all(id,rebin||mode==='full'||incremental?1:0,timezone,recoveryFrom??days[0],day) as {event_id:Buffer}[];
-   if(known.length>2000000)throw Error('Usage identity limit exceeded');
-   const input=JSON.stringify({home,mode,day,days,since_day:recoveryFrom,timezone,previous_timezone:previousTimezone,
-    rebin,baseline_at:baseline,known_events:Buffer.concat(known.map(r=>r.event_id)).toString('base64'),
+   const knownEvents=()=>{
+    const known=options.rebuild&&!options.preserveExisting?[]:db.prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=? AND (? OR timezone!=? OR day>=? AND day<=?) LIMIT 2000001').all(id,rebin||mode==='full'||incremental?1:0,timezone,recoveryFrom??days[0],day) as {event_id:Buffer}[];
+    if(known.length>2000000)throw Error('Usage identity limit exceeded');
+    return Buffer.concat(known.map(row=>row.event_id)).toString('base64');
+   };
+   const targetCheckpoints=targeted?db.prepare(`SELECT file_id,checkpoint FROM codex_usage_file_checkpoints WHERE account=?
+     AND json_valid(checkpoint) AND lower(json_extract(checkpoint,'$.settings[8]'))=lower(?) LIMIT 20000`)
+     .all(id,options.nativeId) as {file_id:string;checkpoint:string}[]:[];
+   const input={home,mode,day,days,since_day:recoveryFrom,timezone,previous_timezone:previousTimezone,
+    rebin,baseline_at:baseline,checkpoint_version:USAGE_RULE_VERSION,
     origins:usageOrigins(id),includeEvents:true,rebuildEvents:initialized&&dedupStatus?.ready!==1&&!options.nativeId,
-    native_id:options.nativeId,checkpoints,reconcile:!!options.preserveExisting,save_checkpoints:!options.nativeId});
+    native_id:options.nativeId,checkpoints,reconcile:!!options.preserveExisting,save_checkpoints:!options.nativeId};
    const commandOptions={timeoutMs:mode!=='daily'?300000:120000,maxOutputBytes:256*1024*1024,signal:controller.signal};
    const scanStartedAt=new Date().toISOString();
-   const result=JSON.parse(await (e.kind==='account'?accountCommandInput(environmentConnection(e),USAGE_SCAN,input,commandOptions):localCommandInput(USAGE_SCAN,input,commandOptions)));
+   const scan=async (parameters:Record<string,unknown>)=>{
+    const payload=JSON.stringify({...input,...parameters});
+    return JSON.parse(await (e.kind==='account'?accountCommandInput(environmentConnection(e),USAGE_SCAN,payload,commandOptions):localCommandInput(USAGE_SCAN,payload,commandOptions)));
+   };
+   let result;
+   if(targeted){
+    result=await scan({target_candidates:true,target_checkpoints:Object.fromEntries(targetCheckpoints.map(row=>[row.file_id,JSON.parse(row.checkpoint)]))});
+    if(result.candidates_truncated)result=await scan({known_events:knownEvents()});
+    else {
+     if(!Array.isArray(result.candidates)||result.candidates.length>USAGE_EVENT_LIMIT)throw Error('Target usage candidates unavailable');
+     const resolved=resolveTargetUsage(db,id,result.candidates);
+     result=resolved?{...result,...resolved}:await scan({known_events:knownEvents()});
+    }
+   }else result=await scan({known_events:knownEvents()});
    if(!Array.isArray(result.rows)||result.rows.length>50000||result.mode!==mode||result.day!==day)throw Error('Invalid usage response');
    const inWindow=(date:string)=>incremental||mode==='full'||(mode==='daily'?days.includes(date):date>=recoveryFrom!&&date<=day);
    const requestsPerDay=new Map<string,number>();
@@ -179,11 +207,15 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
     for(const event of events)for(let i=0;i<event.keys.length;i+=32)record.run(id,event.keys.subarray(i,i+32),event.day,timezone);
     const lookup=db.prepare('SELECT tokens FROM codex_usage_events WHERE account=? AND event_key=?');
     const insert=db.prepare('INSERT OR REPLACE INTO codex_usage_events VALUES(?,?,?,?,?,?,?)');
-    let archived:Map<string,{tokens:string}>|undefined;
+    const archived=new Map<string,Map<string,{tokens:string}>>();
     for(const row of result.rows){
      const key=JSON.stringify([row.day,row.cwd,row.model,row.tier,tokenFields.map(k=>row.tokens[k]===null?0:1).join('')]);
      let previous=lookup.get(id,key) as {tokens:string}|undefined;
-     if(!previous&&row.day<previousDay&&!options.rebuild&&!rebin){archived??=new Map(usageAggregates(id).map(row=>[row.event_key,row]));previous=archived.get(key);}
+     if(!previous&&row.day<previousDay&&!options.rebuild&&!rebin){
+      let onDay=archived.get(row.day);
+      if(!onDay){const nextDay=new Date(Date.parse(row.day+'T00:00:00Z')+86400000).toISOString().slice(0,10);onDay=new Map(usageAggregates(id,row.day,nextDay).map(entry=>[entry.event_key,entry]));archived.set(row.day,onDay);}
+      previous=onDay.get(key);
+     }
      const old=previous?JSON.parse(previous.tokens):null;
      const tokens=old?Object.fromEntries(tokenFields.map(k=>[k,old[k]==null||row.tokens[k]===null?null:old[k]+row.tokens[k]])):row.tokens;
      insert.run(id,key,row.day,row.cwd,row.model||null,row.tier||null,JSON.stringify({...tokens,requests:row.requests+(old?.requests??0)}));
@@ -198,7 +230,11 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
      const save=db.prepare('INSERT OR REPLACE INTO codex_usage_file_checkpoints VALUES(?,?,?)');
      for(const [key,value] of nextCheckpoints)save.run(id,key,JSON.stringify(value));
     }
-    if(options.nativeId)return;
+    if(options.nativeId){
+     const addedDays=events.filter(event=>event.keys.length>0).map(event=>event.day).sort();
+     if(addedDays.length)markUsageCsvPending(id,addedDays[0]);
+     return;
+    }
     db.prepare('INSERT INTO codex_usage_dedup_status(account,ready) VALUES(?,?) ON CONFLICT(account) DO UPDATE SET ready=excluded.ready').run(id,!result.events_truncated&&(mode==='full'||dedupStatus?.ready===1)?1:0);
     if(options.rebuild)db.prepare('UPDATE codex_usage_dedup_status SET hour_backfilled=1 WHERE account=?').run(id);
     db.prepare('INSERT INTO codex_usage_ledger(account,baseline_at,last_day,timezone) VALUES(?,?,?,?) ON CONFLICT(account) DO UPDATE SET last_day=excluded.last_day,timezone=excluded.timezone').run(id,baseline,previousLedger&&(result.partial||result.errors||result.events_truncated)?previousLedger.last_day:day,timezone);
@@ -210,15 +246,16 @@ export async function collectAccountUsage(id:string,options:{rebuild?:boolean;pr
     db.prepare('INSERT OR REPLACE INTO codex_usage_scan_boundary VALUES(?,?)').run(id,scanStartedAt);
     if(result.progress)db.prepare('INSERT OR REPLACE INTO codex_usage_progress VALUES(?,?)').run(id,JSON.stringify(result.progress));
    })();
-   exportUsageCsv(id,{rebuild:!!options.rebuild||rebin||missedDays||mode==='full'});
+   if(!options.nativeId)exportUsageCsv(id,{rebuild:!!options.rebuild||rebin||missedDays||mode==='full'});
    if(options.nativeId&&(result.errors||result.partial||result.events_truncated))throw Error('最后的账号用量不完整，原始历史已保留');
   }catch(error){const message=error instanceof Error&&error.message==='历史目录无法独立归属'?'历史目录与其他 Engine 共用或无法确认，未统计以避免重复':'采集失败，保留上次成功数据';if(options.preserveExisting){const reasons=new Set(['历史重读不完整','历史记录存在未归属数据','历史请求身份不完整','重读请求身份重复','部分历史请求无法从原始文件中找到','历史请求的归属或 Token 与缓存不一致','历史计数不可验证','历史计数超限','历史请求身份缺失','历史聚合无法核对']);const reason=error instanceof Error&&reasons.has(error.message)?error.message:'无法完整扫描或验证原始历史';throw Object.assign(Error(reason),{statusCode:409});}if(options.nativeId)throw Error('最后的账号用量无法完整核对，原始历史已保留');if(options.rebuild)throw Object.assign(Error(message),{statusCode:409});db.prepare('INSERT INTO codex_usage_status(account,error,partial) VALUES(?,?,1) ON CONFLICT(account) DO UPDATE SET error=excluded.error,partial=1').run(id,message);}
   finally{controllers.delete(id);}
  })();pending.set(id,task);try{await task;}finally{pending.delete(id);}
 }
-function allocatedQuota(id:string,range?:{start:string|null;end:string|null;gaps?:number},periods?:Array<{hour:string;quota:number}>,timezone=usageStoredTimezone(id)){
+function allocatedQuota(id:string,range?:{start:string|null;end:string|null;gaps?:number},periods?:Array<{hour:string;quota:number}>,timezone=usageStoredTimezone(id),projection?:UsageCsvSnapshot|null){
  const db=getDb(),samples=quotaSamples(id);
- const restoreArchive=()=>{const saved=periods?safeUsageCsv(id):null;if(saved?.timezone===timezone)periods?.push(...(saved.observed??[]).map(([hour,quota])=>({hour:hour as string,quota:quota as number})));return new Map<string,number>();};
+ const readSnapshot=()=>projection===undefined?safeUsageCsv(id):projection;
+ const restoreArchive=()=>{const saved=periods?readSnapshot():null;if(saved?.timezone===timezone)periods?.push(...(saved.observed??[]).map(([hour,quota])=>({hour:hour as string,quota:quota as number})));return new Map<string,number>();};
  if(samples.length<2)return restoreArchive();
  const status=db.prepare('SELECT checked_at,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;partial:number}|undefined;
  const ready=db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
@@ -230,7 +267,7 @@ function allocatedQuota(id:string,range?:{start:string|null;end:string|null;gaps
  const events=db.prepare('SELECT at,day,hour,cwd,model,tier,tokens FROM codex_usage_dedup_events WHERE account=? AND at IS NOT NULL AND julianday(at)>julianday(?) AND julianday(at)<=julianday(?) ORDER BY at LIMIT ?').all(id,samples[0].checked_at,samples[samples.length-1].checked_at,USAGE_EVENT_LIMIT+1) as Array<{at:string;day:string;hour:string|null;cwd:string;model:string|null;tier:string|null;tokens:string}>;
  if(events.length>USAGE_EVENT_LIMIT)return restoreArchive();
  const boundary=db.prepare('SELECT started_at FROM codex_usage_scan_boundary WHERE account=?').get(id) as {started_at:string}|undefined;
- if(periods){const observed=quotaHours(samples,events,boundary?.started_at??null,timezone);const saved=safeUsageCsv(id);periods.push(...(saved?.observed?.length&&saved.checkpoint===status.checked_at?saved.observed.map(([hour,quota])=>({hour:hour as string,quota:quota as number})):observed.hours));if(range)Object.assign(range,observed.range,{gaps:observed.gaps});return new Map<string,number>();}
+ if(periods){const observed=quotaHours(samples,events,boundary?.started_at??null,timezone);const saved=readSnapshot();periods.push(...(saved?.observed?.length&&saved.checkpoint===status.checked_at?saved.observed.map(([hour,quota])=>({hour:hour as string,quota:quota as number})):observed.hours));if(range)Object.assign(range,observed.range,{gaps:observed.gaps});return new Map<string,number>();}
  const hourly=allocateQuota(samples,events,boundary?.started_at??null,(start,end)=>{if(range&&!periods){range.start??=start;range.end=end;}}),result=new Map(hourly);
  for(const [key,value] of hourly){const [day,,cwd,model]=JSON.parse(key);const daily=JSON.stringify([day,null,cwd,model]);result.set(daily,(result.get(daily)??0)+value);}
  return result;
@@ -347,7 +384,7 @@ function accountRequestEventEstimates(id:string,days:Set<string>){
  }
  return {groups,models};
 }
-export function cachedAccountUsage(id:string){
+export function cachedAccountUsage(id:string,projection?:UsageCsvSnapshot|null){
  const db=getDb(),timezone=usageStoredTimezone(id),timezone_pending=timezone!==usageTimezone()?usageTimezone():null;
  const environment=getCodexEnvironment(id),basis=environment.kind==='provider'?'credits':'subscription',unassigned=unassignedUsage(id,basis);
  const source=db.prepare('SELECT identity FROM codex_usage_sources WHERE account=?').get(id) as {identity:string}|undefined;
@@ -356,7 +393,8 @@ export function cachedAccountUsage(id:string){
  const status=db.prepare('SELECT checked_at,error,partial FROM codex_usage_status WHERE account=?').get(id) as {checked_at:string|null;error:string|null;partial:number}|undefined;
  const rule=db.prepare('SELECT version,state,reason FROM codex_usage_rule_versions WHERE account=?').get(id) as {version:number;state:string;reason:string|null}|undefined;
  const ruleWarning=!rule||rule.version!==USAGE_RULE_VERSION?'统计规则已更新，历史缓存等待校验':rule.state==='blocked'?`历史缓存无法完整核对（${rule.reason||'原因未知'}），已保留旧数据；部分估算可能使用旧规则`:rule.state==='ready_partial'?'历史部分记录不可读取；已核对的数据已按新规则更新':rule.state==='pending'?'正在校验统计规则和历史缓存':null;
- const fileBreakdown=status?.checked_at?csvUsageBreakdown(id,status.checked_at,timezone):null;
+ const projected=projection===undefined?pendingUsageProjection(id):projection;
+ const fileBreakdown=status?.checked_at?csvUsageBreakdown(id,status.checked_at,timezone,projected):null;
  const directoryFor=usageDirectoryPresenter();
  const breakdown=(fileBreakdown??usageAggregates(id).map(row=>{const tokens=JSON.parse(row.tokens);return {...row,...tokens,requests:tokens.requests??1};})).map(row=>({...row,cwd:directoryFor(row.cwd).cwd}));
  const officialApi=officialApiEstimates(id,timezone,breakdown,directoryFor);
@@ -385,13 +423,13 @@ export function cachedAccountUsage(id:string){
    model.usd_coverage={covered:complete?estimate.coverage.covered:0,total:model.usd_coverage.total};
   }
  }
- const quota_range:{start:string|null;end:string|null}={start:null,end:null},quota_hours:Array<{hour:string;quota:number}>=[],allocation=allocatedQuota(id,quota_range,quota_hours,timezone);
+ const quota_range:{start:string|null;end:string|null}={start:null,end:null},quota_hours:Array<{hour:string;quota:number}>=[],allocation=allocatedQuota(id,quota_range,quota_hours,timezone,projected);
  const dailyQuota=new Map<string,number>(),dailyCredits=new Map<string,number>();for(const h of quota_hours)dailyQuota.set(h.hour.slice(0,10),(dailyQuota.get(h.hour.slice(0,10))??0)+h.quota);for(const [key,value] of estimates){const [day]=JSON.parse(key);dailyCredits.set(day,(dailyCredits.get(day)??0)+value.value);}
  allocation.clear();for(const [key,entries] of models){const [day,cwd]=JSON.parse(key),total=dailyQuota.get(day),denominator=dailyCredits.get(day);if(total!==undefined&&denominator)for(const model of entries.values())if(model.estimated_credits!==null)allocation.set(JSON.stringify([day,null,cwd,model.model]),total*model.estimated_credits/denominator);}
 
  const progress=db.prepare('SELECT data FROM codex_usage_progress WHERE account=?').get(id) as {data:string}|undefined;
  const initialized=!!db.prepare('SELECT account FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
- return {storage:fileBreakdown!==null?csvStorage(id):databaseStorage(),initialized,checked_at:status?.checked_at??null,quota_range,quota_hours,error:ruleWarning??status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:!!ruleWarning||status?.partial!==0||dayRows.length>5000||!!timezone_pending||!!unassigned||!!officialApi?.detailsIncomplete,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:creditRateDate(),usd_rate_date:officialApi?(officialApi.rateDate??'未提供'):usdReferenceRateDate(),rows:dayRows.slice(0,5000).map(row=>{
+ return {storage:fileBreakdown!==null&&projected===undefined?csvStorage(id):databaseStorage(),initialized,checked_at:status?.checked_at??null,quota_range,quota_hours,error:ruleWarning??status?.error??(timezone_pending?'正在按本地时间重建历史统计':unassigned?'部分历史原始日志缺失，已保留用量但无法按本地日期归属':null),partial:!!ruleWarning||status?.partial!==0||dayRows.length>5000||!!timezone_pending||!!unassigned||!!officialApi?.detailsIncomplete,timezone_pending,unassigned,progress:progress?JSON.parse(progress.data):null,timezone,credit_rate_date:creditRateDate(),usd_rate_date:officialApi?(officialApi.rateDate??'未提供'):usdReferenceRateDate(),rows:dayRows.slice(0,5000).map(row=>{
 
   const estimate=estimates.get(JSON.stringify([row.day,row.cwd]));
   const modelRows=[...(models.get(JSON.stringify([row.day,row.cwd]))?.values()||[])];
@@ -454,6 +492,7 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
  const today=emptyApiCost(),todayDate=billingDay(Date.now()),ambiguousTimes=new Set<string>();
  const basis=single&&getCodexEnvironment(ids[0]).kind!=='provider'?'subscription':'credits';
  let storage:ReturnType<typeof databaseStorage>|ReturnType<typeof csvStorage>=databaseStorage();
+ let singleProjection:UsageCsvSnapshot|null|undefined;
  const db=getDb(),events=new Map<string,GroupEvent|null>(),legacy:Array<{key:string;event:GroupEvent;unassigned?:boolean}>=[],aliases=new Map<string,string|null>();let partial=false,processed=0;const checked:string[]=[],unassignedEvents=new Map<string,GroupEvent|null>();
  const merge=(key:string,event:GroupEvent)=>{
   if(!events.has(key)){events.set(key,event);return;}
@@ -471,11 +510,13 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   const environment=getCodexEnvironment(id),home=homeFor(environment),group=balanceGroup(id),providerId=single?undefined:cachedEngineBalance(id).providerId;
   if(!single&&!providerId){partial=true;continue;}
   if(!single&&(!home||all.some(other=>{const otherHome=homeFor(other);return other.id!==id&&!!otherHome&&canonical(otherHome)===canonical(home)&&(!group||balanceGroup(other.id)!==group);}))){partial=true;continue;}
-  const snapshot=cachedAccountUsage(id);
+  const projection=pendingUsageProjection(id);
+  if(single)singleProjection=projection;
+  const snapshot=cachedAccountUsage(id,projection);
   const ready=db.prepare('SELECT ready FROM codex_usage_dedup_status WHERE account=?').get(id) as {ready:number}|undefined;
   if(!snapshot.initialized||!ready?.ready||snapshot.timezone!==timezone){partial=true;continue;}if(snapshot.partial)partial=true;if(snapshot.checked_at)checked.push(snapshot.checked_at);
-  const fileRows=single&&snapshot.checked_at?csvHourlyEvents(id,snapshot.checked_at,timezone):null;
-  if(fileRows!==null)storage=csvStorage(id);
+  const fileRows=single&&snapshot.checked_at?csvHourlyEvents(id,snapshot.checked_at,timezone,projection):null;
+  if(fileRows!==null&&projection===undefined)storage=csvStorage(id);
   const rows=fileRows??db.prepare(`SELECT event_key,day,hour,at,cwd,model,tier,provider,tokens FROM codex_usage_dedup_events WHERE account=? LIMIT ${USAGE_EVENT_LIMIT+1}`).all(id) as Array<GroupEvent&{event_key:string}>;
   if(rows.length>USAGE_EVENT_LIMIT){partial=true;continue;}
   for(const {event_key,...raw} of rows){
@@ -531,12 +572,12 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
  }
  if(grouped.size>5000)partial=true;
  if(single&&granularity==='hour'){
-  const daily=cachedAccountUsage(ids[0]);
+  const daily=cachedAccountUsage(ids[0],singleProjection);
   const knownDaily=daily.rows.reduce((sum,row)=>sum+(row.tokens.total_tokens??0),0);
   const knownHourly=[...grouped.values()].reduce((sum,row)=>sum+(row.tokens.total_tokens??0),0);
   if(knownDaily!==knownHourly||daily.rows.some(row=>row.tokens.total_tokens==null))partial=true;
  }
- const quota_range:{start:string|null;end:string|null}={start:null,end:null},quota_hours:Array<{hour:string;quota:number}>=[],allocation=single?allocatedQuota(ids[0],quota_range,quota_hours,timezone):new Map<string,number>();
+ const quota_range:{start:string|null;end:string|null}={start:null,end:null},quota_hours:Array<{hour:string;quota:number}>=[],allocation=single?allocatedQuota(ids[0],quota_range,quota_hours,timezone,singleProjection):new Map<string,number>();
  const hourTotals=new Map(quota_hours.map(h=>[h.hour,h.quota])),hourCredits=new Map<string,number>();for(const r of grouped.values())for(const m of r.models.values())if(r.hour&&m.estimated_credits!==null)hourCredits.set(r.hour,(hourCredits.get(r.hour)??0)+m.estimated_credits);
  if(single&&granularity==='hour'){allocation.clear();for(const r of grouped.values()){const total=r.hour?hourTotals.get(r.hour):undefined,denominator=r.hour?hourCredits.get(r.hour):undefined;if(total!==undefined&&denominator)for(const m of r.models.values())if(m.estimated_credits!==null)allocation.set(JSON.stringify([r.date,r.hour,r.cwd,m.model]),total*m.estimated_credits/denominator);}}
 
@@ -564,7 +605,7 @@ export function startAccountUsage(afterCollection?:(signal:AbortSignal)=>Promise
    const environments=allCodexEnvironments();
    for(const e of environments){
     if(stopped)break;
-    if(!e.enabled)continue;
+    if(!e.enabled){if(usageCsvPending(e.id))exportUsageCsv(e.id);continue;}
     // Start both acquisitions in the same tick. They retain their own actual
     // completion timestamps; this does not imply an atomic upstream snapshot.
     await Promise.all([collectAccountStatus(e.id,new Date().toISOString()),collectAccountUsage(e.id)]);

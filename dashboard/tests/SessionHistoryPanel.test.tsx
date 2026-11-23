@@ -23,15 +23,16 @@ beforeEach(() => {
   vi.mocked(api.sessions.list).mockImplementation(async () => ({ sessions: records }));
   vi.mocked(api.agent.conversation).mockResolvedValue({messages:[{id:'q',role:'user',text:'用户问题不冒充进展',timestamp:null},{id:'progress',role:'assistant',phase:'commentary',text:'正在核对配置。',timestamp:'2026-10-31T02:00:00Z'},{id:'result',role:'assistant',phase:'final',text:'已完成核对。',timestamp:'2026-10-31T02:01:00Z'}]} as any);
   vi.mocked(api.sessions.output).mockResolvedValue({ chunks: [], hasMore: false, oldestSeq: null });
-  vi.mocked(api.sessions.deleteRecord).mockImplementation(async (id) => { records = records.filter((record) => record.id !== id); return { ok: true }; });
+  vi.mocked(api.sessions.queueEndedRecordDeletions).mockImplementation(async (_project, ids) => {
+    records = records.map(record => ids.includes(record.id) ? { ...record, record_deletion: 'pending' } : record);
+    return { accepted_ids: ids, rejected_ids: [] };
+  });
 });
 afterEach(() => client.clear());
 async function mount() {
-  const onDeleted = vi.fn();
   render(<QueryClientProvider client={client}><SessionHistoryPanel projectId="project" openTabIds={new Set(['ended'])}
-    displayNames={{ ended: '已关闭的会话' }} onOpen={vi.fn()} onDeleted={onDeleted} /></QueryClientProvider>);
+    displayNames={{ ended: '已关闭的会话' }} onOpen={vi.fn()} /></QueryClientProvider>);
   await screen.findByRole('button', { name: '删除会话 已关闭的会话' });
-  return onDeleted;
 }
 
 describe('project session deletion', () => {
@@ -58,7 +59,7 @@ describe('project session deletion', () => {
       return { accepted_ids: ['ended'], rejected_ids: ['second'] };
     });
     const user = userEvent.setup();
-    const onDeleted = await mount();
+    await mount();
     expect(await screen.findByText('xindu')).toBeVisible();
     expect(screen.getByRole('checkbox', { name: '选择会话 Active task' })).toBeDisabled();
     await user.click(screen.getByRole('checkbox', { name: '全选可删除会话' }));
@@ -68,7 +69,6 @@ describe('project session deletion', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(api.sessions.queueEndedRecordDeletions).toHaveBeenCalledExactlyOnceWith('project', ['ended', 'second']);
     expect(api.sessions.deleteRecord).not.toHaveBeenCalled();
-    expect(onDeleted).not.toHaveBeenCalled();
     expect(await screen.findByText('后台删除中')).toBeVisible();
     expect(screen.getByRole('alert')).toHaveTextContent('1 条未提交');
     expect(screen.getByRole('checkbox', { name: '选择会话 Second task' })).toBeChecked();
@@ -96,45 +96,59 @@ describe('project session deletion', () => {
     await user.click(screen.getByRole('button', { name: '展开会话 已关闭的会话' }));
     expect((await screen.findByText('最近会话内容')).closest('td')).toHaveAttribute('colspan', '8');await screen.findByText('已完成核对。');expect(screen.getByText('正在核对配置。')).toBeVisible();expect(screen.getByText('进展')).toBeVisible();expect(screen.getByText('结果')).toBeVisible();expect(screen.queryByText('用户问题不冒充进展')).not.toBeInTheDocument();expect(api.sessions.output).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: '删除会话 已关闭的会话' }));
-    expect(api.sessions.deleteRecord).not.toHaveBeenCalled();
+    expect(api.sessions.queueEndedRecordDeletions).not.toHaveBeenCalled();
     await user.click(within(screen.getByRole('dialog', { name: '删除记录' })).getByRole('button', { name: '取消' }));
-    expect(api.sessions.deleteRecord).not.toHaveBeenCalled();
+    expect(api.sessions.queueEndedRecordDeletions).not.toHaveBeenCalled();
     expect(within(table).getByRole('button', { name: '删除会话 已关闭的会话' })).toBeVisible();
   });
 
-  it('removes the deleted record and its detail cache, and notifies the workspace to remove the open tab', async () => {
+  it('closes single confirmation on acceptance and retains the pending row until cleanup', async () => {
     const user = userEvent.setup();
-    const onDeleted = await mount();
-    client.setQueryData(['project-session-detail', 'ended'], { chunks: [] });
+    await mount();
     await user.click(screen.getByRole('button', { name: '删除会话 已关闭的会话' }));
     await user.click(within(screen.getByRole('dialog', { name: '删除记录' })).getByRole('button', { name: '删除记录', exact: true }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(api.sessions.deleteRecord).toHaveBeenCalledWith('ended');
-    expect(onDeleted).toHaveBeenCalledOnce();
-    expect(onDeleted).toHaveBeenCalledWith('ended');
-    expect(screen.queryByRole('button', { name: '删除会话 已关闭的会话' })).not.toBeInTheDocument();
-    expect(client.getQueryData<{ sessions: Session[] }>(['sessions'])?.sessions.map((session) => session.id)).toEqual(['active', 'other-project']);
-    expect(client.getQueryData(['project-session-detail', 'ended'])).toBeUndefined();
+    expect(api.sessions.queueEndedRecordDeletions).toHaveBeenCalledExactlyOnceWith('project', ['ended']);
+    expect(api.sessions.deleteRecord).not.toHaveBeenCalled();
+    expect(await screen.findByText('已提交 1 条后台删除。')).toBeVisible();
+    expect(screen.getByRole('button', { name: '删除会话 已关闭的会话' })).toBeDisabled();
+    expect(screen.getByText('后台删除中')).toBeVisible();
+    records = [active];
+    await act(async () => { await client.invalidateQueries({ queryKey: ['project-sessions', 'project'] }); });
+    await waitFor(() => expect(screen.queryByRole('button', { name: '删除会话 已关闭的会话' })).not.toBeInTheDocument());
+  });
+
+  it('keeps the single confirmation open when the record could not be accepted', async () => {
+    vi.mocked(api.sessions.queueEndedRecordDeletions).mockResolvedValueOnce({ accepted_ids: [], rejected_ids: ['ended'] });
+    const user = userEvent.setup();
+    await mount();
+    const remove = screen.getByRole('button', { name: '删除会话 已关闭的会话' });
+    await user.click(remove);
+    const dialog = screen.getByRole('dialog', { name: '删除记录' });
+    await user.click(within(dialog).getByRole('button', { name: '删除记录', exact: true }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('未能提交这条会话记录');
+    expect(screen.queryByText('后台删除中')).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(remove).toBeEnabled();
   });
 
   it('blocks duplicate submissions and closing while pending, and preserves the row and tab on failure', async () => {
     const user = userEvent.setup();
-    const onDeleted = await mount();
+    await mount();
     let reject!: (error: Error) => void;
-    vi.mocked(api.sessions.deleteRecord).mockImplementation(() => new Promise((_resolve, rejectPromise) => { reject = rejectPromise; }));
+    vi.mocked(api.sessions.queueEndedRecordDeletions).mockImplementationOnce(() => new Promise((_resolve, rejectPromise) => { reject = rejectPromise; }));
     await user.click(screen.getByRole('button', { name: '删除会话 已关闭的会话' }));
     const dialog = screen.getByRole('dialog', { name: '删除记录' });
     await user.dblClick(within(dialog).getByRole('button', { name: '删除记录', exact: true }));
-    expect(api.sessions.deleteRecord).toHaveBeenCalledOnce();
+    expect(api.sessions.queueEndedRecordDeletions).toHaveBeenCalledOnce();
     expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled();
     await user.keyboard('{Escape}');
     expect(dialog).toBeVisible();
     await act(async () => reject(new Error('无法删除记录')));
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('无法删除记录');
-    expect(onDeleted).not.toHaveBeenCalled();
     expect(client.getQueryData<{ sessions: Session[] }>(['project-sessions', 'project'])?.sessions).toContainEqual(ended);
-    vi.mocked(api.sessions.deleteRecord).mockImplementation(async (id) => { records = records.filter((record) => record.id !== id); return { ok: true }; });
     await user.click(within(dialog).getByRole('button', { name: '删除记录', exact: true }));
-    await waitFor(() => expect(onDeleted).toHaveBeenCalledWith('ended'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByText('后台删除中')).toBeVisible();
   });
 });

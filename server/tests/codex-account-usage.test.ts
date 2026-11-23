@@ -1,7 +1,7 @@
 import * as stream from '../src/services/agents/codex/stream.js';
 import {beforeEach,afterEach,it,expect,vi} from 'vitest';
 import {createTestDatabase} from './helpers/database.js';
-import {getDb} from '../src/db/index.js';
+import {closeDb,getDb,initDb} from '../src/db/index.js';
 import {createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {mkdtemp,mkdir,writeFile,appendFile,utimes,rm,copyFile,access} from 'node:fs/promises';
@@ -13,6 +13,10 @@ vi.mock('../src/services/agents/codex/account-transport.js',async original=>({..
 import {updateAgentManagement} from '../src/services/agents/management-store.js';
 import * as engineBalance from '../src/services/agents/codex/engine-balance.js';
 import {initModelPricing,pricingSources,refreshModelPricing} from '../src/services/agents/model-pricing.js';
+import {exportUsageCsv,usageCsvPending} from '../src/services/agents/codex/usage-csv-export.js';
+import {readUsageCsv,usageCsvDirectory} from '../src/services/agents/codex/usage-csv.js';
+import {resolveTargetUsage} from '../src/services/agents/codex/usage-target.js';
+import {USAGE_SCAN} from '../src/services/agents/codex/usage-scanner.js';
 let fixture:ReturnType<typeof createTestDatabase>;
 const tokens={total_tokens:10,input_tokens:10,cached_input_tokens:null,output_tokens:0,reasoning_output_tokens:null};
 const row={day:'2026-01-01',cwd:'/project',model:null,tier:null,requests:1,tokens};
@@ -49,6 +53,95 @@ function response(input:string,rows:any[],options:Record<string,unknown>={}){
 function respond(rows:any[]=[row],options:Record<string,unknown>={}){vi.mocked(localCommandInput).mockImplementation(async(_script,input)=>response(input,rows,options));}
 beforeEach(()=>{vi.stubEnv('TZ','UTC');fixture=createTestDatabase();initModelPricing();initAccountUsage();respond();vi.mocked(accountCommandInput).mockImplementation(async(_c,_s,input)=>response(input,[row]));});
 afterEach(async()=>{await stopAccountUsage();fixture.cleanup();vi.restoreAllMocks();vi.resetAllMocks();vi.useRealTimers();vi.unstubAllEnvs();});
+
+function runUsageScanner(script: string, input: string): Promise<string> {
+ return new Promise((resolve, reject) => {
+  const child = execFile('python3', ['-c', script], { maxBuffer: 1024 * 1024 }, (error, output) => error ? reject(error) : resolve(output));
+  child.stdin!.end(input);
+ });
+}
+
+it('matches full-scan deduplication for old aliases, repeated copies, native receipts and unknown tokens', async () => {
+ const nativeId = '019ff001-0000-7000-8000-000000000001';
+ const home = join(fixture.dir, 'parity-home');
+ const path = join(home, 'sessions', `rollout-${nativeId}.jsonl`);
+ await mkdir(join(home, 'sessions'), { recursive: true });
+ const line = (type: string, payload: object, timestamp = '2026-01-02T00:30:00Z') => JSON.stringify({ type, payload, timestamp }) + '\n';
+ const meta = line('session_meta', { id: nativeId, cwd: '/v', model: 'gpt-6.1-sol' });
+ const context = line('turn_context', { turn_id: 'legacy-turn' });
+ const details: Record<string, number | null> = { input_tokens: 10, cached_input_tokens: 3, output_tokens: 5, reasoning_output_tokens: null, total_tokens: 15 };
+ const echo = line('event_msg', { type: 'token_count', info: { total_token_usage: details, last_token_usage: details } });
+ const request = (id: string, tier: string, usage = details) => line('token_usage_record', { response_id: id, service_tier: tier, usage });
+ const options = { home, mode: 'full', day: '2026-01-02', timezone: 'Asia/Taipei', native_id: nativeId, includeEvents: true, baseline_at: '2026-01-01T00:00:00Z' };
+ const scan = async (extra: object) => JSON.parse(await runUsageScanner(USAGE_SCAN, JSON.stringify({ ...options, ...extra })));
+ await writeFile(path, meta + context + echo);
+ const initial = await scan({});
+ const legacyKey = Buffer.from(initial.event_keys['2026-01-02'], 'base64');
+ getDb().prepare('INSERT INTO codex_usage_event_ids(account,event_id,day,timezone) VALUES(?,?,?,?)').run('native', legacyKey, '2026-01-02', options.timezone);
+ const content = meta + context + request('previously-credited', 'default') + echo + request('new-standard', 'default')
+  + request('new-fast', 'priority', { ...details, cached_input_tokens: null }) + request('new-fast', 'priority');
+ await writeFile(path, content);
+ await mkdir(join(home, 'archived_sessions'), { recursive: true });
+ await writeFile(join(home, 'archived_sessions', `rollout-${nativeId}.jsonl`), content);
+ const baseline = await scan({ known_events: legacyKey.toString('base64') });
+ const bounded = await scan({ target_candidates: true });
+ expect(bounded.progress.files_selected).toBe(2);
+ expect(bounded.errors).toBe(baseline.errors);
+ const optimized = resolveTargetUsage(getDb(), 'native', bounded.candidates);
+ expect(optimized).toEqual({ rows: baseline.rows, events: baseline.events, event_keys: baseline.event_keys });
+ expect(optimized?.rows).toMatchObject([{ tier: 'default', requests: 1 }, { tier: 'priority', requests: 1, tokens: { cached_input_tokens: null } }]);
+});
+
+it('preserves late historical usage across an export failure and restart', async () => {
+ vi.useFakeTimers();
+ vi.setSystemTime(new Date('2026-01-05T12:00:00Z'));
+ const nativeId = '019ff001-0000-7000-8000-000000000002';
+ const home = join(fixture.dir, 'late-home');
+ const path = join(home, 'sessions', `rollout-${nativeId}.jsonl`);
+ vi.stubEnv('CODEX_HOME', home);
+ await mkdir(join(home, 'sessions'), { recursive: true });
+ const receipt = (id: string, timestamp: string, n: number) => JSON.stringify({ type: 'token_usage_record', timestamp,
+  payload: { response_id: id, usage: { input_tokens: n, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: n } } }) + '\n';
+ await writeFile(path, JSON.stringify({type:'session_meta',payload:{id:nativeId,cwd:'/late',model:'gpt-6.1-sol'}})+'\n'
+  +receipt('old','2026-01-01T12:05:00Z',15)+receipt('today','2026-01-05T12:01:00Z',20));
+ vi.mocked(localCommandInput).mockImplementation(runUsageScanner);
+ await collectAccountUsage('native');
+ const originalCsv = readUsageCsv('native');
+ expect(usageCsvPending('native')).toBeUndefined();
+ await collectAccountUsage('native', { nativeId });
+ expect(JSON.parse(vi.mocked(localCommandInput).mock.calls.at(-1)![1])).toMatchObject({ target_candidates: true });
+ expect(JSON.parse(vi.mocked(localCommandInput).mock.calls.at(-1)![1])).not.toHaveProperty('known_events');
+ expect(usageCsvPending('native')).toBeUndefined();
+ await appendFile(path, receipt('late', '2026-01-01T18:05:00Z', 30));
+ await collectAccountUsage('native', { nativeId });
+ expect(usageCsvPending('native')).toMatchObject({ from_day: '2026-01-01' });
+ expect(readUsageCsv('native')).toEqual(originalCsv);
+ const daily = cachedAccountUsage('native').rows;
+ const hourly = cachedGroupUsage(['native'], 'hour', true).rows;
+ expect(daily.map(row => [row.date, row.tokens.total_tokens])).toEqual([['2026-01-05', 20], ['2026-01-01', 45]]);
+ expect(hourly.map(row => row.tokens.total_tokens)).toEqual([20, 30, 15]);
+ const root = usageCsvDirectory('native');
+ const { rename } = await import('node:fs/promises');
+ await rename(root, `${root}.saved`);
+ await writeFile(root, 'unavailable destination');
+ try {
+  expect(() => exportUsageCsv('native')).toThrow();
+  expect(usageCsvPending('native')).toMatchObject({ from_day: '2026-01-01' });
+ } finally {
+  await rm(root);
+  await rename(`${root}.saved`, root);
+ }
+ await rm(path);
+ closeDb();
+ initDb();
+ initAccountUsage();
+ expect(usageCsvPending('native')).toMatchObject({ from_day: '2026-01-01' });
+ expect(cachedAccountUsage('native').rows).toEqual(daily);
+ await collectAccountUsage('native');
+ expect(usageCsvPending('native')).toBeUndefined();
+ expect(cachedAccountUsage('native').rows).toEqual(daily);
+ expect(cachedGroupUsage(['native'], 'hour', true).rows).toEqual(hourly);
+});
 
 it('captures the final Codex request before platform history deletion and retains account consumption',async()=>{
  const native='019ff001-5555-7555-8555-555555555554';
@@ -88,6 +181,22 @@ it('keeps existing account usage when a targeted flush sees a different history 
  vi.stubEnv('CODEX_HOME',join(fixture.dir,'original'));
  expect(cachedAccountUsage('native').rows).toEqual(original);
 });
+
+it('uses the original deduplication scan when the target response exceeds its bound', async () => {
+ vi.stubEnv('CODEX_HOME', join(fixture.dir, 'fallback-home'));
+ await collectAccountUsage('native');
+ const known = getDb().prepare('SELECT event_id FROM codex_usage_event_ids WHERE account=?').get('native') as { event_id: Buffer };
+ const scanner = vi.mocked(localCommandInput);
+ scanner.mockClear();
+ scanner.mockImplementationOnce(async () => JSON.stringify({ candidates_truncated: true }));
+ await collectAccountUsage('native', { nativeId: '019ff001-0000-7000-8000-000000000003' });
+ expect(scanner).toHaveBeenCalledTimes(2);
+ expect(JSON.parse(scanner.mock.calls[0][1])).toMatchObject({ target_candidates: true });
+ expect(JSON.parse(scanner.mock.calls[1][1])).toMatchObject({ known_events: known.event_id.toString('base64') });
+ expect(cachedAccountUsage('native').rows[0].tokens.total_tokens).toBe(10);
+ expect(usageCsvPending('native')).toBeUndefined();
+});
+
 it('reprocesses old Fast metadata on a rule upgrade and preserves data if history is missing',async()=>{
  const home=await mkdtemp(join(tmpdir(),'usage-rule-refresh-'));vi.stubEnv('CODEX_HOME',home);vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-02T12:00:00Z'));
  const entry=(type:string,payload:unknown,timestamp?:string)=>JSON.stringify({type,payload,...timestamp?{timestamp}:{}})+'\n';
