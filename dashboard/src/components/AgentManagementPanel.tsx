@@ -1541,24 +1541,25 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
     setFileDirty(false);
     setDialog({...dialog,accountDetails:!dialog.accountDetails});
   };
-  const settingsTabs=<div className="agent-management-tabs" role="tablist" aria-label="Agent 配置页面">
+  const showModels=settingsPage==='models';
+  const navigation=<>
+    <div className="agent-management-tabs" role="tablist" aria-label="Agent 配置页面">
       <button type="button" role="tab" aria-selected={settingsPage==='providers'} onClick={()=>setSettingsPage('providers')}>Provider</button>
-      <button type="button" role="tab" aria-selected={settingsPage==='models'} onClick={()=>setSettingsPage('models')}>模型资料</button>
-    </div>;
-  return <div className="agent-management-page">
-    <AgentModelInformation tabs={settingsTabs} active={settingsPage==='models'}/>
-    {settingsPage==='providers'&&<>
-    <div className="agent-provider-toolbar">
-      <span aria-live="polite">{table.rows.length} 个 Provider</span>
-      <div>
-        <button type="button" className="agent-management-button" onClick={refresh} disabled={catalog.isFetching || accounts.isFetching}>
-          <RefreshCw size={13} className={catalog.isFetching || accounts.isFetching ? 'animate-spin' : undefined}/>重新检测
-        </button>
-        {!readOnly && !!creatable.length && <button type="button" className="agent-management-button agent-management-button-primary" onClick={()=>setDialog({type:'add',agentId:creatable[0].agent.id,kind:'api'})}>
-          <Plus size={14}/>新增 Provider
-        </button>}
-      </div>
+      <button type="button" role="tab" aria-selected={showModels} onClick={()=>setSettingsPage('models')}>模型资料</button>
     </div>
+    {!showModels&&<div className="agent-provider-toolbar">
+      <span aria-live="polite">{table.rows.length} 个 Provider</span>
+      <button type="button" className="agent-management-button" onClick={refresh} disabled={catalog.isFetching || accounts.isFetching}>
+        <RefreshCw size={13} className={catalog.isFetching || accounts.isFetching ? 'animate-spin' : undefined}/>重新检测
+      </button>
+      {!readOnly && !!creatable.length && <button type="button" className="agent-management-button agent-management-button-primary" onClick={()=>setDialog({type:'add',agentId:creatable[0].agent.id,kind:'api'})}>
+        <Plus size={14}/>新增 Provider
+      </button>}
+    </div>}
+  </>;
+  return <div className="agent-management-page">
+    <AgentModelInformation navigation={navigation} active={showModels}/>
+    {!showModels&&<>
     {accounts.isError && !readOnly && <div className="agent-management-error-box" role="alert">
       <CircleAlert size={14}/>读取 Codex 账号 Provider 失败
       <TableActionButton onClick={()=>void accounts.refetch()}>重试</TableActionButton>

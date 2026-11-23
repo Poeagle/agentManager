@@ -59,12 +59,12 @@ const columns=[
  })),
 ] as const;
 
-export function AgentModelInformation({active=true,tabs}:{active?:boolean;tabs?:ReactNode}){
+export function AgentModelInformation({active=true,navigation}:{active?:boolean;navigation?:ReactNode}){
  const query=useQuery({queryKey:['agent-model-catalog'],queryFn:api.agentManagement.modelCatalog,enabled:active,refetchInterval:active?30*60*1000:false});
  const table=useTableModel(query.data?.models??[],columns);
  return <>
   <div className="agent-management-navigation">
-   {tabs}
+   {navigation}
    {active&&<div className="agent-model-information-toolbar">
     <div className="agent-model-information-summary">
      <span aria-live="polite">{table.rows.length} 个模型</span>
