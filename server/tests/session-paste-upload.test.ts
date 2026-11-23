@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, 
 import { join, relative } from 'path';
 import {userInfo} from 'os';
 import {execFileSync} from 'child_process';
+import {Readable} from 'node:stream';
 import {projectAttachmentDirectory} from '../src/services/attachment-storage.js';
 import {fileRoutes} from '../src/routes/files.js';
 import {sweepAllPastes} from '../src/services/paste-cleanup.js';
@@ -88,6 +89,20 @@ describe('session clipboard uploads', () => {
     expect(readFileSync(response.json().path, 'utf8')).toBe('hello');
     expect(readdirSync(projectAttachmentDirectory(project))).toHaveLength(1);
   });
+
+  it('saves a 500 MB raw file as an authorized session attachment',async()=>{
+    const chunk=Buffer.alloc(1024*1024,42);
+    const url='/api/sessions/paste-session/paste-file?filename=weights.pth';
+    const headers={'content-type':'application/octet-stream'};
+    expect((await app.inject({method:'POST',url,headers:{...headers,cookie:otherCookie},payload:'x'})).statusCode).toBe(404);
+    const response=await app.inject({
+      method:'POST',url,headers:{...headers,cookie:ownerCookie,'content-length':String(500*chunk.length)},
+      payload:Readable.from((function*(){for(let n=0;n<500;n++)yield chunk;})(),{objectMode:false}),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().path).toMatch(/paste-[\w-]+-weights\.pth$/);
+    expect(statSync(response.json().path).size).toBe(500*chunk.length);
+  },30000);
 
   it('accepts a 100 MB file including its base64 request overhead', async () => {
     const bytes = Buffer.alloc(100 * 1024 * 1024, 42);

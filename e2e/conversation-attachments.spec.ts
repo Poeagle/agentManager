@@ -66,7 +66,7 @@ test('chat uploads pasted images and dropped files, retains drafts, and restores
   await expect.poll(async()=>{const value=await(await page.request.get(`/api/sessions?project_id=${project.id}`)).json();return value.sessions.find((s:any)=>s.id===session.id)?.content_summary;}).toContain('报告已生成');
   const enhanceButton=chat.getByRole('button',{name:'优化当前输入',exact:true}),enhanceBox=await enhanceButton.boundingBox(),sendBox=await send.boundingBox();expect(enhanceBox!.x+enhanceBox!.width).toBeLessThanOrEqual(sendBox!.x);expect(Math.abs(enhanceBox!.y-sendBox!.y)).toBeLessThan(2);await expect(page.locator('.workspace-sidebar-button[aria-label="优化当前输入"]')).toHaveCount(0);let enhanceRequest:any;await page.route('**/api/prompt-enhancer/enhance',async route=>{enhanceRequest=route.request().postDataJSON();await route.fulfill({json:{prompt:'优化后的反馈',context:{requested_rounds:2,included_rounds:1}}});});await page.getByRole('button',{name:'优化当前输入',exact:true}).click();const enhance=page.getByRole('dialog',{name:'优化当前输入'});await expect(enhance.getByRole('textbox',{name:'优化结果'})).toHaveValue('优化后的反馈');expect(enhanceRequest).toMatchObject({session_id:session.id,prompt:'预览后保留草稿'});await expect(input).toHaveText('预览后保留草稿');await enhance.getByRole('button',{name:'应用到输入框'}).click();await expect(input).toHaveText('优化后的反馈');await expect(enhance).toHaveCount(0);
   await input.fill('保留这个草稿');
-  await page.route(`**/api/sessions/${session.id}/paste-file`,route=>route.fulfill({status:500,json:{error:'模拟上传失败'}}));
+  await page.route(`**/api/sessions/${session.id}/paste-file?*`,route=>route.fulfill({status:500,json:{error:'模拟上传失败'}}));
   await chat.getByLabel('选择对话附件').setInputFiles({name:'failed.txt',mimeType:'text/plain',buffer:Buffer.from('failed upload')});
   await expect(chat.getByRole('alert')).toContainText('模拟上传失败');await expect(send).toBeDisabled();await expect(input).toContainText('保留这个草稿');
   await chat.getByRole('button',{name:'移除附件 failed.txt'}).click();await expect(send).toBeEnabled();
@@ -83,10 +83,10 @@ test('uploads selected and dropped directories as ZIP attachments with nested pa
  await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'目录上传'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
  try{
   await page.goto('/');const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true}),editor=chat.getByRole('textbox',{name:'发送给当前 Agent 的消息'});await expect(chat.getByText('可以上传目录。')).toBeVisible();await editor.fill('请检查这些目录');
-  const uploaded=page.waitForResponse(response=>response.url().endsWith(`/sessions/${session.id}/paste-file`)&&response.request().method()==='POST');await chat.getByLabel('选择对话目录').setInputFiles(source);const result=await(await uploaded).json();
+  const uploaded=page.waitForResponse(response=>new URL(response.url()).pathname.endsWith(`/sessions/${session.id}/paste-file`)&&response.request().method()==='POST');await chat.getByLabel('选择对话目录').setInputFiles(source);const result=await(await uploaded).json();
   await expect(chat.getByRole('button',{name:'预览待发送文件 folder-source.zip'})).toHaveAttribute('data-status','ready');
   const zip=unzipSync(readFileSync(result.path));expect(strFromU8(zip['folder-source/说明.txt'])).toBe('目录说明');expect(strFromU8(zip['folder-source/子目录/data.csv'])).toContain('1,2');await expect(editor).toContainText('请检查这些目录');
-  const dropped=page.waitForResponse(response=>response.url().endsWith(`/sessions/${session.id}/paste-file`)&&response.request().method()==='POST');
+  const dropped=page.waitForResponse(response=>new URL(response.url()).pathname.endsWith(`/sessions/${session.id}/paste-file`)&&response.request().method()==='POST');
   await editor.evaluate(node=>{
    const f={name:'note.txt',isDirectory:false,file:(done:(file:File)=>void)=>done(new File(['dropped content'],'note.txt'))};
    const directory=(name:string,batches:unknown[][])=>({name,isDirectory:true,createReader:()=>{let index=0;return{readEntries:(done:(files:unknown[])=>void)=>done(batches[index++]||[])}}});

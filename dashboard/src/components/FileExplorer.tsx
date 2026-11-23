@@ -32,7 +32,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import ReactMarkdown,{type Components} from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { setEditorDirty } from '../lib/unsaved-files';
-import { droppedFiles, isFileDrag, MAX_FILE_UPLOAD_BYTES, safeUploadPath, type FileUploadRequest } from '../lib/file-upload';
+import { droppedFiles, isFileDrag, MAX_FILE_UPLOAD_BYTES, MAX_FILE_UPLOAD_MB, safeUploadPath, type FileUploadRequest } from '../lib/file-upload';
 import { compareFileEntries, type FileSort } from '../lib/file-sort';
 import { isWithinExplorerRoot, normalizeExplorerPath } from '../lib/explorer-path';
 
@@ -1404,7 +1404,7 @@ export function FileExplorer({ rootPath, projectId, instanceId, active = true, r
         setUploadProgress({ name: relativePath, index: index + 1, total: parsed.files.length, percent: 0, directory:parent });
         try {
           if(failedDirectories.some(path=>relativePath.startsWith(path+'/'))) throw new Error('目标目录创建失败，已跳过');
-          if (file.size > MAX_FILE_UPLOAD_BYTES) throw new Error('文件超过 50 MB 限制');
+          if (file.size > MAX_FILE_UPLOAD_BYTES) throw new Error(`单个文件最多 ${MAX_FILE_UPLOAD_MB} MB`);
           await filesApi.upload(parent, file, (fraction) => {
             setUploadProgress({ name: relativePath, index: index + 1, total: parsed.files.length, percent: Math.round(fraction * 100), directory:parent });
           });

@@ -5,6 +5,7 @@ import {getDb} from '../db/index.js';
 import {createHash} from 'crypto';
 import {isProjectAttachment} from './attachment-storage.js';
 import {conversationQuestionReply} from './conversation-question-reply.js';
+import {MAX_FILE_UPLOAD_BYTES,MAX_FILE_UPLOAD_MB} from './file-upload.js';
 
 export interface ConversationAttachment {kind:'image'|'file';name:string;path:string;offset?:number}
 export type ConversationAnswerAttachments=Record<string,ConversationAttachment[]>;
@@ -142,7 +143,7 @@ export async function validateConversationAttachments(sessionId:string,value:unk
     for(const item of value) {
       if(!item || !['image','file'].includes(item.kind) || typeof item.name!=='string' || !item.name.trim() || item.name.length>255 || /[\0\r\n]/.test(item.name) || typeof item.path!=='string' || item.path.length>4096)throw new Error();
       const path=await realpath(item.path);if(!isProjectAttachment(path,project.path,true))throw new Error();
-      const info=await stat(path);if(!info.isFile()||info.size>100*MIB)throw new Error();
+      const info=await stat(path);if(!info.isFile())throw new Error();
       total+=info.size;
       if(item.kind==='image') {
         if(info.size>10*MIB)throw new Error();images+=info.size;
@@ -157,7 +158,7 @@ export async function validateConversationAttachments(sessionId:string,value:unk
       if(item.offset!==undefined&&(!Number.isSafeInteger(item.offset)||item.offset<0||item.offset>65536))throw new Error();
       attachments.push({kind:item.kind,name:item.name,path,...(item.offset!==undefined?{offset:item.offset}:{})});
     }
-    if(total>100*MIB || images>10*MIB)throw new Error('附件总大小最多 100 MB，其中图片总大小最多 10 MB');
+    if(total>MAX_FILE_UPLOAD_BYTES || images>10*MIB)throw new Error(`附件总大小最多 ${MAX_FILE_UPLOAD_MB} MB，其中图片总大小最多 10 MB`);
     return attachments;
   } catch(error) {
     if(error instanceof Error && error.message.startsWith('附件总大小'))throw error;

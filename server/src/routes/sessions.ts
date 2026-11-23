@@ -19,6 +19,7 @@ import {NATIVE_SESSION_ID_RE} from '../services/agents/native-identifiers.js';
 
 import {randomUUID} from 'crypto';
 import {writeFileSync} from 'fs';
+import {Readable} from 'node:stream';
 import {projectAttachmentDirectory} from '../services/attachment-storage.js';
 import {join} from 'path';
 import {prunePastesDir} from '../services/paste-cleanup.js';
@@ -31,9 +32,10 @@ import {watchSessionRuntime,stopSessionRuntimeWatches} from '../services/session
 import {broadcastEphemeral} from '../services/event-store.js';
 import {requirePermission,userHasPermission} from '../services/rbac.js';
 import {attachExistingSession} from '../services/session-attachment.js';
+import {BinaryUploadError,binaryUploadLength,binaryUploadParser,saveBinaryUpload} from '../services/file-upload.js';
 
 const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
-const MAX_PASTED_FILE_BYTES = 100 * 1024 * 1024;
+const MAX_LEGACY_PASTED_FILE_BYTES = 100 * 1024 * 1024;
 
 function decodePastedDataUrl(dataUrl: unknown): { mime: string; bytes: Buffer } | null {
   if (typeof dataUrl !== 'string') return null;
@@ -85,6 +87,7 @@ function sqliteUtcToIso(value: string | null | undefined): string | null {
 }
 
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
+  app.addContentTypeParser('application/octet-stream', binaryUploadParser);
   const deferredReloads=new Map<string,()=>void>();
   app.addHook('onClose',async()=>{for(const stop of deferredReloads.values())stop();deferredReloads.clear();stopSessionRuntimeWatches();detachManagedAgents();});
   function reloadWhenIdle(session:NonNullable<ReturnType<typeof sessionManager.getSession>>,userId:string,keyHash:string|null,onlyTimedOut=false):boolean {
@@ -267,9 +270,9 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
-  // Reserve space for base64 expansion and the data URL / JSON envelope.
-  app.post<{ Params: { id: string }; Body: { dataUrl?: string; filename?: string } }>(
-    '/sessions/:id/paste-file', { bodyLimit: Math.ceil(MAX_PASTED_FILE_BYTES / 3) * 4 + 1024 * 1024 }, async (req, reply) => {
+  // The legacy JSON body keeps its limit because base64 needs a single string.
+  app.post<{ Params: { id: string }; Querystring: { filename?: string }; Body: Readable | { dataUrl?: string; filename?: string } }>(
+    '/sessions/:id/paste-file', { bodyLimit: Math.ceil(MAX_LEGACY_PASTED_FILE_BYTES / 3) * 4 + 1024 * 1024 }, async (req, reply) => {
       const session = sessionManager.getSession(req.params.id);
       if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
       const project = session.project_id
@@ -277,19 +280,28 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         : undefined;
       if (!project?.path) return reply.status(400).send({ error: 'Session has no associated project path' });
 
-      const data = decodePastedDataUrl(req.body?.dataUrl);
-      if (!data) return reply.status(400).send({ error: 'Expected a base64 file data URL' });
-      if (data.bytes.length > MAX_PASTED_FILE_BYTES) return reply.status(413).send({ error: 'File too large (max 100 MB)' });
-      const base = (typeof req.body?.filename === 'string' ? req.body.filename : '').split(/[\\/]/).pop() || '';
+      const stream = req.body instanceof Readable ? req.body : undefined;
+      const legacy = req.body instanceof Readable ? undefined : req.body;
+      const data = decodePastedDataUrl(legacy?.dataUrl);
+      if (!stream && !data) return reply.status(400).send({ error: 'Expected binary content or a base64 file data URL' });
+      if (data && data.bytes.length > MAX_LEGACY_PASTED_FILE_BYTES) return reply.status(413).send({ error: 'File too large (max 100 MB)' });
+      const filename = stream ? req.query.filename : legacy?.filename;
+      const base = (typeof filename === 'string' ? filename : '').split(/[\\/]/).pop() || '';
       const safeName = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(0, 100) || 'file';
 
       try {
+        const expected = stream ? binaryUploadLength(req.headers['content-length']) : undefined;
         const dir = projectAttachmentDirectory(project.path, true);
         const path = join(dir, `paste-${randomUUID()}-${safeName}`);
-        writeFileSync(path, data.bytes, { flag: 'wx', mode: 0o644 });
+        if (stream) await saveBinaryUpload(stream, path, expected, 0o644);
+        else writeFileSync(path, data!.bytes, { flag: 'wx', mode: 0o644 });
         prunePastesDir(dir);
         return { ok: true, path };
       } catch (error: any) {
+        if (error instanceof BinaryUploadError) {
+          if (error.statusCode === 413) reply.header('Connection', 'close');
+          return reply.code(error.statusCode).send({ error: error.message });
+        }
         return reply.status(500).send({ error: pasteUploadError('file',project.path,error) });
       }
     },

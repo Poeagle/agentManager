@@ -1,7 +1,9 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { join, relative } from 'path';
 import {execFileSync} from 'child_process';
+import {Readable} from 'node:stream';
+import {request} from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { authHook, createSession, createUser } from '../src/auth.js';
 import {projectUploadDirectory} from '../src/services/attachment-storage.js';
@@ -155,14 +157,57 @@ describe('file upload API', () => {
     expect((await upload(join(project, 'file.txt'), 'new.txt')).statusCode).toBe(400);
   });
 
-  it('enforces the 50 MB request limit before writing a file', async () => {
+  it('rejects a declared file above 500 MB before writing it', async () => {
     const response = await app.inject({
       method: 'POST',
       url: `/api/files/upload?path=${encodeURIComponent(project)}&filename=huge.bin`,
-      headers: { cookie, 'content-type': 'application/octet-stream', 'content-length': String(50 * 1024 * 1024 + 1) },
+      headers: { cookie, 'content-type': 'application/octet-stream', 'content-length': String(500 * 1024 * 1024 + 1) },
       payload: Buffer.from('x'),
     });
     expect(response.statusCode).toBe(413);
     expect(existsSync(join(project, 'huge.bin'))).toBe(false);
+  });
+
+  it('streams a 500 MB file to central storage', async () => {
+    const chunk = Buffer.alloc(1024 * 1024, 42);
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/files/upload?path=${encodeURIComponent(project)}&filename=large.pth`,
+      headers: { cookie, 'content-type': 'application/octet-stream', 'content-length': String(500 * chunk.length) },
+      payload: Readable.from((function* () { for (let n = 0; n < 500; n++) yield chunk; })(), {objectMode:false}),
+    });
+    expect(response.statusCode).toBe(200);
+    const path = destination(project, 'large.pth');
+    expect(response.json()).toEqual({ok:true,path,size:500*chunk.length});
+    expect(statSync(path).size).toBe(500*chunk.length);
+  }, 30000);
+
+  it('rejects a chunked upload past 500 MB and removes the partial file', async () => {
+    const chunk = Buffer.alloc(1024 * 1024);
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/files/upload?path=${encodeURIComponent(project)}&filename=over.pth`,
+      headers: {cookie, 'content-type': 'application/octet-stream', 'transfer-encoding': 'chunked'},
+      payload: Readable.from((function* () {
+        for (let n = 0; n < 500; n++) yield chunk;
+        yield Buffer.from([1]);
+      })(), {objectMode:false}),
+    });
+    expect(response.statusCode).toBe(413);
+    expect(readdirSync(projectUploadDirectory(project))).toEqual([]);
+  }, 30000);
+
+  it('clears staging data when the client disconnects during upload', async () => {
+    const address = await app.listen({host:'127.0.0.1',port:0});
+    const root = projectUploadDirectory(project, true);
+    const upload = request(`${address}/api/files/upload?path=${encodeURIComponent(project)}&filename=aborted.pth`, {
+      method:'POST', headers:{cookie, 'content-type':'application/octet-stream', 'content-length':'10000'},
+    });
+    upload.on('error', () => {});
+    try {
+      upload.write(Buffer.alloc(4096));
+      await expect.poll(()=>readdirSync(root)).toEqual([expect.stringMatching(/^\.upload-/)]);
+    } finally { upload.destroy(); }
+    await expect.poll(()=>readdirSync(root)).toEqual([]);
   });
 });
