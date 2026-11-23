@@ -22,6 +22,7 @@ import { createTestDatabase } from './helpers/database.js';
 import {notificationReplyTarget,quotedReplyRoute} from '../src/services/platform-ai/quoted-replies.js';
 import * as platformTools from '../src/services/platform-ai/tools.js';
 import {saveProjectNotification,canNotifyProject} from '../src/services/platform-ai/project-notifications.js';
+import * as mermaid from '../src/services/platform-ai/outbound-mermaid.js';
 
 let cleanup: () => void;
 let app: FastifyInstance;
@@ -125,7 +126,7 @@ describe('WeCom outbound screenshot delivery',()=>{
   expect((await app.inject({method:'POST',url:`/api/platform-ai/channels/${channel.id}/test`,headers:{cookie:adminCookie},payload:{mode:'image_card'}})).statusCode).toBe(400);
   expect((await app.inject({method:'POST',url:`/api/platform-ai/channels/${channel.id}/test`,headers:{cookie:adminCookie},payload:{...payload,image_url:'http://localhost/private'}})).statusCode).toBe(400);
  });
- async function imageNotice(count=2){
+ async function imageNotice(count=2,extra=''){
   const channel=bot();bind(channel.id);manager.start();await connected(channel.id);
   const root=join(databaseDir,'image-project');mkdirSync(root);
   getDb().prepare("INSERT INTO projects(id,name,path,owner_id) VALUES('image-project','Images',?,?)").run(root,member);
@@ -135,12 +136,40 @@ describe('WeCom outbound screenshot delivery',()=>{
   getDb().prepare("UPDATE platform_ai_messages SET status='done'").run();
   const task=trackTask(getConversation(conversation)!,'image-tab','work',0,'image-turn');getDb().prepare("UPDATE platform_ai_tasks SET status='reported_complete' WHERE id=?").run(task.id);
   const files=Array.from({length:count},(_,index)=>join(root,`screen-${index}.png`));files.forEach(file=>writeFileSync(file,png));
-  enqueueNotice(conversation,`task:${task.id}:images`,'**Images / Work**\n\nCI 已通过。\n'+files.map(file=>`[查看正式截图](${file})`).join('\n'),{notification_target:notificationReplyTarget('image-tab','ref:image-turn')});
+  enqueueNotice(conversation,`task:${task.id}:images`,'**Images / Work**\n\nCI 已通过。\n'+files.map(file=>`[查看正式截图](${file})`).join('\n')+extra,{notification_target:notificationReplyTarget('image-tab','ref:image-turn')});
   return {channel,files};
  }
  async function tick(count=1){for(let n=0;n<count;n++){worker.tick();await worker.drain();}}
  const messages=()=>frames.filter(frame=>frame.cmd==='aibot_send_msg');
  const imageRows=()=>getDb().prepare("SELECT * FROM platform_ai_outbox WHERE json_extract(reply_context,'$.outbound_image') IS NOT NULL ORDER BY rowid").all() as any[];
+ const diagram='flowchart LR\n A["库表"] --> B["业务概念"]';
+ it('sends readable Markdown and a separate diagram PNG, reusing the media on retry',async()=>{
+  const render=vi.spyOn(mermaid,'renderOutboundMermaid').mockResolvedValue(png);
+  await imageNotice(0,'\n```mermaid\n'+diagram+'\n```\n\n正文继续。');
+  rejectImage=true;await tick(2);
+  expect(messages().map(frame=>frame.body.msgtype)).toEqual(['markdown','image']);
+  expect(messages()[0].body.markdown.content).toContain('流程图见下方');
+  expect(messages()[0].body.markdown.content).toContain('正文继续');
+  expect(messages()[0].body.markdown.content).not.toContain('flowchart LR');
+  expect(render).toHaveBeenCalledExactlyOnceWith(diagram);
+  expect(frames.find(frame=>frame.cmd==='aibot_upload_media_init').body.filename).toBe('diagram.png');
+  expect(Buffer.from(frames.find(frame=>frame.cmd==='aibot_upload_media_chunk').body.base64_data,'base64')).toEqual(png);
+  rejectImage=false;
+  getDb().prepare("UPDATE platform_ai_outbox SET available_at=0 WHERE status='pending'").run();
+  await tick();
+  expect(messages().map(frame=>frame.body.msgtype)).toEqual(['markdown','image','image']);
+  expect(render).toHaveBeenCalledTimes(1);
+  expect(imageRows()[0].status).toBe('sent');
+ });
+ it('keeps the delivered text and explains when a diagram cannot be rendered',async()=>{
+  vi.spyOn(mermaid,'renderOutboundMermaid').mockRejectedValue(new Error('invalid diagram'));
+  await imageNotice(0,'\n```mermaid\ninvalid diagram\n```');
+  await tick(3);
+  expect(messages().map(frame=>frame.body.msgtype)).toEqual(['markdown','markdown']);
+  expect(messages()[1].body.markdown.content).toContain('流程图未能发送，请在平台查看。');
+  expect(uploadCount).toBe(0);
+  expect(imageRows()[0].status).toBe('failed');
+ });
  it('uploads actual bytes through the SDK and sends ordered image messages after readable Markdown',async()=>{
   const {channel,files}=await imageNotice();await tick(3);
   expect(messages().map(frame=>frame.body.msgtype)).toEqual(['markdown','image','image']);

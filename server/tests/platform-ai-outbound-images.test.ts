@@ -62,6 +62,26 @@ it('does not read links inside code examples or turn external URLs into download
  const path=join(root,'missing.png'),item=notice('```md\nexample\n![example]('+path+')\n```\n`[inline]('+path+')`\n[remote](https://example.com/private.png)\n~~~md\n![unclosed]('+path+')');
  expect(await prepareOutboundImages(item,member,root)).toBe(item.content);expect(parts()).toHaveLength(0);
 });
+it('replaces Mermaid with an ordered image part and keeps the original Markdown for the web view',async()=>{
+ const path=join(root,'shot.png');writeFileSync(path,png);
+ const diagram='flowchart LR\n A["字段详情"] --> B["业务概念"]';
+ const item=notice('开头\n\n```mermaid\n'+diagram+'\n```\n\n[截图]('+path+')\n\n结尾');
+ const text=await prepareOutboundImages(item,member,root);
+ expect(text).toBe('开头\n\n流程图见下方\n\n截图（图片见下方）\n\n结尾');
+ expect(parts()).toHaveLength(2);
+ expect(JSON.parse(parts()[0].reply_context).outbound_image).toMatchObject({diagram,filename:'diagram.png',after_id:'parent'});
+ expect(JSON.parse(parts()[1].reply_context).outbound_image).toMatchObject({path,after_id:parts()[0].id});
+ expect(getDb().prepare('SELECT content FROM platform_ai_outbox WHERE id=?').get(item.id)).toEqual({content:item.content});
+ expect(await prepareOutboundImages(item,member,root)).toBe(text);expect(parts()).toHaveLength(2);
+});
+it('leaves Mermaid examples inside other fences and applies one image limit to diagrams and screenshots',async()=>{
+ const example='````md\n```mermaid\nflowchart LR\n A-->B\n```\n````';
+ const item=notice(example+'\n\n'+Array.from({length:5},(_,index)=>'~~~Mermaid\nflowchart LR\n A-->'+index+'\n~~~~').join('\n\n'));
+ const text=await prepareOutboundImages(item,member,root);
+ expect(text).toContain(example);expect(text).not.toContain('A-->4');
+ expect(text).toContain('流程图未附上，请在平台查看');
+ expect(parts()).toHaveLength(4);
+});
 it('bounds image count and makes missing or unsupported screenshots explicit without losing the text',async()=>{
  for(let n=0;n<5;n++)writeFileSync(join(root,`s${n}.png`),png);
  const item=notice('任务完成。\n'+Array.from({length:5},(_,n)=>`[截图](${join(root,`s${n}.png`)})`).join('\n'));
