@@ -41,6 +41,7 @@ npm run test:regression:accounts
 | Claude Provider 保存新密钥 | 同一会话的下一次请求使用新密钥 | [claude-sdk-runtime.test.ts](../server/tests/claude-sdk-runtime.test.ts) |
 | Codex Engine 在工具前后返回思考文本 | 各步骤下方的单行思考预览独立更新。紧接最终回复的思考归入 Final，结论到达和刷新后归属一致 | [codex-reasoning.spec.ts](../e2e/codex-reasoning.spec.ts)、[conversation-reader.test.ts](../server/tests/conversation-reader.test.ts) |
 | 发送保护规则的条件分组在桌面或窄屏编辑 | 条件行保持对齐且不产生横向溢出，组内“且／或”连接器可点击切换并保存 | [SendGuardSettings.test.tsx](../dashboard/tests/SendGuardSettings.test.tsx)、[send-guard-settings.spec.ts](../e2e/send-guard-settings.spec.ts) |
+| 发送保护的换号选项已启用，规则命中 | 当前额度大于 0% 或未知时，原账号执行规则动作。确认剩余 0% 时尝试换号，无可用目标则保留草稿 | [conversation-send-guard.test.ts](../server/tests/conversation-send-guard.test.ts)、[ConversationSendGuard.test.tsx](../dashboard/tests/ConversationSendGuard.test.tsx) |
 
 ## 账号与 Provider
 

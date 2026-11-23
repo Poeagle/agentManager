@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.31.0');
+    expect(contract.version).toBe('3.31.1');
     for (const path of ['/api/sessions','/api/sessions/:id']) {
       expect(contract.endpoints.find(endpoint=>endpoint.method==='GET'&&endpoint.path===path)?.description).toContain('record_deletion');
     }
@@ -31,7 +31,7 @@ describe('Agent API contract', () => {
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request?.batch?.description).toContain('client_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request?.attachments?.description).toContain('outside project/Git');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input-check')).toMatchObject({
-      method:'POST',description:expect.stringContaining('selected Provider identities'),response:{required_action:expect.any(String),target_account:expect.any(String),account_remaining_percent:expect.any(String),cache_miss_estimate:expect.stringContaining('ordinary input rate'),token:expect.stringContaining('null')},
+      method:'POST',description:expect.stringContaining('selected Provider identities'),response:{required_action:expect.any(String),switch_account:expect.stringContaining('confirmed zero remaining quota'),target_account:expect.any(String),account_remaining_percent:expect.any(String),cache_miss_estimate:expect.stringContaining('ordinary input rate'),token:expect.stringContaining('null')},
     });
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/compact')?.request).toHaveProperty('expected_native_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request).toHaveProperty('guard_token');

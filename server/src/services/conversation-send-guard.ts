@@ -55,7 +55,7 @@ export async function inspectSendGuard(session:AgentSession,userId:string,payloa
  const requiredAction=rule?.action??null;
  const matched=requiredAction?true:evaluateSendGuard({operator:'or',conditions:reminders.map(rule=>rule.conditions)},values);
  const owned=session.created_by_user_id===userId,canTransform=isAdmin(userId)&&owned&&idle;
- const switchAccount=rule?.target==='available_account';
+ const switchAccount=rule?.target==='available_account'&&accountRemaining===0;
  let targetAccount:{id:string;label:string}|null=null;
  try{
   if(switchAccount&&canTransform&&adapter.descriptor.capabilities.newConversation&&adapter.lifecycle.prepareFreshInEnvironment)

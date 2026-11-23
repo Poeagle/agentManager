@@ -40,7 +40,7 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
      const missingAccount=check.switch_account&&!check.target_account;
      if(!canRun||!check.native_id||missingAccount){
       p.phase='unknown';
-      const reason=canRun&&missingAccount?'没有可确认有剩余额度的其他账号':'当前会话暂不能执行该操作';
+      const reason=canRun&&missingAccount?'当前账号额度已用尽，且没有可确认有剩余额度的其他账号':'当前会话暂不能执行该操作';
       p.error=`自动${SEND_GUARD_ACTION_LABELS[p.automatic]}未执行，${reason}，草稿已保留。`;
       publish(p);
       return;

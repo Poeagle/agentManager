@@ -57,7 +57,7 @@ test('shows complete rules per row and edits Provider scope in the centered edit
  await platform.getByRole('button',{name:'添加规则'}).click();
  const add=page.getByRole('dialog',{name:'添加规则'});
  await add.getByLabel('执行动作').selectOption('brief');
- await add.getByLabel('换到有剩余额度的账号').check();
+ await add.getByLabel('额度用尽时换到有剩余额度的账号').check();
  await add.getByLabel('触发条件 1',{exact:true}).selectOption('account_remaining_percent');
  await add.getByLabel('Provider 范围').selectOption('selected');
  await add.getByLabel('Codex · 备用').check();
@@ -65,7 +65,7 @@ test('shows complete rules per row and edits Provider scope in the centered edit
  await add.getByRole('button',{name:'应用到表格'}).click();
  await expect(table.getByRole('row')).toHaveCount(3);
  const action=table.getByRole('cell',{name:/简要压缩/});
- await expect(action).toContainText('切换账号');
+ await expect(action).toContainText('额度用尽时切换账号');
  await action.click();
  const edit=page.getByRole('dialog',{name:'编辑规则 1'});
  await expect(edit.getByLabel('触发条件 1数值')).toHaveValue('0');

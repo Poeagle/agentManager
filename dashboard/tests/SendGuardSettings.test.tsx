@@ -85,7 +85,7 @@ it('opens a configured rule and discards draft conditions and Provider scope cha
  mount(true,scopedValue);
  fireEvent.click(table().getByRole('button',{name:/编辑规则 1/}));
  const dialog=editor('编辑规则 1');
- expect(dialog.getByLabelText('换到有剩余额度的账号')).toBeChecked();
+ expect(dialog.getByLabelText('额度用尽时换到有剩余额度的账号')).toBeChecked();
  expect(await dialog.findByLabelText('Codex · Provider A')).toBeChecked();
  fireEvent.click(dialog.getByLabelText('Codex · Provider A'));
  fireEvent.change(dialog.getByLabelText('触发条件 2分组 2数值'),{target:{value:'23'}});

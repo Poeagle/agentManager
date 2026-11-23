@@ -153,10 +153,10 @@ it('does not transfer compact-and-send to a replaced native conversation',async(
  const view=render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));fireEvent.click(await screen.findByRole('button',{name:'压缩后发送'}));vi.mocked(api.agent.checkSend).mockResolvedValue({...check,native_id:'replacement'});view.rerender(<Harness active={false} state={{id:'compact',status:'completed',started_at:null,completed_at:new Date(Date.now()+1000).toISOString(),duration_ms:100,before:80,after:20}}/>);expect(await screen.findByRole('alert')).toHaveTextContent('原生会话已变化');expect(done).not.toHaveBeenCalled();expect(screen.getByLabelText('后台等待')).toHaveTextContent('false');
 });
 
-it.each(['new','brief'] as const)('applies the required %s action without prompting and sends to the confirmed identity',async action=>{
+it.each([['new',25],['brief',null]] as const)('applies the required %s action on the current account with remaining quota %s',async(action,remaining)=>{
  const history=vi.spyOn(api.agent,'conversation').mockResolvedValue({session_id:'s',native_id:'native',available:true,generation:'gen',reset:false,has_more:false,messages:[{id:'old',role:'user',text:'旧需求',timestamp:null}]} as any);
  vi.mocked(api.agent.checkSend)
-  .mockResolvedValueOnce({...check,required_action:action,token:null})
+  .mockResolvedValueOnce({...check,required_action:action,account_remaining_percent:remaining,token:null})
   .mockResolvedValueOnce({...check,required_action:null,native_id:'fresh',token:'after-automatic'});
  render(<Harness/>);
  fireEvent.click(screen.getByRole('button',{name:'发送'}));
@@ -195,9 +195,18 @@ it('preserves the draft and offers no override when the required action is unava
  await waitFor(()=>expect(done).toHaveBeenCalledExactlyOnceWith(null));
 });
 
+it('keeps the draft when quota is exhausted and no backup account is available',async()=>{
+ vi.mocked(api.agent.checkSend).mockResolvedValue({...check,required_action:'new',switch_account:true,account_remaining_percent:0,token:null});
+ render(<Harness/>);
+ fireEvent.click(screen.getByRole('button',{name:'发送'}));
+ expect(await screen.findByRole('alert')).toHaveTextContent('当前账号额度已用尽，且没有可确认有剩余额度的其他账号，草稿已保留');
+ expect(newSession).not.toHaveBeenCalled();
+ expect(done).not.toHaveBeenCalled();
+});
+
 it('stops a quota switch if the new account quota becomes unknown before sending',async()=>{
  vi.mocked(api.agent.checkSend)
-  .mockResolvedValueOnce({...check,required_action:'new',switch_account:true,target_account:{id:'account:backup',label:'备用账号'},token:null})
+  .mockResolvedValueOnce({...check,required_action:'new',switch_account:true,target_account:{id:'account:backup',label:'备用账号'},account_remaining_percent:0,token:null})
   .mockResolvedValueOnce({...check,native_id:'fresh',required_action:null,account_remaining_percent:null,token:'after'});
  render(<Harness/>);
  fireEvent.click(screen.getByRole('button',{name:'发送'}));

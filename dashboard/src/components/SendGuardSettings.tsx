@@ -132,7 +132,7 @@ export function SendGuardSettings({value,canEdit}:{value:string|undefined;canEdi
               <span className="line-clamp-2 [overflow-wrap:anywhere]">{summary}</span>
             </button></td>
             <td><span className="block whitespace-normal">{actionLabels[rule.action]}</span>
-              {rule.target==='available_account'&&<span className="block whitespace-normal" style={{color:'var(--text-secondary)'}}>切换账号</span>}
+              {rule.target==='available_account'&&<span className="block whitespace-normal" style={{color:'var(--text-secondary)'}}>额度用尽时切换账号</span>}
               {!automatic&&policy.reminder_enabled===false&&<span style={{color:'var(--text-secondary)'}}>已停用</span>}
             </td>
             {canEdit&&<td><div className="flex gap-1">
@@ -180,7 +180,7 @@ export function SendGuardSettings({value,canEdit}:{value:string|undefined;canEdi
               <input type="checkbox" checked={editor.rule.target==='available_account'} onChange={event=>{
                 setEditor({...editor,rule:{...editor.rule,target:event.target.checked?'available_account':undefined}});
               }}/>
-              换到有剩余额度的账号
+              额度用尽时换到有剩余额度的账号
             </label>}
           </div>
           {editor.rule.provider_ids&&<fieldset className="rounded border px-2 pb-2" style={{borderColor:'var(--border)'}}>

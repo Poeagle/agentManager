@@ -14,6 +14,7 @@ import {validGuardToken,guardToken,inspectSendGuard} from '../src/services/conve
 import * as stream from '../src/services/agents/codex/stream.js';
 import * as manager from '../src/services/session-manager.js';
 import {updateAgentManagement} from '../src/services/agents/management-store.js';
+import {initAccountStatus} from '../src/services/agents/codex/account-status.js';
 import {setRoleGrants,setUserRoles} from '../src/services/rbac.js';
 let app:ReturnType<typeof Fastify>,cleanup:()=>void,cookie:string,userId:string;
 beforeEach(async()=>{
@@ -161,6 +162,64 @@ it('returns an available account for a quota rule and keeps blocking when no can
  expect(stream.submitStreamingCodexInput).not.toHaveBeenCalled();
  remaining.mockReturnValue(null);
  expect((await preflight()).json()).toMatchObject({needs_confirmation:false,required_action:null,account_remaining_percent:null,token:expect.any(String)});
+});
+
+it('selects a funded account immediately after a failed turn on a depleted account',async()=>{
+ initAccountStatus();
+ vi.stubEnv('CODEX_HOME','/fixture/native-codex');
+ const db=getDb(),now=new Date(),reset=now.getTime()/1000+3600;
+ const source='account:depleted';
+ db.prepare("INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES(?,'codex','fixture','account',1,?,'[]')")
+  .run(source,JSON.stringify({host:'127.0.0.1',username:'depleted',codexHome:'/fixture/depleted',port:22,authMethod:'key'}));
+ db.prepare("UPDATE sessions SET agent_environment_id=? WHERE id='s'").run(source);
+ const sample=db.prepare('INSERT INTO codex_account_status(account,identity,data,checked_at) VALUES(?,?,?,?)');
+ sample.run(source,JSON.stringify(['depleted','/fixture/depleted']),JSON.stringify({
+  account:{email:'depleted@example.invalid'},windows:[{usedPercent:100,resetsAt:reset}],
+ }),now.toISOString());
+ sample.run('native',JSON.stringify(['native','/fixture/native-codex']),JSON.stringify({
+  account:{email:'funded@example.invalid'},windows:[{usedPercent:44,resetsAt:reset}],
+ }),now.toISOString());
+ vi.mocked(codexAdapter.runtime.read).mockResolvedValue({
+  source:'fixture',session_id:'native',state:'failed',last_turn_ended_at:now.toISOString(),
+  last_activity_at:now.toISOString(),observed_at:now.toISOString(),reason:'usage limit',
+ });
+ const policy={enabled:true,rules:[{
+  action:'brief',target:'available_account',
+  conditions:{operator:'and',conditions:[{type:'account_remaining_percent',value:0}]},
+ }]};
+ db.prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY,JSON.stringify(policy));
+ const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ expect(response.statusCode).toBe(200);
+ const check=response.json();
+ expect(check).toMatchObject({required_action:'brief',can_new:true,switch_account:true,account_remaining_percent:0,target_account:{id:'native'}});
+ expect(check.idle_minutes).toBeLessThan(1);
+});
+
+it.each([
+ ['codex','new',25],
+ ['codex','brief',null],
+ ['claude','new',null],
+] as const)('keeps the %s %s action on the current account when remaining quota is %s',async(agentId,action,remaining)=>{
+ const adapter=getAgent(agentId);
+ const alternate=vi.fn(()=>({id:'account:backup',label:'备用账号'}));
+ if(agentId==='claude'){
+  getDb().prepare("UPDATE sessions SET cli_type='claude',codex_session_id=NULL,claude_session_id='native' WHERE id='s'").run();
+  vi.spyOn(adapter.telemetry,'read').mockImplementation(codexAdapter.telemetry.read);
+  vi.spyOn(adapter.runtime,'read').mockImplementation(codexAdapter.runtime.read);
+ }else{
+  vi.spyOn(codexAdapter.quota,'accountRemaining').mockReturnValue(remaining);
+  vi.spyOn(codexAdapter.quota,'alternateAccount').mockImplementation(alternate);
+ }
+ const policy={enabled:true,rules:[{
+  action,target:'available_account',conditions:{operator:'or',conditions:[
+   {type:'context_percent',value:80},{type:'account_remaining_percent',value:0},
+  ]},
+ }]};
+ getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY,JSON.stringify(policy));
+ const check=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ expect(check.statusCode).toBe(200);
+ expect(check.json()).toMatchObject({required_action:action,can_new:true,switch_account:false,target_account:null,account_remaining_percent:remaining,token:null});
+ expect(alternate).not.toHaveBeenCalled();
 });
 
 it('rejects automatic compaction when the original conversation was replaced',async()=>{
