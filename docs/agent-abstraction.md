@@ -45,7 +45,7 @@ Codex 压缩记录确认了先前输出属于内部摘要时，历史与实时�
 
 ### 发送前上下文保护
 
-平台统一评估管理员配置的且／或规则，使用 `telemetry.read` 的最近原生用量和 `runtime.read` 的可选 `last_turn_ended_at`，不向模型注入提示、不以用户输入或终端重绘推断结束时间。适配器无法提供的指标保持未知。压缩及新开沿用原有生命周期能力及权限，等待操作完成后再提交原草稿；详见 [发送保护](conversation-send-guard.md)。
+平台统一评估管理员配置的且／或规则，使用 `telemetry.read` 的最近原生用量、`runtime.read` 的可选 `last_turn_ended_at`，以及可选的 `quota.accountRemaining` 账号额度。适配器无法提供的指标保持未知。首条明确命中的自动规则可要求原生压缩、新开或简要压缩。跨账号操作通过可选的 `quota.alternateAccount` 选择目标，并通过现有生命周期接口执行。操作完成后复核目标会话，再提交原草稿。[发送保护](conversation-send-guard.md)
 
 简要压缩复用 Agent 中立的分页历史和新会话能力，提取已展示的用户输入、助手结论和少量过程，与当前输入合并提交；不要求适配器伪造摘要或支持原生压缩。原生历史不可用时明确失败。整理内容及附件引用的上限、截取标记和恢复行为见 [发送保护](conversation-send-guard.md)。
 

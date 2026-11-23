@@ -2945,11 +2945,12 @@ export const reloadCodexSessionById=reloadAgentSessionById;
 export {CodexStreamingUpgradeError,ensureCodexConversationStreaming} from './agents/codex/upgrade.js';
 
 /** Explicit operations on this tab only; share the existing lifecycle lock. */
-export function compactSessionConversation(sessionId:string):Promise<SessionReloadResult> {
+export function compactSessionConversation(sessionId:string,expectedNativeId?:string):Promise<SessionReloadResult> {
   if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'});
   return runSessionLifecycle(sessionId,async()=>{
     const session=getSession(sessionId);
     if(!session||!nativeConversationId(session))return {ok:false,error:'请先连接原生会话'};
+    if(expectedNativeId&&nativeConversationId(session)!==expectedNativeId)return {ok:false,error:'原生会话已变化，请重新检查后再压缩',submission:'rejected'};
     const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:!session.created_by_user_id||isAdmin(session.created_by_user_id)});
     const recordCompact=beginSessionAction(context,'compact');
     try {await adapter.lifecycle.compact(context);recordCompact('accepted');return {ok:true};}

@@ -21,7 +21,7 @@ class Socket {
 }
 const source={id:'source',project_id:'p',status:'running',cli_type:'codex',codex_session_id:'source-native',claude_session_id:null} as Session;
 const other={...source,id:'other',codex_session_id:'other-native'};
-const check:SendGuardCheck={needs_confirmation:true,matched:true,enabled:true,context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,last_completed_at:null,observed_at:null,native_id:'source-native',checked_at:'',can_compact:true,can_new:false,token:'before'};
+const check:SendGuardCheck={needs_confirmation:true,required_action:null,switch_account:false,target_account:null,account_remaining_percent:null,matched:true,enabled:true,context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,last_completed_at:null,observed_at:null,native_id:'source-native',checked_at:'',can_compact:true,can_new:false,token:'before'};
 const clients:QueryClient[]=[];
 function Harness({onNew}:{onNew?:()=>Promise<string|void>}){
   const [selected,setSelected]=useState('source');
@@ -111,4 +111,42 @@ it('releases a closed source tab without sending its preserved draft',async()=>{
   const view=await mount();await start();const original=Socket.sessions.get('source')!;fireEvent.click(screen.getByRole('button',{name:'其他会话',exact:true}));view.unmount();expect(original.close).toHaveBeenCalledOnce();
   act(()=>original.onmessage?.({data:JSON.stringify({type:'snapshot',messages:[],busy:false,stage:'idle',compaction:{id:'late',status:'completed',started_at:null,completed_at:new Date(Date.now()+1000).toISOString(),duration_ms:1000}})}));
   expect(api.agent.sendInput).not.toHaveBeenCalled();expect(loadComposer(composerKey('local','source')).draft).toBe('source draft');
+});
+
+it('carries the draft and brief history to the selected account in the original tab exactly once',async()=>{
+ vi.mocked(api.agent.conversation).mockImplementation(async(id,query)=>({session_id:id,messages:query?.limit?[{id:'old',role:'user',text:'旧账号上的任务',timestamp:null}]:[],statistics:[],has_more:false,reset:false,available:true,generation:id,native_id:`${id}-native`,session_active:true,session_status:'running',runtime:{state:'idle'},interaction:null}) as unknown as ConversationPage);
+ const sourceCheck={...check,can_new:true,required_action:'brief' as const,switch_account:true,target_account:{id:'account:backup',label:'备用账号'},account_remaining_percent:0,token:null};
+ vi.mocked(api.agent.checkSend).mockResolvedValueOnce(sourceCheck).mockResolvedValueOnce({...check,needs_confirmation:false,native_id:'backup-native',account_remaining_percent:70,token:'backup-token'});
+ let release!:(id:string)=>void;
+ const onNew=vi.fn(()=>new Promise<string>(resolve=>{release=resolve;}));
+ await mount(onNew);
+ input('继续原来的工作');
+ fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+ await waitFor(()=>expect(onNew).toHaveBeenCalledExactlyOnceWith(undefined,'source-native','account:backup'));
+ expect(screen.queryByRole('dialog')).toBeNull();
+ expect(screen.getByText(/自动简要压缩 · 备用账号/)).toBeVisible();
+ expect(api.agent.sendInput).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'其他会话',exact:true}));
+ await waitFor(()=>expect(Socket.sessions.get('other')?.onmessage).toBeTruthy());
+ input('另一标签的草稿');
+ await act(async()=>release('backup-native'));
+ await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledOnce());
+ const [tab,text,,,,token]=vi.mocked(api.agent.sendInput).mock.calls[0];
+ expect([tab,parseBriefContext(text)?.input,token]).toEqual(['source','继续原来的工作','backup-token']);
+ expect(text).toContain('旧账号上的任务');
+ expect(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveTextContent('另一标签的草稿');
+});
+
+it('submits after a configured native compaction finishes and the rule clears',async()=>{
+ vi.mocked(api.agent.checkSend)
+  .mockResolvedValueOnce({...check,required_action:'compact',token:null})
+  .mockResolvedValueOnce({...check,needs_confirmation:false,context_percent:10,token:'after-automatic'});
+ await mount();
+ input('压缩后继续');
+ fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+ await waitFor(()=>expect(api.sessions.compactConversation).toHaveBeenCalledExactlyOnceWith('source','source-native'));
+ expect(screen.queryByRole('dialog')).toBeNull();
+ expect(api.agent.sendInput).not.toHaveBeenCalled();
+ complete(Socket.sessions.get('source')!);
+ await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledExactlyOnceWith('source','压缩后继续',expect.any(String),[],undefined,'after-automatic'));
 });

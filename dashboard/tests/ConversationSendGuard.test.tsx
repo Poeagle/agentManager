@@ -4,7 +4,7 @@ import {useConversationSendGuard} from '../src/lib/use-conversation-send-guard';
 import {api,ApiError,type SendGuardCheck} from '../src/lib/api';
 import type {CompactionPresentation} from '../src/lib/use-conversation-compaction';
 import {parseBriefContext} from '../src/lib/conversation-brief-context';
-const check:SendGuardCheck={needs_confirmation:true,matched:true,enabled:true,context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,last_completed_at:null,observed_at:null,native_id:'native',checked_at:'',can_compact:true,can_new:true,token:'original'};
+const check:SendGuardCheck={needs_confirmation:true,required_action:null,switch_account:false,target_account:null,account_remaining_percent:null,matched:true,enabled:true,context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,last_completed_at:null,observed_at:null,native_id:'native',checked_at:'',can_compact:true,can_new:true,token:'original'};
 const done=vi.fn(),start=vi.fn(),newSession=vi.fn();
 function Harness({state=null,active=true,sessionId='s'}:{state?:CompactionPresentation|null;active?:boolean;sessionId?:string}){const guard=useConversationSendGuard(sessionId,active,{state,start},newSession);return <><output aria-label="后台等待">{String(guard.background)}</output><button onClick={()=>void guard.confirm({input:'draft'}).then(result=>done(result?.token??null))}>发送</button>{guard.dialog}{guard.notice}</>;}
 beforeEach(()=>{vi.spyOn(api.agent,'checkSend').mockResolvedValue(check);start.mockResolvedValue(undefined);newSession.mockResolvedValue('fresh');});
@@ -151,4 +151,57 @@ it('continues confirmed compaction and recheck while the session tab is inactive
 });
 it('does not transfer compact-and-send to a replaced native conversation',async()=>{
  const view=render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));fireEvent.click(await screen.findByRole('button',{name:'压缩后发送'}));vi.mocked(api.agent.checkSend).mockResolvedValue({...check,native_id:'replacement'});view.rerender(<Harness active={false} state={{id:'compact',status:'completed',started_at:null,completed_at:new Date(Date.now()+1000).toISOString(),duration_ms:100,before:80,after:20}}/>);expect(await screen.findByRole('alert')).toHaveTextContent('原生会话已变化');expect(done).not.toHaveBeenCalled();expect(screen.getByLabelText('后台等待')).toHaveTextContent('false');
+});
+
+it.each(['new','brief'] as const)('applies the required %s action without prompting and sends to the confirmed identity',async action=>{
+ const history=vi.spyOn(api.agent,'conversation').mockResolvedValue({session_id:'s',native_id:'native',available:true,generation:'gen',reset:false,has_more:false,messages:[{id:'old',role:'user',text:'旧需求',timestamp:null}]} as any);
+ vi.mocked(api.agent.checkSend)
+  .mockResolvedValueOnce({...check,required_action:action,token:null})
+  .mockResolvedValueOnce({...check,required_action:null,native_id:'fresh',token:'after-automatic'});
+ render(<Harness/>);
+ fireEvent.click(screen.getByRole('button',{name:'发送'}));
+ await waitFor(()=>expect(done).toHaveBeenCalledExactlyOnceWith('after-automatic'));
+ expect(newSession).toHaveBeenCalledExactlyOnceWith('native');
+ expect(screen.queryByRole('dialog')).toBeNull();
+ expect(history).toHaveBeenCalledTimes(action==='brief'?1:0);
+ const sent=vi.mocked(api.agent.checkSend).mock.calls[1][1].input;
+ expect(action==='brief'?parseBriefContext(sent)?.input:sent).toBe('draft');
+});
+
+it('waits for automatic native compaction and does not loop when an automatic rule still matches',async()=>{
+ const automatic={...check,required_action:'compact' as const,token:null};
+ vi.mocked(api.agent.checkSend).mockResolvedValue(automatic);
+ const view=render(<Harness/>);
+ fireEvent.click(screen.getByRole('button',{name:'发送'}));
+ await waitFor(()=>expect(start).toHaveBeenCalledExactlyOnceWith('native'));
+ expect(screen.queryByRole('dialog')).toBeNull();
+ expect(done).not.toHaveBeenCalled();
+ view.rerender(<Harness state={{id:'compact',status:'completed',started_at:null,completed_at:new Date(Date.now()+1000).toISOString(),duration_ms:100,before:80,after:75}}/>);
+ expect(await screen.findByRole('alert')).toHaveTextContent('仍命中自动规则');
+ expect(done).not.toHaveBeenCalled();
+ expect(start).toHaveBeenCalledOnce();
+ expect(api.agent.checkSend).toHaveBeenCalledTimes(2);
+});
+
+it('preserves the draft and offers no override when the required action is unavailable',async()=>{
+ vi.mocked(api.agent.checkSend).mockResolvedValue({...check,required_action:'new',can_new:false,token:null});
+ render(<Harness/>);
+ fireEvent.click(screen.getByRole('button',{name:'发送'}));
+ expect(await screen.findByRole('alert')).toHaveTextContent('自动新开');
+ expect(screen.queryByRole('button',{name:'原样发送'})).toBeNull();
+ expect(done).not.toHaveBeenCalled();
+ expect(newSession).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'关闭提示'}));
+ await waitFor(()=>expect(done).toHaveBeenCalledExactlyOnceWith(null));
+});
+
+it('stops a quota switch if the new account quota becomes unknown before sending',async()=>{
+ vi.mocked(api.agent.checkSend)
+  .mockResolvedValueOnce({...check,required_action:'new',switch_account:true,target_account:{id:'account:backup',label:'备用账号'},token:null})
+  .mockResolvedValueOnce({...check,native_id:'fresh',required_action:null,account_remaining_percent:null,token:'after'});
+ render(<Harness/>);
+ fireEvent.click(screen.getByRole('button',{name:'发送'}));
+ expect(await screen.findByRole('alert')).toHaveTextContent('无法确认新账号有剩余额度');
+ expect(newSession).toHaveBeenCalledExactlyOnceWith('native',undefined,'account:backup');
+ expect(done).not.toHaveBeenCalled();
 });

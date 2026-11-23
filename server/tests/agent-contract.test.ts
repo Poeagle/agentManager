@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.27.0');
+    expect(contract.version).toBe('3.28.0');
     for (const path of ['/api/sessions','/api/sessions/:id']) {
       expect(contract.endpoints.find(endpoint=>endpoint.method==='GET'&&endpoint.path===path)?.description).toContain('record_deletion');
     }
@@ -29,7 +29,10 @@ describe('Agent API contract', () => {
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('after_message_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request?.batch?.description).toContain('client_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request?.attachments?.description).toContain('outside project/Git');
-    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input-check')?.method).toBe('POST');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input-check')).toMatchObject({
+      method:'POST',response:{required_action:expect.any(String),target_account:expect.any(String),account_remaining_percent:expect.any(String),token:expect.stringContaining('null')},
+    });
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/compact')?.request).toHaveProperty('expected_native_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request).toHaveProperty('guard_token');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request).toHaveProperty('expected_native_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/input')?.request).toHaveProperty('expected_environment_id');

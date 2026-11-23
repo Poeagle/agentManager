@@ -112,3 +112,60 @@ it('rechecks the expected native binding after waiting for another input submiss
  getDb().prepare("UPDATE sessions SET codex_session_id='replacement' WHERE id='s'").run();release(true);
  await first;const response=await second;expect(response.statusCode).toBe(409);expect(response.json().submission).toBe('rejected');expect(stream.submitStreamingCodexInput).toHaveBeenCalledOnce();
 });
+
+it.each(['codex','claude'] as const)('enforces ordered automatic rules for %s even with a token from before telemetry changed',async agentId=>{
+ const adapter=getAgent(agentId);
+ const submit=vi.spyOn(adapter.input,'submit');
+ if(agentId==='claude'){
+  getDb().prepare("UPDATE sessions SET cli_type='claude',codex_session_id=NULL,claude_session_id='native' WHERE id='s'").run();
+  vi.spyOn(adapter.telemetry,'read').mockImplementation(codexAdapter.telemetry.read);
+  vi.spyOn(adapter.runtime,'read').mockImplementation(codexAdapter.runtime.read);
+ }
+ const group=(value:number)=>({operator:'and',conditions:[{type:'context_percent',value}]});
+ const policy={enabled:true,conditions:group(20),automatic_rules:[
+  {action:'brief',conditions:group(90)},
+  {action:'new',conditions:group(80)},
+ ]};
+ const settings=await app.inject({method:'PUT',url:'/api/settings',headers:{cookie},payload:{settings:{[SEND_GUARD_KEY]:JSON.stringify(policy)}}});
+ expect(settings.statusCode).toBe(200);
+ const preflight=()=>app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ const telemetry=(tokens:number)=>({usage:{last:{total_tokens:tokens},total:{},window:1000},observed_at:null});
+ vi.mocked(adapter.telemetry.read).mockResolvedValue(telemetry(500));
+ const before=(await preflight()).json();
+ expect(before).toMatchObject({needs_confirmation:true,required_action:null,token:expect.any(String)});
+ vi.mocked(adapter.telemetry.read).mockResolvedValue(telemetry(800));
+ expect((await preflight()).json()).toMatchObject({needs_confirmation:true,required_action:'new',token:null});
+ vi.mocked(adapter.telemetry.read).mockResolvedValue(telemetry(950));
+ for(const token of [undefined,before.token]){
+  const denied=await app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{...input,guard_token:token}});
+  expect(denied.statusCode).toBe(409);
+  expect(denied.json()).toMatchObject({submission:'rejected',send_guard:{required_action:'brief',token:null}});
+ }
+ expect(submit).not.toHaveBeenCalled();
+});
+
+it('returns an available account for a quota rule and keeps blocking when no candidate exists',async()=>{
+ const remaining=vi.spyOn(codexAdapter.quota,'accountRemaining').mockReturnValue(0);
+ const alternate=vi.spyOn(codexAdapter.quota,'alternateAccount').mockReturnValue({id:'account:backup',label:'备用账号'});
+ const policy={...DEFAULT_SEND_GUARD,reminder_enabled:false,automatic_rules:[{
+  action:'brief',target:'available_account',conditions:{operator:'and',conditions:[{type:'account_remaining_percent',value:0}]},
+ }]};
+ getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY,JSON.stringify(policy));
+ const preflight=()=>app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
+ expect((await preflight()).json()).toMatchObject({required_action:'brief',switch_account:true,account_remaining_percent:0,target_account:{id:'account:backup',label:'备用账号'},token:null});
+ alternate.mockReturnValue(null);
+ expect((await preflight()).json()).toMatchObject({required_action:'brief',switch_account:true,target_account:null,token:null});
+ const denied=await app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:input});
+ expect(denied.statusCode).toBe(409);
+ expect(stream.submitStreamingCodexInput).not.toHaveBeenCalled();
+ remaining.mockReturnValue(null);
+ expect((await preflight()).json()).toMatchObject({needs_confirmation:false,required_action:null,account_remaining_percent:null,token:expect.any(String)});
+});
+
+it('rejects automatic compaction when the original conversation was replaced',async()=>{
+ const compact=vi.spyOn(codexAdapter.lifecycle,'compact');
+ const result=await app.inject({method:'POST',url:'/api/sessions/s/compact',headers:{cookie},payload:{expected_native_id:'old'}});
+ expect(result.statusCode).toBe(409);
+ expect(result.json()).toMatchObject({submission:'rejected'});
+ expect(compact).not.toHaveBeenCalled();
+});

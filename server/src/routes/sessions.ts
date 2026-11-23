@@ -356,7 +356,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const environment=req.body?.environment_id;
     if(environment!==undefined&&(typeof environment!=='string'||!environment||environment.length>128))return reply.code(400).send({error:'Invalid environment_id'});
     if(environment!==undefined&&(action!=='new-conversation'||typeof expected!=='string'))return reply.code(400).send({error:'Target environment requires expected_native_id'});
-    const result=await (action==='compact'?sessionManager.compactSessionConversation(session.id):sessionManager.newSessionConversation(session.id,req.body?.preference,undefined,expected as string|undefined,environment as string|undefined));
+    const result=await (action==='compact'?sessionManager.compactSessionConversation(session.id,expected):sessionManager.newSessionConversation(session.id,req.body?.preference,undefined,expected as string|undefined,environment as string|undefined));
     if(!result.ok)return reply.code(result.submission==='unknown'?503:409).send({error:result.error,...result.submission?{submission:result.submission}:{}});
     return {...result,session:sessionManager.getSession(session.id)};
   });

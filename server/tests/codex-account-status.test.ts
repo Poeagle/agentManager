@@ -52,3 +52,34 @@ it('exposes observed usage on the matching project and model after both collecto
  const accountUsage=cachedAccountUsage('native');expect(accountUsage.rows[0].models[0].actual_quota).toBeCloseTo(2);expect(accountUsage.quota_hours).toEqual([{hour:'2026-01-01T00:00:00+00:00',quota:2}]);
  db.prepare('UPDATE codex_usage_status SET partial=1,error=? WHERE account=?').run('部分记录不可读取或缺少统计字段','native');const partial=cachedAccountUsage('native');expect(partial.partial).toBe(true);expect(partial.rows[0].models[0].actual_quota).toBeCloseTo(2);
 });
+
+it('uses the most constrained live window and chooses an enabled, distinct account without fetching quota',async()=>{
+ const {codexAccountRemaining,alternateCodexAccount}=await import('../src/services/agents/codex/account-status.js');
+ const {createUser}=await import('../src/auth.js');
+ const owner=createUser({username:'quota-test',password:'test-password',role:'admin'});
+ const context={session:{agent_environment_id:null},actorUserId:owner.id} as import('../src/services/agents/types.js').AgentContext;
+ vi.useFakeTimers();
+ vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+ vi.stubEnv('CODEX_HOME',fixture.dir);
+ try {
+  const db=getDb(),future=Date.now()/1000+3600;
+  const row=db.prepare('INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES(?,?,?, ?,?,?,?)');
+  const sample=db.prepare('INSERT INTO codex_account_status(account,identity,data,checked_at,error) VALUES(?,?,?,?,NULL)');
+  sample.run('native',JSON.stringify(['native',fixture.dir]),JSON.stringify({account:{email:'source@example.invalid'},windows:[{usedPercent:100,resetsAt:future},{usedPercent:25,resetsAt:future}]}),new Date().toISOString());
+  function add(id:string,email:string,used:number,reset:number,enabled=true,age=0){
+   const home=`/home/${id}/.codex`;
+   row.run(`account:${id}`,'codex',id,'account',Number(enabled),JSON.stringify({host:'127.0.0.1',username:id,codexHome:home,port:22,authMethod:'key'}),'[]');
+   sample.run(`account:${id}`,JSON.stringify([id,home]),JSON.stringify({account:{email},windows:[{usedPercent:used,resetsAt:reset}]}),new Date(Date.now()-age).toISOString());
+  }
+  add('same','SOURCE@example.invalid',0,future);
+  add('expired','expired@example.invalid',0,Date.now()/1000-1);
+  add('stale','stale@example.invalid',0,future,true,601000);
+  add('disabled','disabled@example.invalid',0,future,false);
+  add('full','full@example.invalid',100,future);
+  add('lower','lower@example.invalid',55,future);
+  add('backup','backup@example.invalid',25,future);
+  expect(codexAccountRemaining(context)).toBe(0);
+  expect(alternateCodexAccount(context)).toEqual({id:'account:backup',label:'backup'});
+  expect(read).not.toHaveBeenCalled();
+ } finally {vi.unstubAllEnvs();}
+});

@@ -634,6 +634,10 @@ export interface AgentStatisticsPort {
 }
 export interface AgentProgressStatistics {turn_id:string;revision?:number;tokens:Record<string,number|null>|null;requests:number;tool_calls:number;tool_rounds:number;complete:boolean;cost?:AgentCostEstimate|null;segment?:AgentProgressSegment;step?:AgentStatisticsInterval&{segment_id:string;after_message_id:string|null;after_sequence:number|null;start_at:string|null}}
 export interface AgentQuotaPort {
+  /** Cached, current remaining capacity of the session's account across its applicable windows. */
+  accountRemaining?(context: AgentContext): number | null;
+  /** Authorized alternative with confirmed capacity for a fresh conversation. */
+  alternateAccount?(context: AgentContext): {id:string;label:string} | null;
   shutdown?(): void | Promise<void>;
   read(force?: boolean): Promise<{
     usedPercent: number;

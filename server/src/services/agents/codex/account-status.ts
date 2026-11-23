@@ -1,19 +1,21 @@
 import {getDb} from '../../../db/index.js';
-import {getCodexEnvironment,engineForEnvironment} from './environments.js';
+import {allCodexEnvironments,getCodexEnvironment,engineForEnvironment,sessionEnvironmentId,type CodexEnvironment} from './environments.js';
 import {localHome} from './account-files.js';
 import {runInCodexEngine} from './engine-context.js';
 import {withCodexConnection} from './stream.js';
 import {codexWeeklyQuotaFromResponse} from './quota.js';
+import {canControlEnvironment,canUseEnvironment} from '../environment-access.js';
+import type {AgentContext} from '../types.js';
 
 const pending=new Map<string,Promise<void>>();
-const identity=(id:string)=>{const e=getCodexEnvironment(id);return JSON.stringify(e.kind==='account'?[e.connection?.username,e.connection?.codexHome]:['native',localHome(e)]);};
+const identity=(e:CodexEnvironment)=>JSON.stringify(e.kind==='account'?[e.connection?.username,e.connection?.codexHome]:['native',localHome(e)]);
 export function initAccountStatus(){getDb().exec(`CREATE TABLE IF NOT EXISTS codex_account_status(account TEXT PRIMARY KEY,identity TEXT NOT NULL,data TEXT,checked_at TEXT,error TEXT); CREATE TABLE IF NOT EXISTS codex_quota_samples(account TEXT NOT NULL,identity TEXT NOT NULL,email TEXT NOT NULL,checked_at TEXT NOT NULL,reset_at REAL NOT NULL,used REAL NOT NULL,PRIMARY KEY(account,checked_at)); CREATE INDEX IF NOT EXISTS codex_quota_samples_account ON codex_quota_samples(account,identity,checked_at);`);}
 /** Only the scheduler contacts account APIs. Both HTTP views read this snapshot. */
 export async function collectAccountStatus(id:string,collectionStartedAt=new Date().toISOString()):Promise<void>{
  if(pending.has(id))return pending.get(id)!;
  const task=(async()=>{
   const e=getCodexEnvironment(id);if(!e.enabled||e.kind==='provider')return;
-  const source=identity(id),db=getDb();
+  const source=identity(e),db=getDb();
   try{
    const data=await runInCodexEngine(await engineForEnvironment(id),()=>withCodexConnection(async request=>{
     const auth=await request('account/read',{});
@@ -23,7 +25,8 @@ export async function collectAccountStatus(id:string,collectionStartedAt=new Dat
     const finite=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)?v:null;
     return {account:{email:typeof auth.account.email==='string'?auth.account.email:null,plan:typeof auth.account.planType==='string'?auth.account.planType:typeof snapshot?.planType==='string'?snapshot.planType:null},quota,windows:[snapshot?.primary,snapshot?.secondary].filter(w=>w&&Number.isFinite(w.usedPercent)).map(w=>({usedPercent:w.usedPercent,windowDurationMins:finite(w.windowDurationMins),resetsAt:finite(w.resetsAt)})),resets:raw&&Number.isInteger(raw.availableCount)&&raw.availableCount>=0?{availableCount:raw.availableCount,credits:Array.isArray(raw.credits)?raw.credits.slice(0,100).map((c:any)=>({expiresAt:finite(c.expiresAt),grantedAt:finite(c.grantedAt),status:typeof c.status==='string'?c.status:null})):null}:null};
    }));
-   if(identity(id)!==source||!getCodexEnvironment(id).enabled)return;
+   const latest=getCodexEnvironment(id);
+   if(!latest.enabled||identity(latest)!==source)return;
    const checkedAt=new Date().toISOString();
    if(data.quota)data.quota.checkedAt=checkedAt;
    db.transaction(()=>{
@@ -38,15 +41,51 @@ export async function collectAccountStatus(id:string,collectionStartedAt=new Dat
   }
  })();pending.set(id,task);try{await task;}finally{pending.delete(id);}
 }
-export function cachedAccountStatus(id:string){
- const row=getDb().prepare('SELECT data,checked_at,error FROM codex_account_status WHERE account=? AND identity=?').get(id,identity(id)) as {data:string|null;checked_at:string|null;error:string|null}|undefined;
+export function cachedAccountStatus(id:string,environment=getCodexEnvironment(id)){
+ const row=getDb().prepare('SELECT data,checked_at,error FROM codex_account_status WHERE account=? AND identity=?').get(id,identity(environment)) as {data:string|null;checked_at:string|null;error:string|null}|undefined;
  const data=row?.data?JSON.parse(row.data):{account:{email:null,plan:null},windows:[],resets:null,quota:null};
  const stale=!!row?.error||!!row?.checked_at&&Date.now()-Date.parse(row.checked_at)>600000;
  return {...data,quota:data.quota?{...data.quota,...stale?{stale:true}:{}}:null,checked_at:row?.checked_at??null,error:row?.error??null,stale,pending:!row?.data};
 }
+function quotaCapacity(environment: CodexEnvironment, now: number) {
+ if(!environment.enabled||environment.kind==='provider')return null;
+ const status=cachedAccountStatus(environment.id,environment);
+ if(status.stale||!status.checked_at||!status.windows.length)return null;
+ const windows=status.windows as Array<{usedPercent:number;resetsAt:number|null}>;
+ const current=windows.filter(window=>window.resetsAt===null?window.usedPercent<100:window.resetsAt*1000>now);
+ const remaining=Math.min(...current.map(window=>Math.max(0,100-window.usedPercent)));
+ // An exhausted window proves exhaustion. Positive capacity requires every
+ // reported window to have a current sample.
+ if(remaining!==0&&current.length!==windows.length)return null;
+ return {remaining,email:typeof status.account?.email==='string'?status.account.email.trim().toLowerCase():null};
+}
+
+export function codexAccountRemaining(context: AgentContext): number | null {
+ return quotaCapacity(getCodexEnvironment(sessionEnvironmentId(context.session)),Date.now())?.remaining??null;
+}
+
+export function alternateCodexAccount(context: AgentContext) {
+ const userId=context.actorUserId;
+ if(!userId)return null;
+ const currentId=sessionEnvironmentId(context.session),now=Date.now();
+ const environments=allCodexEnvironments();
+ const current=environments.find(environment=>environment.id===currentId);
+ const currentEmail=current?cachedAccountStatus(currentId,current).account?.email?.trim().toLowerCase():null;
+ const candidates=environments.flatMap(environment=>{
+  if(environment.id===currentId||!environment.enabled||environment.kind==='provider'
+   ||!canUseEnvironment('codex',environment.id,userId)||!canControlEnvironment(environment.id,userId))return [];
+  const capacity=quotaCapacity(environment,now);
+  if(!capacity?.email||capacity.email===currentEmail||capacity.remaining<=0)return [];
+  return [{id:environment.id,label:environment.name,remaining:capacity.remaining}];
+ });
+ candidates.sort((a,b)=>b.remaining-a.remaining||a.id.localeCompare(b.id));
+ const best=candidates[0];
+ return best?{id:best.id,label:best.label}:null;
+}
+
 export function quotaSamples(id:string){
  const db=getDb();
  if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='codex_quota_samples'").get())return [];
- return db.prepare('SELECT checked_at,reset_at,used,email FROM codex_quota_samples WHERE account=? AND identity=? ORDER BY checked_at').all(id,identity(id)) as Array<{checked_at:string;reset_at:number;used:number;email:string}>;
+ return db.prepare('SELECT checked_at,reset_at,used,email FROM codex_quota_samples WHERE account=? AND identity=? ORDER BY checked_at').all(id,identity(getCodexEnvironment(id))) as Array<{checked_at:string;reset_at:number;used:number;email:string}>;
 }
 export async function stopAccountStatus(){await Promise.allSettled([...pending.values()]);}

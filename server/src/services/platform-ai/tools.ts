@@ -74,7 +74,7 @@ export function platformCatalog(app?: FastifyInstance) {
 /** Reuse real route authorization. The one-call cookie never reaches an LLM or network. */
 export class PlatformApiError extends Error {
   constructor(message: string, public statusCode: number, public submission?: string,
-    public sendGuard?: {needs_confirmation: boolean; can_new: boolean; native_id: string | null}) { super(message); }
+    public sendGuard?: {needs_confirmation: boolean; can_new: boolean; native_id: string | null; required_action?: string}) { super(message); }
 }
 
 export async function platformApi(app: FastifyInstance, userId: string, method: string, url: string, body?: Record<string, unknown>): Promise<any> {
@@ -94,7 +94,7 @@ export async function platformApi(app: FastifyInstance, userId: string, method: 
         const guard = body.send_guard;
         if (guard && typeof guard.needs_confirmation === 'boolean' && typeof guard.can_new === 'boolean'
           && (typeof guard.native_id === 'string' || guard.native_id === null))
-          sendGuard = {needs_confirmation: guard.needs_confirmation, can_new: guard.can_new, native_id: guard.native_id};
+          sendGuard = {needs_confirmation: guard.needs_confirmation, can_new: guard.can_new, native_id: guard.native_id, required_action: typeof guard.required_action === 'string' ? guard.required_action : undefined};
       } catch { /* avoid logging raw HTML/bodies */ }
       throw new PlatformApiError(`平台接口失败 (${response.statusCode})${detail ? ': ' + String(detail).slice(0, 300) : ''}`, response.statusCode, submission, sendGuard);
     }

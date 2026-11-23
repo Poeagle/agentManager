@@ -11,10 +11,10 @@ export function useConversationCompaction(sessionId:string,nativeId:string|null|
  const dismissed=useRef(new Set<string>());
  const key=['conversation-controls',sessionId];
  useEffect(()=>{setState(null);current.current=null;dismissed.current.clear();},[sessionId,nativeId]);
- const start=useCallback(async()=>{
+ const start=useCallback(async(expectedNativeId?:string)=>{
   if(current.current&&['pending','running'].includes(current.current.status))return;
   const now=new Date(estimatedServerNow()).toISOString();const pending:CompactionPresentation={id:`pending:${now}`,status:'pending',started_at:now,completed_at:null,duration_ms:null,before:percent(client.getQueryData<ConversationControlsData>(key)?.usage??null),after:null};current.current=pending;setState(pending);
-  try{await api.sessions.compactConversation(sessionId);}catch(error){
+  try{await (expectedNativeId?api.sessions.compactConversation(sessionId,expectedNativeId):api.sessions.compactConversation(sessionId));}catch(error){
    // A native running/completed receipt outranks a late HTTP failure.
    if(current.current?.id!==pending.id)return;
    const message=error instanceof Error?error.message:'压缩请求未启动';

@@ -17,6 +17,7 @@ import {saveProjectNotification} from '../src/services/platform-ai/project-notif
 let cleanup:()=>void,app:ReturnType<typeof Fastify>,worker:PlatformAiWorker,user:string,other:string,channel:ReturnType<typeof saveChannel>,conversation:string;
 let inputs:Array<{id:string;body:any}>,delivered:string[],currentRef:Record<string,string>,promptType:string|null,inputStatus:number,inputReceipt:'submitted'|'queued';
 let finalText:string|null,beforeDisplay:(()=>void)|null;
+let requiredAction:string|null;
 let guardRejection:boolean,canNew:boolean,historyAvailable:boolean,newCalls:number,historyCalls:number,newStatus:number,freshInputStatus:number;
 let beforeHistory:(()=>void)|null,beforeFreshCheck:(()=>void)|null,historyNative:string,checkNative:string,freshWarning:string|undefined,freshNeedsConfirmation:boolean;
 beforeEach(async()=>{
@@ -30,7 +31,7 @@ beforeEach(async()=>{
  conversation=receiveMessage({userId:user,channelId:channel.id,externalUserId:'wx-owner',chatId:'wx-owner',messageId:'initial',content:'hello'}).conversation_id;
  getDb().prepare("UPDATE platform_ai_messages SET status='done'").run();
  inputs=[];delivered=[];currentRef={a:'turn-a',b:'turn-b'};promptType=null;inputStatus=202;inputReceipt='submitted';finalText=null;beforeDisplay=null;
- guardRejection=false;canNew=true;historyAvailable=true;newCalls=0;historyCalls=0;newStatus=200;freshInputStatus=202;
+ requiredAction=null;guardRejection=false;canNew=true;historyAvailable=true;newCalls=0;historyCalls=0;newStatus=200;freshInputStatus=202;
  beforeHistory=null;beforeFreshCheck=null;historyNative='native-a';checkNative='fresh-a';freshWarning=undefined;freshNeedsConfirmation=false;
  app=Fastify();app.addHook('onRequest',authHook);
  app.get<{Params:{id:string}}>('/api/sessions/:id',req=>({session:getDb().prepare('SELECT * FROM sessions WHERE id=?').get(req.params.id)}));
@@ -39,7 +40,7 @@ beforeEach(async()=>{
  app.get('/api/sessions/:id/completed-turn',()=>({turns:[]}));
  app.post<{Params:{id:string};Body:any}>('/api/sessions/:id/input',(req,reply)=>{
   inputs.push({id:req.params.id,body:req.body});
-  if(guardRejection&&req.body.expected_native_id==='native-a')return reply.code(409).send({error:'发送保护',submission:'rejected',send_guard:{needs_confirmation:true,can_new:canNew,native_id:'native-a'}});
+  if(guardRejection&&req.body.expected_native_id==='native-a')return reply.code(409).send({error:'发送保护',submission:'rejected',send_guard:{needs_confirmation:true,can_new:canNew,native_id:'native-a',required_action:requiredAction}});
   const status=req.body.expected_native_id==='fresh-a'?freshInputStatus:inputStatus;
   return reply.code(status).send(status===202?{status:inputReceipt}:{error:'fixture failure'});
  });
@@ -193,6 +194,12 @@ describe('quoted notification quick replies',()=>{
   const next=delivered.at(-1)!;expect(next).toContain('新的答复。');
   finalText=null;reply(next,'再继续','next-reply');await process();
   expect(inputs).toHaveLength(3);expect(inputs[2].body.expected_native_id).toBe('fresh-a');
+ });
+ it('preserves a mandatory action on a quoted reply instead of replacing it with the reminder action',async()=>{
+  const quoted=await notice();guardRejection=true;requiredAction='compact';
+  reply(quoted);await process();
+  expect(inputs).toHaveLength(1);expect(newCalls).toBe(0);expect(historyCalls).toBe(0);
+  expect(response()).toContain('已命中发送保护自动规则');
  });
  it('does not treat an unrelated 409 as a send guard',async()=>{
   const quoted=await notice();inputStatus=409;reply(quoted);await process();

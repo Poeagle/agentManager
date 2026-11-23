@@ -21,6 +21,7 @@ import { capabilities, requireNative, type AgentAdapter } from '../types.js';
 import {ensureCodexTerminalBridge} from './terminal-bridge.js';
 import {codexManagement} from './management.js';
 import {codexSessionFacts} from './session-facts.js';
+import {alternateCodexAccount,codexAccountRemaining} from './account-status.js';
 import {applyManagedCommandDefaults} from '../management-store.js';
 export const codexAdapter: AgentAdapter = {
     descriptor: { launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'stopTurn', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) },
@@ -64,7 +65,11 @@ export const codexAdapter: AgentAdapter = {
             return (await import('./statistics.js')).readConversationProgress(path,!apiMode,codexApiPricing(environment,authMode)??undefined);
         },
     },
-    quota: { read: async (force) => (await import('./quota.js')).readCodexWeeklyQuota({ force }) },
+    quota: {
+        read: async (force) => (await import('./quota.js')).readCodexWeeklyQuota({ force }),
+        accountRemaining: codexAccountRemaining,
+        alternateAccount: alternateCodexAccount,
+    },
     retry: { retryable:retryableConversationError,inspect: async (id) => inCodexThread(id,async()=>(await import('./retry.js')).inspectCodexRetry(id)), start: async (id, failed, client) => inCodexThread(id,async()=>(await import('./retry.js')).startRetryTurn(id, failed, client)) },
     input: {
         supportsClientIdentity: true,

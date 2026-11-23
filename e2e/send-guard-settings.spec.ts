@@ -35,4 +35,18 @@ test('shows the default send guard branches and their operators on desktop and m
  await page.setViewportSize({width:390,height:844});
  await expect(rule.getByLabel('发送提醒条件 5分组 2数值',{exact:true})).toHaveValue('20');
  expect(await rule.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+ const automatic=platform.getByRole('region',{name:'发送保护自动规则'});
+ await automatic.getByRole('button',{name:'添加自动规则'}).click();
+ await automatic.getByLabel('自动规则 1 的操作').selectOption('brief');
+ await automatic.getByLabel('换到有剩余额度的账号').check();
+ await automatic.getByLabel('自动规则 1 条件 1',{exact:true}).selectOption('account_remaining_percent');
+ await expect(automatic.getByLabel('自动规则 1 条件 1数值')).toHaveValue('0');
+ expect(await automatic.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+ await platform.getByRole('button',{name:'保存发送保护规则'}).click();
+ await expect(platform.getByText('发送保护规则已保存')).toBeVisible();
+ const saved=await (await page.request.get('/api/settings')).json();
+ expect(JSON.parse(saved.settings.conversation_send_guard).automatic_rules).toEqual([
+  {action:'brief',target:'available_account',conditions:{operator:'and',conditions:[{type:'account_remaining_percent',value:0}]}},
+ ]);
+
 });

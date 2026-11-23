@@ -167,6 +167,7 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
       // operation. Only a confirmed guard rejection proves input was not sent.
       if(!(error instanceof PlatformApiError&&error.statusCode===409&&error.submission==='rejected'
         &&error.sendGuard?.needs_confirmation&&error.sendGuard.native_id===route.native_id))throw error;
+      if(error.sendGuard.required_action)throw new PlatformApiError('已命中发送保护自动规则，请从对应的网页会话发送',409,'rejected');
       if(!error.sendGuard.can_new)throw new PlatformApiError('已触发发送保护，但当前会话尚不能新开，请在平台处理后重试',409,'rejected');
       const prepared=await prepareBriefSend(session.id,route.native_id,{input},async query=>{
         if(signal?.aborted)throw Error('引用回复处理已暂停');

@@ -1,4 +1,4 @@
-import {inspectSendGuard,validGuardToken,sendGuardPolicy} from '../services/conversation-send-guard.js';
+import {inspectSendGuard,checkSendGuardSubmission} from '../services/conversation-send-guard.js';
 import {validateBatch,rememberBatch} from '../services/conversation-batches.js';
 import {conversationQuestionReply} from '../services/conversation-question-reply.js';
 import {closeAccountTransports} from '../services/agents/codex/account-transport.js';
@@ -112,7 +112,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.27.0',
+    version:'3.28.0',
     updatedAt:'2026-11-23',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -385,7 +385,7 @@ export function getAgentApiContract() {
           client_id: {type:'string',required:false,description:'Client correlation ID for matching the native user-message echo. IDs already reserved by platform submissions are rejected with 409.'},
           expected_environment_id:{type:'string',required:false,description:'Expected Agent environment ID; defaults on existing sessions are native. A changed environment is rejected with 409 submission=rejected.'},
           expected_native_id:{type:'string',required:false,description:'Opaque native conversation ID expected by a notification reply. A changed or missing binding is rejected before input submission with 409 submission=rejected.'},
-          guard_token:{type:'string',required:false,description:'Short-lived input-check confirmation token, bound to user, native session, exact input/attachments/batch and current policy. A required/mismatched confirmation returns 409 with submission=rejected and send_guard; no input is dispatched.'},
+          guard_token:{type:'string',required:false,description:'Short-lived input-check confirmation token, bound to user, native session, exact input/attachments/batch and current policy. Valid tokens acknowledge reminders only. An automatic rule or a missing/mismatched confirmation returns 409 with submission=rejected and send_guard before dispatch.'},
           batch: {type:'array',required:false,description:'Optional 1–100 {length,attachments} segments of the input (UTF-16 lengths, attachment counts), separated by two newlines. Requires source=conversation and client_id. Persisted as message.batch parts for history and streaming cards.'},
           attachments: {type:'array',required:false,description:'Up to 8 {kind: image|file, name, path} references returned by this session’s paste-image/paste-file endpoints. New uploads are stored outside project/Git directories; paths are opaque and project-authorized. Existing project-local attachments remain readable. Images total at most 10 MiB, each file and all attachments at most 500 MiB. Session file uploads above 100 MiB use application/octet-stream with the filename query parameter.'},
         },
@@ -428,7 +428,10 @@ export function getAgentApiContract() {
         path: '/api/context',
         description: 'Return a concise, low-token summary of the logged-in user\'s active sessions.',
       },
-      {category:'Session control',method:'POST',path:'/api/sessions/:id/input-check',description:'Read-only sending-risk preflight for an accessible session. Accepts input, attachments and batch; returns needs_confirmation, nullable context/idle metrics, can_compact/can_new and a confirmation token. Does not start a turn. Admin-configured AND/OR rules are also checked by conversation input.'},
+      {category:'Session control',method:'POST',path:'/api/sessions/:id/input-check',description:'Read-only sending-risk preflight for an accessible session. Accepts input, attachments and batch. The first matching automatic rule takes precedence over reminders. Recheck the target conversation after the operation before submitting input.',
+        response:{needs_confirmation:'Whether a reminder or an automatic rule matched',required_action:'new | brief | compact | null. A non-null action requires resolving the matched rule before input can be sent.',token:'Short-lived confirmation token, or null when an automatic rule matches',switch_account:'Whether the required action needs another account',target_account:'Authorized alternative {id, label} with current available quota, or null',account_remaining_percent:'Remaining capacity in the most constrained current subscription window, or null',can_compact:'Whether native compaction is currently available',can_new:'Whether a fresh conversation can currently be created',context_percent:'Latest observed context occupancy or null',idle_minutes:'Minutes since the last completed turn or null'}},
+      {category:'Session control',method:'POST',path:'/api/sessions/:id/compact',description:'Request native compaction in the same conversation. Requires an administrator who owns the session and has agent write permission. Await native completion before sending new input.',
+        request:{expected_native_id:{type:'string',required:false,description:'Native conversation identity from input-check. If it changed, the compaction request is rejected.'}}},
       {category:'Session control',method:'POST',path:'/api/sessions/:id/new-conversation',description:'Create a fresh native conversation in the same tab and preserve the old history. The session owner must have agent write permission and be an administrator. Optional environment_id selects an authorized target environment and requires expected_native_id to match an idle source conversation. Unsupported targets are rejected.',
         request:{preference:{type:'object',required:false,description:'Optional model, effort, provider and service_tier preference; the current model is used when omitted.'},expected_native_id:{type:'string',required:false,description:'Expected source native conversation identity; required when environment_id is supplied.'},environment_id:{type:'string',required:false,description:'Authorized target Agent environment; omitted uses the current environment.'}},
         response:{session:'Fresh platform session with a new native identity',history_id:'Preserved previous session ID'}},
@@ -905,12 +908,12 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     try{batch=validateBatch(req.body?.batch,input,attachments);if(batch&&(typeof clientId!=='string'||req.body?.source!=='conversation'))throw Error('Batch requires conversation source and client_id');}
     catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid batch',submission:'rejected'});}
     const target=getSession(id);
-    if(target&&req.body?.source==='conversation'&&!conversationQuestionReply(input)&&(sendGuardPolicy().enabled||req.body?.guard_token!==undefined)){
-      const payload={input,attachments,batch:req.body?.batch??null};
-      if(!validGuardToken(req.body?.guard_token,target,req.user!.id,payload)){
-        const check=await inspectSendGuard(target,req.user!.id,payload);
-        if(check.needs_confirmation||req.body?.guard_token)return reply.code(409).send({error:'请确认当前会话上下文用量后再发送',submission:'rejected',send_guard:check});
-      }
+    const guarded=req.body?.source==='conversation'&&!conversationQuestionReply(input);
+    const guardPayload={input,attachments,batch:req.body?.batch??null};
+    const guardToken=req.body?.guard_token;
+    if(target&&guarded){
+      const check=await checkSendGuardSubmission(target,req.user!.id,guardPayload,guardToken);
+      if(check)return reply.code(409).send({error:check.required_action?'当前会话命中发送保护自动规则，处理后才能发送':'请确认当前会话上下文用量后再发送',submission:'rejected',send_guard:check});
     }
     if(req.body?.source==='conversation'&&attachments.length&&target&&!agentForSession(target).descriptor.capabilities.attachments)return reply.code(409).send({error:'此 Agent 不支持附件',submission:'rejected'});
     // The server can restart after the browser's last ready snapshot. Reattach
@@ -934,12 +937,12 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       const session=getSession(id);
       if(typeof expectedEnvironment==='string'&&(!session||(session.agent_environment_id||'native')!==expectedEnvironment))throw Object.assign(Error('标签页已更换账号，请引用最新通知'),{submission:'rejected'});
       if(typeof expectedNative==='string'&&(!session||nativeConversationId(session)!==expectedNative))throw Object.assign(Error('标签页已更换对话，请引用最新通知'),{submission:'rejected'});
-      if(session&&req.body?.source==='conversation'&&!conversationQuestionReply(input)&&(sendGuardPolicy().enabled||req.body?.guard_token!==undefined)){
-        const payload={input,attachments,batch:req.body?.batch??null};
-        if(!validGuardToken(req.body?.guard_token,session,req.user!.id,payload)){
-          const check=await inspectSendGuard(session,req.user!.id,payload);
-          if(check.needs_confirmation||req.body?.guard_token||nativeConversationId(session)!==nativeConversationId(target!))throw Object.assign(Error('会话或规则已变化，请重新检查后发送'),{submission:'rejected',send_guard:check});
-        }
+      if(session&&guarded){
+        const check=await checkSendGuardSubmission(session,req.user!.id,guardPayload,guardToken,true);
+        const nativeId=nativeConversationId(session);
+        const latest=getSession(id);
+        if(check||!latest||nativeConversationId(latest)!==nativeId||target&&nativeConversationId(target)!==nativeId)
+          throw Object.assign(Error(check?.required_action?'当前会话命中发送保护自动规则，处理后才能发送':'会话或规则已变化，请重新检查后发送'),{submission:'rejected',send_guard:check});
       }
       if(batch)rememberBatch(id,clientId as string,batch);
       if(req.body?.source==='conversation'&&session&&nativeConversationId(session)) {

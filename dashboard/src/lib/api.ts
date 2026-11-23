@@ -1,3 +1,4 @@
+import type {SendGuardAction} from '../../../server/src/shared/send-guard';
 import type {AgentDescriptor} from './agents';
 import {calibrateBrowserClock} from './display-clock';
 import type {AiSource} from './ai-source';
@@ -9,7 +10,26 @@ function fileEndpoint(url: string, projectId?: string): string {
   return projectId ? `${url}${url.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(projectId)}` : url;
 }
 
-export interface SendGuardCheck {needs_confirmation:boolean;matched:boolean|null;enabled:boolean;context_tokens:number|null;context_window:number|null;context_percent:number|null;idle_minutes:number|null;last_completed_at:string|null;observed_at:string|null;native_id:string|null;checked_at:string;can_compact:boolean;can_new:boolean;token:string}
+export interface SendGuardCheck {
+  needs_confirmation: boolean;
+  required_action: SendGuardAction | null;
+  switch_account: boolean;
+  target_account: {id:string;label:string} | null;
+  account_remaining_percent: number | null;
+  matched: boolean | null;
+  enabled: boolean;
+  context_tokens: number | null;
+  context_window: number | null;
+  context_percent: number | null;
+  idle_minutes: number | null;
+  last_completed_at: string | null;
+  observed_at: string | null;
+  native_id: string | null;
+  checked_at: string;
+  can_compact: boolean;
+  can_new: boolean;
+  token: string | null;
+}
 export interface SendGuardPayload {input:string;attachments?:ConversationAttachment[];batch?:Array<{length:number;attachments:number}>}
 export class ApiError extends Error {readonly status:number;readonly submission?:string;readonly sendGuard?:SendGuardCheck;constructor(message:string,status:number,submission?:string,sendGuard?:SendGuardCheck){super(message);this.status=status;this.submission=submission;this.sendGuard=sendGuard;}}
 
@@ -454,7 +474,9 @@ export const api = {
         body: JSON.stringify(automatic ? { automatic: true } : {}),
       }),
     newConversation:(id:string,preference?:AgentModelPreference,expectedNativeId?:string,environmentId?:string)=>fetchJSON<{ok:boolean;session:Session;history_id:string;warning?:string}>(`/sessions/${encodeURIComponent(id)}/new-conversation`,{method:'POST',body:JSON.stringify({preference,expected_native_id:expectedNativeId,environment_id:environmentId})}),
-    compactConversation:(id:string)=>fetchJSON<{ok:boolean}>(`/sessions/${encodeURIComponent(id)}/compact`,{method:'POST'}),
+    compactConversation:(id:string,expectedNativeId?:string)=>fetchJSON<{ok:boolean}>(`/sessions/${encodeURIComponent(id)}/compact`,{
+      method:'POST',...(expectedNativeId?{body:JSON.stringify({expected_native_id:expectedNativeId})}:{}),
+    }),
     reload:(id:string)=>fetchJSON<{ok:boolean;session:Session;client_version?:string}>(`/sessions/${encodeURIComponent(id)}/reload`,{method:'POST'}),
     deleteRecord: (id: string) =>
       fetchJSON<{ok: boolean}>(`/sessions/${encodeURIComponent(id)}/record`, {method:'DELETE'}),
