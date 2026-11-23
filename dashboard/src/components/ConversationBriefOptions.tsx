@@ -13,7 +13,7 @@ export function BriefOptions({sessionId,onCancel,onConfirm}:{sessionId:string;on
  const selected=models.find(m=>key(m)===modelKey);
  const validTarget=!environmentId||target?.id===environmentId&&!!target.result?.ok;
  return <Dialog title="简要压缩设置" onClose={onCancel}>
-  <p className="text-sm">默认使用当前账号和模型。新会话只接收整理后的历史，原会话会保留。</p>
+  <p className="text-sm">默认使用当前账号和模型。新会话接收整理后的历史。确认新会话可用后，平台会永久删除旧会话记录和 Agent 原始对话文件。</p>
   {catalogFailed&&<p role="status" className="text-xs">部分账号或模型列表暂不可用，仍可使用当前配置。</p>}
   <label className="mt-3 flex items-center gap-2 text-sm">账号<select aria-label="简要压缩账号" value={environmentId} onChange={e=>{setTarget(undefined);setEnvironmentId(e.target.value);setModelKey('');}} className="min-w-0 flex-1 rounded border px-2 py-1" style={{background:'var(--bg-tertiary)',borderColor:'var(--border)',color:'var(--text-primary)'}}>
    <option value="">当前账号{environments?.environments.find(e=>e.id===environments.current)?.name?`（${environments.environments.find(e=>e.id===environments.current)!.name}）`:''}</option>{environments?.environments.filter(e=>e.id!==environments.current&&e.can_control&&e.enabled).map(e=><option key={e.id} value={e.id}>{e.name}</option>)}

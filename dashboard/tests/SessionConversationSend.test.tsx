@@ -26,10 +26,10 @@ const session = { id: 'send-session', project_id: 'project', status: 'running', 
 function deferred<T>() { let resolve!: (value: T) => void, reject!: (reason: Error) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 type SendResult = Awaited<ReturnType<typeof api.agent.sendInput>>;
 function input(value: string) { const editor = screen.getByRole('textbox', { name: '发送给当前 Agent 的消息' }); editor.textContent = value; fireEvent.input(editor); return editor; }
-async function mount(target:Session=session,onNewConversation?:(preference?:import('../src/lib/api').AgentModelPreference,expectedNativeId?:string)=>Promise<string|void>) {
+async function mount(target:Session=session,onNewConversation?:(preference?:import('../src/lib/api').AgentModelPreference,expectedNativeId?:string)=>Promise<string|void>,resuming=false) {
   Socket.latest=undefined as unknown as Socket;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  const view=render(<QueryClientProvider client={client}><SessionConversation session={target} active onRaw={() => {}} onNewConversation={onNewConversation}/></QueryClientProvider>);
+  const view=render(<QueryClientProvider client={client}><SessionConversation session={target} active onRaw={() => {}} onNewConversation={onNewConversation} resuming={resuming}/></QueryClientProvider>);
   await waitFor(() => expect(Socket.latest?.onmessage).toBeTruthy());
   act(() => Socket.latest.emit({ type: 'snapshot', messages: [], busy: false, stage: 'idle' }));
   await waitFor(() => expect(screen.getByText('Event stream connected')).toBeInTheDocument());
@@ -47,6 +47,18 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('keeps the composer editable while preventing sends during a session transition',async()=>{
+    const submit=vi.spyOn(api.agent,'sendInput');
+    await mount(session,undefined,true);
+    const editor=input('填入下一条草稿');
+    expect(editor).toHaveAttribute('contenteditable','true');
+    expect(screen.getByRole('button',{name:'发送消息'})).toBeDisabled();
+    expect(screen.getByText('会话连接后可以发送')).toBeVisible();
+    fireEvent.keyDown(editor,{key:'Enter'});
+    expect(api.agent.checkSend).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    expect(loadComposer(composerKey('local',session.id)).draft).toBe('填入下一条草稿');
+  });
   it('distinguishes send preflight from submission while the draft is still pending', async () => {
     const preflight=deferred<Awaited<ReturnType<typeof api.agent.checkSend>>>();
     const response=deferred<SendResult>();

@@ -139,6 +139,20 @@ describe('compact conversation controls',()=>{
   expect(within(view.container).getByText('/project')).toBeVisible();
   view.unmount();expect(slot).toBeEmptyDOMElement();slot.remove();
  });
+ it('closes the confirmation immediately while a new session is starting',async()=>{
+  let ready!:()=>void;
+  const open=vi.fn(()=>new Promise<void>(resolve=>{ready=resolve;}));
+  render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active onNewConversation={open}/></QueryClientProvider>);
+  fireEvent.click(await screen.findByRole('button',{name:'新开',exact:true}));
+  const dialog=screen.getByRole('dialog');
+  expect(within(dialog).getByText(/永久删除旧会话记录/)).toBeVisible();
+  fireEvent.click(within(dialog).getByRole('button',{name:'停止旧会话并新开'}));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'新开中…'})).toBeDisabled();
+  expect(open).toHaveBeenCalledOnce();
+  await act(async()=>ready());
+  expect(screen.getByText('新会话已打开。')).toBeVisible();
+ });
  it('offers brief compaction alongside existing session controls and disables it while busy',async()=>{
   const brief=vi.fn(),view=render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active onBrief={brief} onNewConversation={async()=>{}}/></QueryClientProvider>);
   fireEvent.click(await screen.findByRole('button',{name:'简要压缩'}));expect(brief).toHaveBeenCalledOnce();

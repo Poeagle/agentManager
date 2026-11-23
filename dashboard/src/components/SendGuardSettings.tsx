@@ -70,7 +70,7 @@ export function SendGuardSettings({value,canEdit}:{value:string|undefined;canEdi
           <button type="button" className="settings-panel-button" disabled={rules.length>=MAX_AUTOMATIC_SEND_RULES}
             onClick={()=>setRules([...rules,{action:'brief',conditions:{operator:'and',conditions:[makeCondition()]}}])}>添加自动规则</button>
         </div>
-        <p className="text-xs leading-5" style={{color:'var(--text-secondary)'}}>按从上到下的顺序执行。操作需要会话空闲和相应权限，未完成时保留草稿。换账号时，新会话会开在当前标签页。</p>
+        <p className="text-xs leading-5" style={{color:'var(--text-secondary)'}}>按从上到下的顺序执行。操作需要会话空闲和相应权限，未完成时保留草稿。新开和简要压缩在新会话就绪后会永久删除旧会话及 Agent 原始对话文件。</p>
         {rules.map((rule,index)=>{
           const title=`自动规则 ${index+1}`;
           return <section aria-label={title} key={index} className="space-y-1 rounded-md border p-2" style={{borderColor:'var(--border)'}}>

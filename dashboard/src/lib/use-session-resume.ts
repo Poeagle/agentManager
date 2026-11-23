@@ -9,6 +9,7 @@ export interface SessionResumeState {
   startedAt: number;
   error?: string;
   warning?:string;
+  deletionQueued?:boolean;
 }
 
 /** Keep feedback alive across the history-to-terminal transition. */
@@ -43,14 +44,17 @@ export function useSessionResume(projectId: string) {
       // Both queries feed ProjectView; an old ended row must not override the
       // resumed row and leave the user looking at history after a successful POST.
       for (const queryKey of [['sessions'], ['project-sessions', projectId]]) {
+        void queryClient.cancelQueries({queryKey,exact:true});
         queryClient.setQueryData<{ sessions: Session[] }>(queryKey, (current) => ({
           sessions: [session, ...(current?.sessions ?? []).filter((row) => row.id !== sessionId)],
         }));
       }
       const managed=session.agent?.sessionHost==='managed';
       if(managed&&(action==='new'||action==='reload'))pending.current.delete(sessionId);
-      setStates((current) => ({ ...current, [sessionId]: { phase: managed&&(action==='new'||action==='reload')?'ready':'connecting', startedAt,action,warning:'warning' in result&&typeof result.warning==='string'?result.warning:undefined } }));
-      if(managed&&(action==='new'||action==='reload'))successTimers.current.set(sessionId,setTimeout(()=>{
+      const warning='warning' in result&&typeof result.warning==='string'?result.warning:undefined;
+      const deletionQueued='previous_conversation_deletion' in result&&result.previous_conversation_deletion==='pending';
+      setStates((current) => ({ ...current, [sessionId]: { phase: managed&&(action==='new'||action==='reload')?'ready':'connecting', startedAt,action,warning,deletionQueued } }));
+      if(managed&&(action==='new'||action==='reload')&&!warning)successTimers.current.set(sessionId,setTimeout(()=>{
         setStates((current)=>{const next={...current};delete next[sessionId];return next;});
         successTimers.current.delete(sessionId);
       },3000));
@@ -78,6 +82,7 @@ export function useSessionResume(projectId: string) {
     setStates((current) => ({ ...current, [sessionId]: { ...current[sessionId], phase: 'ready' } }));
     successTimers.current.set(sessionId, setTimeout(() => {
       setStates((current) => {
+        if(current[sessionId]?.warning)return current;
         const next = { ...current };
         delete next[sessionId];
         return next;

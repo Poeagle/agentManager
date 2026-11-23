@@ -1,4 +1,8 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import {existsSync,mkdirSync,writeFileSync} from 'node:fs';
+import {join} from 'node:path';
+import * as claudeArchive from '../src/services/agents/claude/archive.js';
+import {getAgent} from '../src/services/agents/index.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { authHook, createSession as createAuthSession, createUser, setProjectToolAccess } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
@@ -10,6 +14,7 @@ import { createTestDatabase } from './helpers/database.js';
 describe('session kill ownership', () => {
   let app: FastifyInstance;
   let cleanup: () => void;
+  let fixtureDir: string;
   let ownerId: string;
   let ownerCookie: string;
   let viewerCookie: string;
@@ -17,6 +22,7 @@ describe('session kill ownership', () => {
   beforeEach(async () => {
     const database = createTestDatabase();
     cleanup = database.cleanup;
+    fixtureDir = database.dir;
 
     const owner = createUser({ username: 'kill-owner', password: 'password1' });
     const viewer = createUser({ username: 'kill-viewer', password: 'password2', role: 'admin' });
@@ -48,7 +54,6 @@ describe('session kill ownership', () => {
 
   it.each(['failed','completed','cancelled'])('deletes an ended %s session even when its native runtime is gone',async status=>{
     getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,native_session_id,created_by_user_id) VALUES('broken','project-1','',?,'codex','019ff001-3434-7434-8434-343434343434',?)").run(status,ownerId);
-    const {getAgent}=await import('../src/services/agents/index.js');
     const codex=getAgent('codex');
     const interrupt=vi.spyOn(codex.lifecycle,'interrupt').mockRejectedValue(new Error('thread not loaded'));
     vi.spyOn(codex.identity,'purgeHistory').mockResolvedValue();
@@ -58,7 +63,6 @@ describe('session kill ownership', () => {
 
   it('retains a running record when its native interrupt fails for an unknown reason',async()=>{
     getDb().prepare("INSERT INTO sessions(id,project_id,task,status,cli_type,native_session_id,created_by_user_id) VALUES('uncertain','project-1','Task','running','codex','019ff001-3434-7434-8434-343434343434',?)").run(ownerId);
-    const {getAgent}=await import('../src/services/agents/index.js');
     vi.spyOn(getAgent('codex').lifecycle,'interrupt').mockRejectedValue(new Error('Engine unavailable'));
     const response=await app.inject({method:'DELETE',url:'/api/sessions/uncertain/record?stop=true',headers:{cookie:ownerCookie}});
     expect(response.statusCode).toBe(503);expect(sessionManager.getSession('uncertain')?.status).toBe('running');
@@ -119,6 +123,35 @@ describe('session kill ownership', () => {
     const result=await app.inject({method:'DELETE',url:'/api/sessions/delete-running/record?stop=true',headers:{cookie:ownerCookie}});
     expect(result.statusCode).toBe(200);expect(kill).toHaveBeenCalledExactlyOnceWith('delete-running');expect(sessionManager.getSession('delete-running')).toBeNull();
   });
+  describe.each(['claude','codex'])('%s native history', agentId => {
+    it.each([
+      {status:'running',query:'?stop=true&background=true',responseStatus:202},
+      {status:'cancelled',query:'',responseStatus:200},
+    ])('removes the selected $status conversation file and database session',async ({status,query,responseStatus})=>{
+      const nativeId='019ff001-3434-7434-8434-343434343434';
+      const otherId='019ff001-4545-7454-8454-454545454545';
+      const directory=join(fixtureDir,'sessions');
+      mkdirSync(directory);
+      const filename=(id:string)=>join(directory,`${agentId==='codex'?'rollout-':''}${id}.jsonl`);
+      writeFileSync(filename(nativeId),'{}\n');
+      writeFileSync(filename(otherId),'{}\n');
+      vi.stubEnv('CODEX_HOME',fixtureDir);
+      vi.spyOn(claudeArchive,'resolveClaudeDir').mockReturnValue(directory);
+      const adapter=getAgent(agentId);
+      vi.spyOn(adapter.lifecycle,'interrupt').mockResolvedValue();
+      vi.spyOn(adapter.lifecycle,'release').mockResolvedValue();
+      if(adapter.statistics.facts?.preserveAccountUsage)vi.spyOn(adapter.statistics.facts,'preserveAccountUsage').mockResolvedValue();
+      getDb().prepare(`INSERT INTO sessions(id,project_id,task,status,cli_type,native_session_id,created_by_user_id)
+        VALUES('delete-fixture','project-1','Work',?,?,?,?)`).run(status,agentId,nativeId,ownerId);
+      try {
+        const response=await app.inject({method:'DELETE',url:`/api/sessions/delete-fixture/record${query}`,headers:{cookie:ownerCookie}});
+        expect(response.statusCode).toBe(responseStatus);
+        await vi.waitFor(()=>expect(sessionManager.getSession('delete-fixture')).toBeNull());
+        expect(existsSync(filename(nativeId))).toBe(false);
+        expect(existsSync(filename(otherId))).toBe(true);
+      }finally{vi.unstubAllEnvs();}
+    });
+  });
   it('acknowledges a background deletion while native cleanup is still pending', async () => {
     getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id) VALUES('queued','project-1','Work','running','session','codex',?)").run(ownerId);
     const kill = vi.spyOn(sessionManager, 'killSession').mockImplementation(async id => {
@@ -153,7 +186,6 @@ describe('session kill ownership', () => {
     getDb().prepare("INSERT INTO session_record_deletions(session_id,state) VALUES(?,'pending')").run(id);
     expect(await sessionManager.resumeSessionById(id)).toMatchObject({ok:false,error:'会话正在后台删除'});
 
-    const {getAgent}=await import('../src/services/agents/index.js');
     const adapter=getAgent(agentId);
     vi.spyOn(adapter.history.file!, 'locate').mockResolvedValue(null);
     if (adapter.statistics.facts?.preserveAccountUsage) vi.spyOn(adapter.statistics.facts,'preserveAccountUsage').mockResolvedValue();

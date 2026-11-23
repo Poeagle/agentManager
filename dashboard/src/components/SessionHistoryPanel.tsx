@@ -213,10 +213,10 @@ export function SessionHistoryPanel({
                   selected={selected.has(session.id)&&canDeleteRecord(session)} onSelect={()=>setSelected(current=>{const next=new Set(current);if(next.has(session.id))next.delete(session.id);else next.add(session.id);return next;})} providerLabel={providerLabel(session)} deleting={busy} onDelete={(target) => { deletion.reset(); setDeleteTarget(target); }} />)}
       </DataTable>
     </div>
-    {bulkTargets&&<Dialog title="批量删除会话记录" busy={bulkDeletion.isPending} onClose={()=>setBulkTargets(null)}><p>确定删除选中的 {bulkTargets.length} 条会话记录？</p><p className="mt-2 text-xs">会话记录及已保存输出将被永久删除，无法撤销。</p>{bulkError&&<p role="alert" style={{color:'var(--error)'}}>{bulkError}</p>}<footer className="mt-4 flex justify-end gap-2"><TableActionButton disabled={bulkDeletion.isPending} onClick={()=>setBulkTargets(null)}>取消</TableActionButton><TableActionButton disabled={bulkDeletion.isPending} onClick={()=>bulkDeletion.mutate(bulkTargets)}>{bulkDeletion.isPending?'删除中…':'确认批量删除'}</TableActionButton></footer></Dialog>}
+    {bulkTargets&&<Dialog title="批量删除会话记录" busy={bulkDeletion.isPending} onClose={()=>setBulkTargets(null)}><p>确定删除选中的 {bulkTargets.length} 条会话记录？</p><p className="mt-2 text-xs">平台会话记录、保存的输出和 Agent 原始对话文件将被永久删除。</p>{bulkError&&<p role="alert" style={{color:'var(--error)'}}>{bulkError}</p>}<footer className="mt-4 flex justify-end gap-2"><TableActionButton disabled={bulkDeletion.isPending} onClick={()=>setBulkTargets(null)}>取消</TableActionButton><TableActionButton disabled={bulkDeletion.isPending} onClick={()=>bulkDeletion.mutate(bulkTargets)}>{bulkDeletion.isPending?'删除中…':'确认批量删除'}</TableActionButton></footer></Dialog>}
     {deleteTarget && <Dialog title="删除记录" busy={deletion.isPending} onClose={() => setDeleteTarget(null)}>
       <p className="break-words text-sm">确定删除“{sessionTitle(deleteTarget, displayNames[deleteTarget.id])}”？</p>
-      <p className="mt-2 text-xs" style={{ color: 'var(--text-secondary)' }}>会话记录及已保存的输出将被永久删除，无法撤销。</p>
+      <p className="mt-2 text-xs" style={{ color: 'var(--text-secondary)' }}>平台会话记录、保存的输出和 Agent 原始对话文件将被永久删除。</p>
       {deletion.error && <p role="alert" className="mt-3 text-xs" style={{ color: 'var(--error)' }}>删除失败：{deletion.error.message}</p>}
       <footer className="mt-4 flex justify-end gap-2">
         <TableActionButton disabled={deletion.isPending} onClick={() => setDeleteTarget(null)}>取消</TableActionButton>

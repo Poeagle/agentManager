@@ -474,7 +474,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(automatic ? { automatic: true } : {}),
       }),
-    newConversation:(id:string,preference?:AgentModelPreference,expectedNativeId?:string,environmentId?:string)=>fetchJSON<{ok:boolean;session:Session;history_id:string;warning?:string}>(`/sessions/${encodeURIComponent(id)}/new-conversation`,{method:'POST',body:JSON.stringify({preference,expected_native_id:expectedNativeId,environment_id:environmentId})}),
+    newConversation:(id:string,preference?:AgentModelPreference,expectedNativeId?:string,environmentId?:string)=>fetchJSON<{ok:boolean;session:Session;previous_conversation_deletion:'pending'|'failed';history_id?:string;warning?:string}>(`/sessions/${encodeURIComponent(id)}/new-conversation`,{method:'POST',body:JSON.stringify({preference,expected_native_id:expectedNativeId,environment_id:environmentId})}),
     compactConversation:(id:string,expectedNativeId?:string)=>fetchJSON<{ok:boolean}>(`/sessions/${encodeURIComponent(id)}/compact`,{
       method:'POST',...(expectedNativeId?{body:JSON.stringify({expected_native_id:expectedNativeId})}:{}),
     }),

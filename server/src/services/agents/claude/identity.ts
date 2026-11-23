@@ -149,6 +149,7 @@ export async function purgeClaudeHistory(context: AgentContext) {
     const directory = resolveClaudeDir(context.projectPath);
     if (!directory) return;
     try {
+        if (!(await lstat(directory)).isDirectory()) throw Error('Claude 原生历史目录不是普通目录');
         const path = join(directory, `${context.nativeId}.jsonl`);
         if (!(await lstat(path)).isFile()) throw Error('Claude 原生记录不是普通文件');
         await unlink(path);

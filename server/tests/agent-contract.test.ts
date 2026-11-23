@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.29.0');
+    expect(contract.version).toBe('3.30.0');
     for (const path of ['/api/sessions','/api/sessions/:id']) {
       expect(contract.endpoints.find(endpoint=>endpoint.method==='GET'&&endpoint.path===path)?.description).toContain('record_deletion');
     }
@@ -20,6 +20,7 @@ describe('Agent API contract', () => {
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('error.code=rate_limit');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/new-conversation')?.description).toContain('environment_id');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/new-conversation')?.request).toHaveProperty('environment_id');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/new-conversation')?.response).toHaveProperty('previous_conversation_deletion');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/metadata')?.description).toContain('decreases in recorded cached input tokens');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/usage-intervals')?.description).toContain('kind=item with phase=final');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('last_request_at');

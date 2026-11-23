@@ -20,7 +20,7 @@ it('never sends after cancelling an in-flight compaction',async()=>{
  view.rerender(<Harness state={{id:'compact',status:'completed',started_at:null,completed_at:new Date(Date.now()+1000).toISOString(),duration_ms:100,before:80,after:20}}/>);expect(done).toHaveBeenCalledOnce();
 });
 it('waits for new-session confirmation then rechecks the current native session',async()=>{
- let resolve!:()=>void;newSession.mockReturnValue(new Promise<void>(r=>{resolve=r;}));render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));fireEvent.click(await screen.findByRole('button',{name:'新开后发送'}));expect(done).not.toHaveBeenCalled();vi.mocked(api.agent.checkSend).mockResolvedValue({...check,native_id:'fresh',token:'fresh'});await act(async()=>resolve());await waitFor(()=>expect(done).toHaveBeenCalledExactlyOnceWith('fresh'));
+ let resolve!:()=>void;newSession.mockReturnValue(new Promise<void>(r=>{resolve=r;}));render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));fireEvent.click(await screen.findByRole('button',{name:'新开后发送'}));expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(screen.getByText('正在创建新会话，确认完成后发送。')).toBeVisible();expect(done).not.toHaveBeenCalled();vi.mocked(api.agent.checkSend).mockResolvedValue({...check,native_id:'fresh',token:'fresh'});await act(async()=>resolve());await waitFor(()=>expect(done).toHaveBeenCalledExactlyOnceWith('fresh'));
 });
 it('prepares history before replacing the expected session and checks the exact final payload',async()=>{
  vi.spyOn(api.agent,'conversation').mockResolvedValue({session_id:'s',native_id:'native',available:true,generation:'gen',reset:false,has_more:false,messages:[
@@ -118,7 +118,7 @@ it('does not send if the creation result does not identify the new conversation'
  expect(await screen.findByRole('alert')).toHaveTextContent('新会话身份尚未确认');expect(done).not.toHaveBeenCalled();expect(api.agent.checkSend).toHaveBeenCalledOnce();
 });
 it('retains unknown operation results without automatic resubmission',async()=>{
- newSession.mockRejectedValue(new ApiError('timeout',503,'unknown'));render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));fireEvent.click(await screen.findByRole('button',{name:'新开后发送'}));expect(await screen.findByRole('alert')).toHaveTextContent('timeout');expect(screen.getByRole('button',{name:'原样发送'})).toBeDisabled();expect(done).not.toHaveBeenCalled();expect(api.agent.checkSend).toHaveBeenCalledOnce();
+ newSession.mockRejectedValue(new ApiError('timeout',503,'unknown'));render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));fireEvent.click(await screen.findByRole('button',{name:'新开后发送'}));expect(await screen.findByRole('alert')).toHaveTextContent('timeout');expect(screen.queryByRole('button',{name:'原样发送'})).not.toBeInTheDocument();expect(done).not.toHaveBeenCalled();expect(api.agent.checkSend).toHaveBeenCalledOnce();
 });
 it('cancels an outstanding prompt when its session becomes inactive',async()=>{
  const view=render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));await screen.findByRole('dialog');view.rerender(<Harness active={false}/>);await waitFor(()=>expect(done).toHaveBeenCalledExactlyOnceWith(null));
@@ -129,7 +129,7 @@ it('releases a pending prompt when another session reuses the component',async()
 });
 
 it('does not send when new-session acceptance has not changed the native identity',async()=>{
- render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));fireEvent.click(await screen.findByRole('button',{name:'新开后发送'}));expect(await screen.findByRole('alert')).toHaveTextContent('新会话身份尚未确认');expect(done).not.toHaveBeenCalled();expect(screen.getByRole('button',{name:'原样发送'})).toBeDisabled();
+ render(<Harness/>);fireEvent.click(screen.getByRole('button',{name:'发送'}));fireEvent.click(await screen.findByRole('button',{name:'新开后发送'}));expect(await screen.findByRole('alert')).toHaveTextContent('新会话身份尚未确认');expect(done).not.toHaveBeenCalled();expect(screen.queryByRole('button',{name:'原样发送'})).not.toBeInTheDocument();
 });
 
 it('dismisses the modal before the compaction request returns and stays nonmodal during recheck',async()=>{

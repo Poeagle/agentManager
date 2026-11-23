@@ -17,7 +17,7 @@ export function CloseTabModal({label,type,sessionCount,onStop,onDelete,onCancel}
   }
   return <Dialog title={`关闭“${label}”`} onClose={onCancel} busy={!!busy} initialFocus={cancel}>
     <p className="text-sm leading-relaxed">{type==='project'?`此项目有 ${sessionCount??0} 个会话正在运行。停止并关闭会结束这些会话的运行，保留会话历史。`:'停止并关闭：结束当前运行，保留会话记录，之后可查看或恢复。'}</p>
-    {onDelete&&<p className="mt-2 text-sm leading-relaxed" style={{color:'var(--text-secondary)'}}>删除会话：停止后关闭标签页，后台永久删除记录和输出。失败可在项目会话记录中重试。</p>}
+    {onDelete&&<p className="mt-2 text-sm leading-relaxed" style={{color:'var(--text-secondary)'}}>删除会话：停止后关闭标签页，后台永久删除平台记录、保存的输出和 Agent 原始对话文件。失败可在项目会话记录中重试。</p>}
     {error&&<p role="alert" className="mt-3 text-sm" style={{color:'var(--error)'}}>{error}</p>}
     <footer className="mt-5 flex flex-wrap justify-end gap-2 text-xs">
       <button ref={cancel} type="button" disabled={!!busy} onClick={onCancel} className="rounded-md border px-3 py-2 disabled:opacity-50" style={{borderColor:'var(--border)'}}>取消</button>

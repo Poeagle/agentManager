@@ -17,7 +17,7 @@ export function SessionResumeFeedback({ state, onDismiss }: { state: SessionResu
 
   return (
     <div
-      className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[60] max-w-[calc(100%-32px)] rounded-md border px-4 py-3 text-xs shadow-lg"
+      className={`pointer-events-none absolute left-1/2 -translate-x-1/2 z-[60] max-w-[calc(100%-32px)] rounded-md border px-4 py-3 text-xs shadow-lg ${state.action==='new'?'top-3':'bottom-4'}`}
       style={{ background: 'var(--bg-secondary)', borderColor: color, color: 'var(--text-primary)' }}
       role={failed ? 'alert' : 'status'}
       aria-live={failed ? 'assertive' : 'polite'}
@@ -31,8 +31,9 @@ export function SessionResumeFeedback({ state, onDismiss }: { state: SessionResu
               : failed ? 'Resume failed' : 'Session resumed'}
         </span>
         {busy && <span aria-live="off" style={{ color: 'var(--text-muted)' }}>{elapsed}s</span>}
-        {failed && <button type="button" onClick={onDismiss} className="ml-2 rounded p-0.5 hover:bg-black/5 dark:hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2" aria-label="关闭错误提示"><X className="h-3.5 w-3.5" /></button>}
+        {(failed||state.warning)&&!busy && <button type="button" onClick={onDismiss} className="pointer-events-auto ml-2 rounded p-0.5 hover:bg-black/5 dark:hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2" aria-label={failed?'关闭错误提示':'关闭提示'}><X className="h-3.5 w-3.5" /></button>}
       </div>
+      {state.deletionQueued&&!busy&&!failed&&<p className="mt-1.5">旧会话已提交后台删除</p>}
       {state.warning&&<p className="mt-1.5 max-w-md break-words">{state.warning}</p>}
       {failed && <p className="mt-1.5 max-w-md break-words">{state.error}</p>}
       {busy && elapsed >= 15 && (

@@ -21,7 +21,7 @@ const cacheRateFromCounters=(input:number|null|undefined,cache:number|null|undef
   input!=null&&cache!=null&&input>0&&cache>=0&&cache<=input?100*cache/input:null;
 const permissionsEn:Record<string,string>={'danger-full-access':'Full access','workspace-write':'Workspace write','read-only':'Read only'};
 const tokenMetricDescriptions:Record<string,string>={Total:'会话累计 Token，包含重复上下文',Input:'累计未缓存输入 Token',Cache:'累计命中缓存的输入 Token',Reasoning:'累计推理 Token，包含在输出中',Output:'累计输出 Token，包含推理 Token'};
-export function ConversationControls({sessionId,active,busy=false,compacting=false,onCompact,onBrief,briefDisabled=false,onNewConversation,toolbarTarget,metadata}:{toolbarTarget?:HTMLElement|null;sessionId:string;active:boolean;busy?:boolean;compacting?:boolean;onCompact?:()=>Promise<void>;onBrief?:()=>void;briefDisabled?:boolean;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<unknown>;metadata?:SessionMetadata|null}) {
+export function ConversationControls({sessionId,active,busy=false,replacing=false,compacting=false,onCompact,onBrief,briefDisabled=false,onNewConversation,toolbarTarget,metadata}:{toolbarTarget?:HTMLElement|null;sessionId:string;active:boolean;busy?:boolean;replacing?:boolean;compacting?:boolean;onCompact?:()=>Promise<void>;onBrief?:()=>void;briefDisabled?:boolean;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<unknown>;metadata?:SessionMetadata|null}) {
   const queryClient=useQueryClient(),[expanded,setExpanded]=useState(false),[saving,setSaving]=useState(false),[applied,setApplied]=useState(false),[error,setError]=useState('');
   const [operation,setOperation]=useState<'compact'|'new'|null>(null),[newOpen,setNewOpen]=useState(false),[notice,setNotice]=useState('');
   const [freshPreference,setFreshPreference]=useState<import('../lib/api').AgentModelPreference>();
@@ -42,7 +42,8 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
     if(operationLock.current)return;
     if(action==='new'){let draft=false;window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId,respond:(value:boolean)=>{draft ||= value;}}}));if(draft){setError('原始终端还有未发送内容，请先发送或清空。');return;}}
     operationLock.current=true;setOperation(action);setError('');setNotice('');
-    try{if(action==='new'){await onNewConversation?.(query.data?.supports_fresh_model?freshPreference:undefined);setNewOpen(false);setNotice('新会话已打开，原会话保留在项目会话记录中。');}else{await (onCompact?onCompact():api.sessions.compactConversation(sessionId));}if(action==='new')void queryClient.invalidateQueries({queryKey:['conversation-controls',sessionId]});}
+    if(action==='new')setNewOpen(false);
+    try{if(action==='new'){await onNewConversation?.(query.data?.supports_fresh_model?freshPreference:undefined);setNotice('新会话已打开。');}else{await (onCompact?onCompact():api.sessions.compactConversation(sessionId));}if(action==='new')void queryClient.invalidateQueries({queryKey:['conversation-controls',sessionId]});}
     catch(failure){if(action!=='compact'||!onCompact)setError(failure instanceof Error?failure.message:'操作失败，请重试');}
     finally{operationLock.current=false;setOperation(null);}
   }
@@ -102,7 +103,7 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         {applied&&!data.pending&&<span className="conversation-control-pending" role="status">已应用</span>}
         {canEdit('compact')&&<button type="button" disabled={busy||compacting||saving||!!operation} title={compactReason} onClick={()=>void perform('compact')}>{compacting||operation==='compact'?<Loader2 size={12} className="animate-spin"/>:<Minimize2 size={12}/>} {compacting||operation==='compact'?'压缩中…':'压缩'}</button>}
         {onBrief&&<button type="button" disabled={!canEdit('newConversation')||busy||compacting||saving||!!operation||briefDisabled} title="整理已有对话并在新会话中发送" onClick={onBrief}><Layers3 size={12}/>简要压缩</button>}
-        {onNewConversation&&<button type="button" disabled={!canEdit('newConversation')||saving||!!operation} title="在当前标签页新开会话，保留旧记录并停止旧会话" onClick={()=>{let rawDraft=false;window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId,respond:(value:boolean)=>{rawDraft ||= value;}}}));if(rawDraft){setError('原始终端还有未发送内容，请先发送或清空。');return;}setError('');setFreshPreference(model?{model:model.model,effort:selected.effort,provider:model.provider}:undefined);setNewOpen(true);}}><Plus size={12}/>{operation==='new'?'新开中…':'新开'}</button>}
+        {onNewConversation&&<button type="button" disabled={!canEdit('newConversation')||replacing||saving||!!operation} title="在当前标签页新开会话，并删除旧会话" onClick={()=>{let rawDraft=false;window.dispatchEvent(new CustomEvent('agentmanager:check-terminal-draft',{detail:{sessionId,respond:(value:boolean)=>{rawDraft ||= value;}}}));if(rawDraft){setError('原始终端还有未发送内容，请先发送或清空。');return;}setError('');setFreshPreference(model?{model:model.model,effort:selected.effort,provider:model.provider}:undefined);setNewOpen(true);}}><Plus size={12}/>{operation==='new'?'新开中…':'新开'}</button>}
   </div>:null;
   return <div className="conversation-controls-wrap">
     <div className="conversation-controls" aria-label="Model and session status">
@@ -146,12 +147,12 @@ export function ConversationControls({sessionId,active,busy=false,compacting=fal
         <dt>服务档位</dt><dd>{model.service_tiers?.length?model.service_tiers.map(t=>t.name).join('、'):'未提供'}</dd>
       </dl>
     </div>,document.body)}
-    {newOpen&&<Dialog title="在当前标签页新开会话" busy={operation==='new'} onClose={()=>setNewOpen(false)}>
-      <p className="text-sm leading-relaxed">{data?.supports_fresh_model?'请确认新会话使用的模型服务、模型和推理强度。':'新会话将使用当前 Agent 的默认模型设置。'}当前任务会停止，旧会话的后台终端会回收，历史消息可从“项目会话记录”重新打开。当前输入框中未发送的文字和附件会保留。</p>
+    {newOpen&&<Dialog title="在当前标签页新开会话" onClose={()=>setNewOpen(false)}>
+      <p className="text-sm leading-relaxed">{data?.supports_fresh_model?'请确认新会话使用的模型服务、模型和推理强度。':'新会话将使用当前 Agent 的默认模型设置。'}当前任务会停止。确认新会话可用后，平台会永久删除旧会话记录和 Agent 原始对话文件。当前输入框中未发送的文字和附件会保留。</p>
       {data?.supports_fresh_model&&<><label className="mt-3 flex items-center gap-2 text-sm">新会话模型<select aria-label="新会话模型" className="min-w-0 flex-1 rounded border px-2 py-1" style={{background:'var(--bg-tertiary)',borderColor:'var(--border)',color:'var(--text-primary)'}} value={freshPreference?choiceKey(freshPreference):''} onChange={event=>{const next=data?.models.find(m=>choiceKey(m)===event.target.value);if(next)setFreshPreference({model:next.model,...(next.provider?{provider:next.provider}:{}),effort:next.defaultEffort});}}><option value="" disabled>请选择可用模型</option>{data?.models.map(m=><option key={choiceKey(m)} value={choiceKey(m)}>{modelLabel(m)}</option>)}</select></label>
       <label className="mt-3 flex items-center gap-2 text-sm">推理强度<select aria-label="新会话推理强度" className="min-w-0 flex-1 rounded border px-2 py-1" style={{background:'var(--bg-tertiary)',borderColor:'var(--border)',color:'var(--text-primary)'}} value={freshPreference?.effort||''} onChange={event=>setFreshPreference(previous=>previous?{...previous,effort:event.target.value}:previous)}>{data?.models.find(m=>m.model===freshPreference?.model&&m.provider===freshPreference?.provider)?.efforts.map(e=><option key={e.value} value={e.value}>{effortNames[e.value]||e.value}</option>)}</select></label></>}
       {error&&<p role="alert" className="session-chat-error">{error}</p>}
-      <footer className="mt-4 flex justify-end gap-3 text-sm"><button type="button" disabled={!!operation} onClick={()=>setNewOpen(false)}>取消</button><button type="button" disabled={!!operation||!!data?.supports_fresh_model&&!freshPreference} onClick={()=>void perform('new')}>{operation==='new'?'正在新开…':'停止旧会话并新开'}</button></footer>
+      <footer className="mt-4 flex justify-end gap-3 text-sm"><button type="button" disabled={!!operation} onClick={()=>setNewOpen(false)}>取消</button><button type="button" disabled={!!operation||!!data?.supports_fresh_model&&!freshPreference} onClick={()=>void perform('new')}>停止旧会话并新开</button></footer>
     </Dialog>}
     {expanded&&data&&<ControlDetails key={JSON.stringify([sessionId,data.native_id])} sessionId={sessionId} metadata={summary} billingMode={currentEnvironment?.auth_mode} data={{...data,state:data.loaded?(busy||compacting?'active':'idle'):data.state}} onClose={()=>setExpanded(false)} onRefresh={refresh} refreshing={query.isFetching}/>}
     {contextOpen&&active&&data?.native_id&&<ConversationContextUsage key={`${sessionId}:${data.native_id}`} sessionId={sessionId} nativeId={data.native_id} usage={data.usage} observedAt={data.usage_observed_at} model={data.model} onClose={()=>setContextOpen(false)}/>}

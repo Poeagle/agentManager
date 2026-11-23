@@ -9,6 +9,14 @@ export function sessionRecordDeletionState(id: string): DeletionState | undefine
     {state: DeletionState} | undefined)?.state;
 }
 
+/** Persist the request before the caller reports that cleanup was accepted. */
+export function enqueueSessionRecordDeletion(id: string): boolean {
+  const result = getDb().prepare(`INSERT INTO session_record_deletions(session_id, state)
+    SELECT ?, 'pending' WHERE (SELECT count(*) FROM session_record_deletions WHERE state='pending') < ?
+    ON CONFLICT(session_id) DO UPDATE SET state='pending', requested_at=excluded.requested_at`).run(id, QUEUE_LIMIT);
+  return result.changes > 0;
+}
+
 export function createSessionRecordDeletionWorker(
   purge: (id: string) => Promise<{ok: boolean}>,
   logError: (error: unknown) => void,
@@ -50,12 +58,9 @@ export function createSessionRecordDeletionWorker(
   }
 
   function enqueue(id: string): boolean {
-    if (closing) return false;
-    const result = getDb().prepare(`INSERT INTO session_record_deletions(session_id, state)
-      SELECT ?, 'pending' WHERE (SELECT count(*) FROM session_record_deletions WHERE state='pending') < ?
-      ON CONFLICT(session_id) DO UPDATE SET state='pending', requested_at=excluded.requested_at`).run(id, QUEUE_LIMIT);
-    if (result.changes) wake();
-    return result.changes > 0;
+    if (closing || !enqueueSessionRecordDeletion(id)) return false;
+    wake();
+    return true;
   }
 
   return {

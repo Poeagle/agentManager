@@ -119,11 +119,33 @@ test('model controls use native capabilities and a docked file stays readable wh
   await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await brief.getByRole('button',{name:'取消'}).click();await expect(input).toHaveText('尚未发送的草稿');
   await page.setViewportSize({width:1280,height:720});await page.unroute(`**/api/sessions/${session.id}/input-check`);
-  await page.getByRole('button',{name:'新开',exact:true}).click();await expect(page.getByRole('dialog',{name:'在当前标签页新开会话'})).toContainText('旧会话的后台终端会回收');await page.getByRole('button',{name:'取消',exact:true}).click();await expect(input).toBeVisible();
+  await page.getByRole('button',{name:'新开',exact:true}).click();await expect(page.getByRole('dialog',{name:'在当前标签页新开会话'})).toContainText('永久删除旧会话记录和 Agent 原始对话文件');await page.getByRole('button',{name:'取消',exact:true}).click();await expect(input).toBeVisible();
   // Browser replacement contract; runtime preparation/rollback is exercised by
   // conversation-new.test.ts against the real manager lifecycle.
   const nextNative='019ff001-5656-7565-8565-565656565656';writeFileSync(join(directory,`rollout-${nextNative}.jsonl`),record('session_meta',{id:nextNative}));
-  await page.route(`**/api/sessions/${session.id}/new-conversation`,async route=>{const db=new Database(join(root,'agentmanager.db'));try{db.prepare("UPDATE sessions SET codex_session_id=?,task='新会话' WHERE id=?").run(nextNative,session.id);const row=db.prepare('SELECT * FROM sessions WHERE id=?').get(session.id);await route.fulfill({json:{ok:true,session:row,history_id:'preserved-history'}});}finally{db.close();}});
-  await input.fill('新会话中的未发送草稿');await page.getByRole('button',{name:'新开',exact:true}).click();await page.getByRole('button',{name:'停止旧会话并新开'}).click();await expect(input).toHaveText('新会话中的未发送草稿');await expect(page.getByRole('link',{name:'查看审查报告'})).toHaveCount(0);await expect(page.getByRole('button',{name:'新开',exact:true})).toBeVisible();expect(inputs).toHaveLength(4);
+  let finishNewSession!:()=>void;
+  const creating=new Promise<void>(resolve=>{finishNewSession=resolve;});
+  await page.route(`**/api/sessions/${session.id}/new-conversation`,async route=>{
+    await creating;
+    const db=new Database(join(root,'agentmanager.db'));
+    try{
+      db.prepare("UPDATE sessions SET codex_session_id=?,task='新会话' WHERE id=?").run(nextNative,session.id);
+      const row=db.prepare('SELECT * FROM sessions WHERE id=?').get(session.id);
+      await route.fulfill({json:{ok:true,session:row,previous_conversation_deletion:'pending'}});
+    }finally{db.close();}
+  });
+  try{
+    await input.fill('新会话中的未发送草稿');
+    await page.getByRole('button',{name:'新开',exact:true}).click();
+    await page.getByRole('button',{name:'停止旧会话并新开'}).click();
+    await expect(page.getByRole('dialog',{name:'在当前标签页新开会话'})).toHaveCount(0);
+    await expect(page.getByText('正在新开会话…',{exact:true})).toBeVisible();
+    await expect(input).toHaveText('新会话中的未发送草稿');
+    await expect(page.getByRole('button',{name:'发送消息',exact:true})).toBeDisabled();
+  }finally{finishNewSession();}
+  await expect(page.getByRole('link',{name:'查看审查报告'})).toHaveCount(0);
+  await expect(input).toHaveText('新会话中的未发送草稿');
+  await expect(page.getByRole('button',{name:'新开',exact:true})).toBeVisible();
+  expect(inputs).toHaveLength(4);
  }finally {try{if(sessionId)await page.request.delete(`/api/sessions/${sessionId}`,{timeout:5000}).catch(()=>{});}finally{for(const client of wss.clients)client.terminate();await new Promise<void>(r=>wss.close(()=>r()));await new Promise<void>(r=>server.close(()=>r()));}}
 });

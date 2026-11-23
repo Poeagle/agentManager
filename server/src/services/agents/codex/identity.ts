@@ -53,7 +53,7 @@ export async function purgeCodexHistory(context: {session: {agent_environment_id
             `  for name in names:\n` +
             `   count+=1\n` +
             `   if count>20000: raise ValueError('HISTORY_LIMIT')\n` +
-            `   if name.startswith('rollout-') and name.lower().endswith(${JSON.stringify(nativeId.toLowerCase()+'.jsonl')}):\n` +
+            `   if name.startswith('rollout-') and name.lower().endswith(${JSON.stringify('-'+nativeId.toLowerCase()+'.jsonl')}):\n` +
             `    path=pathlib.Path(current,name)\n` +
             `    if path.is_symlink(): raise ValueError('HISTORY_ACCESS')\n` +
             `    resolved=path.resolve(strict=True)\n` +
@@ -85,9 +85,11 @@ export async function purgeCodexHistory(context: {session: {agent_environment_id
             for (const entry of entries) {
                 if (++visited > 20000) throw Error('Codex 会话历史目录超过安全扫描上限，未删除文件');
                 const path = join(directory, entry.name);
+                const selected = entry.name.startsWith('rollout-') && entry.name.toLowerCase().endsWith(`-${nativeId.toLowerCase()}.jsonl`);
+                if (selected && !entry.isFile()) throw Error('Codex 原生记录不是普通文件');
                 if (entry.isSymbolicLink()) continue;
                 if (entry.isDirectory()) await visit(path);
-                else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.toLowerCase().endsWith(`${nativeId.toLowerCase()}.jsonl`)) {
+                else if (selected) {
                     const resolved = await realpath(path);
                     if (!resolved.startsWith(`${rootReal}/`)) throw Error('Codex 会话文件路径超出 Engine 历史目录');
                     files.push(resolved);

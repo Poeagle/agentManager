@@ -10,18 +10,32 @@ vi.mock('child_process',async original=>{
  return {...actual,fork:vi.fn(()=>{const worker:any=new EventEmitter();worker.connected=true;worker.exitCode=null;worker.signalCode=null;worker.kill=vi.fn(()=>{worker.connected=false;worker.exitCode=0;queueMicrotask(()=>worker.emit('exit',0));});worker.send=vi.fn((message:any)=>{if(message.type==='spawn')queueMicrotask(()=>worker.emit('message',{type:'ready',pid:90000001}));if(message.type==='kill')worker.kill();});queueMicrotask(()=>worker.emit('message',{type:'worker-ready'}));return worker;})};
 });
 import {fork} from 'child_process';
+import {existsSync,mkdirSync,writeFileSync} from 'node:fs';
+import {join} from 'node:path';
+import Fastify from 'fastify';
+import * as claudeArchive from '../src/services/agents/claude/archive.js';
+import {sessionRoutes} from '../src/routes/sessions.js';
 import {getDb} from '../src/db/index.js';
 import {config} from '../src/config.js';
 import {createTestDatabase} from './helpers/database.js';
-import {newSessionConversation,getSession,killSession,compactSessionConversation} from '../src/services/session-manager.js';
+import {newSessionConversation,getSession,killSession,compactSessionConversation,purgeSessionRecord} from '../src/services/session-manager.js';
 import {prepareFreshCodexConversation,releaseCodexConversation,compactCodexConversation} from '../src/services/agents/codex/actions.js';
 import {prepareCodexReload} from '../src/services/agents/codex/version.js';
 import {readConversationControls,validateModelPreference} from '../src/services/agents/codex/controls.js';
 import {getAgent} from '../src/services/agents/index.js';
-import {createUser} from '../src/auth.js';
+import {authHook,createUser,createSession as createAuthSession} from '../src/auth.js';
+import {createSessionRecordDeletionWorker,sessionRecordDeletionState} from '../src/services/session-record-deletion.js';
 let cleanup:()=>void;
+let historyDir:string;
+const defaultFresh='019ff001-3333-7333-8333-333333333333';
+const rollout=(id:string)=>join(historyDir,`rollout-${id}.jsonl`);
+function startCleanupWorker(){
+ const worker=createSessionRecordDeletionWorker(id=>purgeSessionRecord(id,{background:true}),error=>{throw error;});
+ worker.wake();
+ return worker;
+}
 const saved={useTmux:config.useTmux,useDtach:config.useDtach},native='019ff001-3434-7434-8434-343434343434';
-beforeEach(()=>{vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});vi.clearAllMocks();const db=createTestDatabase();cleanup=db.cleanup;config.useTmux=false;config.useDtach=false;vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/fake');getDb().prepare("INSERT INTO projects(id,name,path) VALUES('new-project','New',?)").run(db.dir);getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id) VALUES('new-test','new-project','Do not submit old task','running','session','codex',?)").run(native);getDb().prepare("INSERT INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments) VALUES('new-test','attachment','k','text','[]')").run();getDb().prepare("INSERT INTO pty_output(session_id,seq,data) VALUES('new-test',1,'old output')").run();});
+beforeEach(()=>{vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval']});vi.clearAllMocks();const db=createTestDatabase();cleanup=db.cleanup;vi.stubEnv('CODEX_HOME',db.dir);historyDir=join(db.dir,'sessions');mkdirSync(historyDir);config.useTmux=false;config.useDtach=false;vi.stubEnv('AGENTMANAGER_CODEX_STREAM_SOCKET','/fake');getDb().prepare("INSERT INTO projects(id,name,path) VALUES('new-project','New',?)").run(db.dir);getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id) VALUES('new-test','new-project','Do not submit old task','running','session','codex',?)").run(native);getDb().prepare("INSERT INTO conversation_attachments(session_id,client_id,input_key,input_text,attachments) VALUES('new-test','attachment','k','text','[]')").run();getDb().prepare("INSERT INTO pty_output(session_id,seq,data) VALUES('new-test',1,'old output')").run();});
 afterEach(async()=>{await killSession('new-test');vi.clearAllTimers();vi.useRealTimers();vi.unstubAllEnvs();Object.assign(config,saved);cleanup();});
 describe('fresh conversation in the same tab',()=>{
  it('rejects a stale native identity before touching the current conversation',async()=>{
@@ -52,15 +66,105 @@ describe('fresh conversation in the same tab',()=>{
   try{const result=await newSessionConversation('new-test',undefined,undefined,native);expect(result).toMatchObject({ok:false,error:'原会话已变化，未发送简要历史'});expect(discard).toHaveBeenCalledOnce();expect(fork).not.toHaveBeenCalled();}
   finally{getDb().prepare("UPDATE sessions SET agent_environment_id=NULL WHERE id='new-test'").run();runtime.mockRestore();discard.mockRestore();}
  });
- it('preserves history and attachments under a history row, replaces only native id and resumes without submitting old task',async()=>{
-  const result=await newSessionConversation('new-test');expect(result.ok).toBe(true);expect(getSession('new-test')).toMatchObject({id:'new-test',codex_session_id:'019ff001-3333-7333-8333-333333333333',status:'running'});expect(getSession(result.history_id!)).toMatchObject({codex_session_id:native,status:'cancelled',pid:null});expect(getDb().prepare('SELECT session_id FROM conversation_attachments').get()).toEqual({session_id:result.history_id});expect(getDb().prepare('SELECT data FROM pty_output WHERE session_id=?').get(result.history_id)).toEqual({data:'old output'});expect(releaseCodexConversation).toHaveBeenCalledWith(native);const worker=vi.mocked(fork).mock.results[0].value as any;expect(worker.send).toHaveBeenCalledWith(expect.objectContaining({resumeSessionId:'019ff001-3333-7333-8333-333333333333'}));expect(fork).toHaveBeenCalledTimes(1);
+ it('returns the new tab through HTTP before purging the old Codex rollout and platform history',async()=>{
+  writeFileSync(rollout(native),'{}\n');
+  writeFileSync(rollout(defaultFresh),'{}\n');
+  getDb().prepare("INSERT INTO tasks(id,title,session_id) VALUES('old-task','Old task','new-test')").run();
+  const user=createUser({username:'new-owner',password:'password1',role:'admin'});
+  getDb().prepare("UPDATE sessions SET created_by_user_id=? WHERE id='new-test'").run(user.id);
+  let releaseUsage!:()=>void;
+  const preserve=vi.spyOn(getAgent('codex').statistics.facts!,'preserveAccountUsage')
+   .mockReturnValueOnce(new Promise(resolve=>{releaseUsage=resolve;}));
+  const app=Fastify();
+  app.addHook('onRequest',authHook);
+  await app.register(sessionRoutes,{prefix:'/api'});
+  try{
+   const response=await app.inject({method:'POST',url:'/api/sessions/new-test/new-conversation',payload:{},
+    headers:{cookie:`agentmanager_session=${createAuthSession(user.id)}`}});
+   expect(response.statusCode).toBe(200);
+   const result=response.json();
+   expect(result).toMatchObject({ok:true,previous_conversation_deletion:'pending',
+    session:{id:'new-test',codex_session_id:defaultFresh,status:'running'}});
+   expect(getSession(result.history_id)).toMatchObject({codex_session_id:native,status:'cancelled'});
+   expect(sessionRecordDeletionState(result.history_id)).toBe('pending');
+   expect(existsSync(rollout(native))).toBe(true);
+   releaseUsage();
+   await vi.waitFor(()=>expect(getSession(result.history_id)).toBeNull());
+   expect(getDb().prepare('SELECT id FROM sessions').all()).toEqual([{id:'new-test'}]);
+   expect(getDb().prepare('SELECT session_id FROM conversation_attachments').all()).toEqual([]);
+   expect(getDb().prepare('SELECT data FROM pty_output').all()).toEqual([]);
+   expect(getDb().prepare("SELECT session_id FROM tasks WHERE id='old-task'").get()).toEqual({session_id:null});
+   expect(existsSync(rollout(native))).toBe(false);
+   expect(existsSync(rollout(defaultFresh))).toBe(true);
+   expect(releaseCodexConversation).toHaveBeenCalledWith(native);
+   const worker=vi.mocked(fork).mock.results[0].value as any;
+   expect(worker.send).toHaveBeenCalledWith(expect.objectContaining({resumeSessionId:defaultFresh}));
+   expect(fork).toHaveBeenCalledTimes(1);
+  }finally{releaseUsage();await app.close();preserve.mockRestore();}
  });
- it('restores the original native thread and attachment ownership if the replacement worker fails',async()=>{vi.mocked(fork).mockImplementationOnce(()=>{throw Error('worker failed');});expect((await newSessionConversation('new-test')).ok).toBe(false);expect(getSession('new-test')).toMatchObject({codex_session_id:native,status:'running',task:'Do not submit old task'});expect(getDb().prepare('SELECT session_id FROM conversation_attachments').get()).toEqual({session_id:'new-test'});expect(getDb().prepare('SELECT count(*) n FROM sessions').get()).toEqual({n:1});});
- it('moves saved recovery preferences into old history so they cannot override a fresh provider thread',async()=>{
+ it('purges the original Claude log after the managed replacement is ready',async()=>{
+  getDb().prepare("UPDATE sessions SET cli_type='claude',codex_session_id=NULL,claude_session_id=? WHERE id='new-test'").run(native);
+  const oldFile=join(historyDir,`${native}.jsonl`),newFile=join(historyDir,`${defaultFresh}.jsonl`);
+  writeFileSync(oldFile,'{}\n');
+  writeFileSync(newFile,'{}\n');
+  vi.spyOn(claudeArchive,'resolveClaudeDir').mockReturnValue(historyDir);
+  const adapter=getAgent('claude');
+  vi.spyOn(adapter.lifecycle,'preflight').mockResolvedValue(null);
+  vi.spyOn(adapter.lifecycle,'prepareFresh').mockResolvedValue(defaultFresh);
+  vi.spyOn(adapter.launch,'prepare').mockResolvedValue({nativeId:defaultFresh});
+  vi.spyOn(adapter.stream,'observe').mockReturnValue(Object.assign(()=>{}, {respond:()=>{}}));
+  const result=await newSessionConversation('new-test');
+  expect(result).toMatchObject({ok:true,previous_conversation_deletion:'pending'});
+  expect(getSession('new-test')).toMatchObject({native_session_id:defaultFresh,status:'running'});
+  expect(existsSync(oldFile)).toBe(true);
+  const worker=startCleanupWorker();
+  try{
+   await vi.waitFor(()=>expect(getSession(result.history_id!)).toBeNull());
+   expect(existsSync(oldFile)).toBe(false);
+   expect(existsSync(newFile)).toBe(true);
+  }finally{await worker.close();}
+ });
+ it('restores the original thread, file and attachments if the replacement worker fails',async()=>{
+  writeFileSync(rollout(native),'{}\n');
+  vi.mocked(fork).mockImplementationOnce(()=>{throw Error('worker failed');});
+  expect((await newSessionConversation('new-test')).ok).toBe(false);
+  expect(getSession('new-test')).toMatchObject({codex_session_id:native,status:'running',task:'Do not submit old task'});
+  expect(getDb().prepare('SELECT session_id FROM conversation_attachments').get()).toEqual({session_id:'new-test'});
+  expect(getDb().prepare('SELECT count(*) n FROM sessions').get()).toEqual({n:1});
+  expect(existsSync(rollout(native))).toBe(true);
+ });
+ it('keeps a retryable old record when native deletion fails after the switch',async()=>{
+  const purge=vi.spyOn(getAgent('codex').identity,'purgeHistory').mockRejectedValueOnce(Error('filesystem unavailable'));
+  const result=await newSessionConversation('new-test');
+  expect(result).toMatchObject({ok:true,previous_conversation_deletion:'pending'});
+  const worker=startCleanupWorker();
+  try{
+   await vi.waitFor(()=>expect(sessionRecordDeletionState(result.history_id!)).toBe('failed'));
+   expect(purge).toHaveBeenCalledOnce();
+   expect(getSession('new-test')).toMatchObject({codex_session_id:defaultFresh,status:'running'});
+   expect(getSession(result.history_id!)).toMatchObject({codex_session_id:native,status:'cancelled'});
+   await expect(purgeSessionRecord(result.history_id!)).resolves.toEqual({ok:true});
+   expect(getSession(result.history_id!)).toBeNull();
+  }finally{await worker.close();purge.mockRestore();}
+ });
+ it('rejects a reused native identity without releasing or deleting the source',async()=>{
+  writeFileSync(rollout(native),'{}\n');
+  vi.mocked(prepareFreshCodexConversation).mockResolvedValueOnce(native);
+  expect(await newSessionConversation('new-test')).toMatchObject({ok:false});
+  expect(getSession('new-test')).toMatchObject({codex_session_id:native,status:'running'});
+  expect(existsSync(rollout(native))).toBe(true);
+  expect(releaseCodexConversation).not.toHaveBeenCalled();
+  expect(fork).not.toHaveBeenCalled();
+ });
+ it('removes recovery preferences for the old conversation',async()=>{
   getDb().prepare("INSERT INTO user_ui_state(user_id,key,value) VALUES('owner','session-control:new-test',?)").run(JSON.stringify({model:'old-model',effort:'high',provider:'old-provider'}));
-  const result=await newSessionConversation('new-test');expect(result.ok).toBe(true);
-  expect(getDb().prepare("SELECT value FROM user_ui_state WHERE key='session-control:new-test'").get()).toBeUndefined();
-  expect(getDb().prepare('SELECT value FROM user_ui_state WHERE key=?').get(`session-control:${result.history_id}`)).toMatchObject({value:JSON.stringify({model:'old-model',effort:'high',provider:'old-provider'})});
+  const result=await newSessionConversation('new-test');
+  expect(result).toMatchObject({ok:true,previous_conversation_deletion:'pending'});
+  const worker=startCleanupWorker();
+  try{
+   await vi.waitFor(()=>expect(getSession(result.history_id!)).toBeNull());
+   expect(getDb().prepare("SELECT value FROM user_ui_state WHERE key LIKE 'session-control:%'").all()).toEqual([]);
+  }finally{await worker.close();}
  });
  it('retains the running conversation when preparation fails',async()=>{vi.mocked(prepareFreshCodexConversation).mockRejectedValueOnce(Error('prepare failed'));expect(await newSessionConversation('new-test')).toMatchObject({ok:false,error:'prepare failed'});expect(getSession('new-test')).toMatchObject({status:'running',codex_session_id:native});expect(fork).not.toHaveBeenCalled();expect(getDb().prepare('SELECT count(*) n FROM sessions').get()).toEqual({n:1});});
  it('restores adapter-owned settings when preparing the new conversation fails',async()=>{
@@ -118,8 +222,14 @@ it('creates an empty conversation in the selected account without copying old at
   expect(result).toMatchObject({ok:true});expect(prepare).toHaveBeenCalledOnce();
   expect(prepare.mock.calls[0][1]).toBe('account:brief');expect(prepare.mock.calls[0][3]).toEqual(preference);
   expect(getSession('new-test')?.agent_environment_id).toBe('account:brief');
-  expect(getSession(result.history_id!)?.agent_environment_id).toBeNull();
-  expect(getDb().prepare('SELECT session_id FROM conversation_attachments').all()).toEqual([{session_id:result.history_id}]);
+  expect(result).toMatchObject({previous_conversation_deletion:'pending'});
+  expect(getSession(result.history_id!)).toMatchObject({native_session_id:native,agent_environment_id:null});
+  const worker=startCleanupWorker();
+  try{
+   await vi.waitFor(()=>expect(getSession(result.history_id!)).toBeNull());
+   expect(getDb().prepare('SELECT id FROM sessions').all()).toEqual([{id:'new-test'}]);
+   expect(getDb().prepare('SELECT session_id FROM conversation_attachments').all()).toEqual([]);
+  }finally{await worker.close();}
  }finally{runtime.mockRestore();prepare.mockRestore();}
 });
 

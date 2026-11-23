@@ -75,7 +75,7 @@ flowchart LR
 
 已登记会话的 Engine 绑定优先于线程路由缓存；旧记录中空绑定按界面与权限规则解释为 `native`。若同一原生 ID 同时绑定多个 Engine，平台拒绝猜测。原生会话已有其他写入者时，恢复明确失败，不切换账号、不终止占用者；需要用户回到原会话继续，或先在原位置停止它。
 
-`identity` 的可选 `purgeHistory` 在移除平台会话行前异步清理 Agent 原始历史。Codex 优先向历史行绑定的 Engine 发送 `thread/delete`，并按同一环境和原生会话 ID 清理 `sessions` 或 `archived_sessions` 中对应的 rollout。引擎不可用或拒绝请求时，继续清理该环境的 rollout。跨 Provider 副本、新开后的历史行各自保留其环境和 ID。压缩可能共享的 `history_base` 祖先不会随子会话删除，以免破坏其他会话。
+`identity` 的可选 `purgeHistory` 在移除平台会话行前异步清理 Agent 原始历史。Codex 优先向历史行绑定的 Engine 发送 `thread/delete`，并按同一环境和原生会话 ID 清理 `sessions` 或 `archived_sessions` 中对应的 rollout。引擎不可用或拒绝请求时，继续清理该环境的 rollout。跨 Provider 副本和新开时暂存的旧记录各自使用原有环境和 ID。压缩可能共享的 `history_base` 祖先不会随子会话删除，以免破坏其他会话。
 
 `AgentDefinition` 是新增 Agent 的实现契约；`resolveAgent()` 在注册时补齐可选接口，
 不支持的操作统一返回 `AGENT_FEATURE_UNSUPPORTED`，不借用其他厂商实现。
@@ -391,6 +391,10 @@ Claude 的同一请求可能将思考和正文分行写入 JSONL，并在每行�
 企业微信通知引用回复通过现有平台权限和输入接口直接提交，调度模型不参与路由。
 `POST /api/sessions/:id/input` 的可选 `expected_native_id`、`expected_environment_id` 将输入绑定到预期原生会话和账号环境，服务端在接收及排队实际发送前均检查；绑定变化返回 `409` 和 `submission=rejected`。标识保持不透明，不限定某个 Agent 的格式；既有调用不传这些字段时保持兼容。通知路由仅使用 Agent 中立的原生绑定与公开消息，不访问适配器内部状态。
 
-### 从标签页删除会话
+### 删除会话
 
-浏览器关闭标签页时可以请求后台删除。服务端确认会话已停止后持久化删除请求，返回 HTTP 202，页面随即关闭标签页。后台逐个执行既有的用量持久化、适配器原生历史清理和平台记录删除流程。已受理的工作在服务重启后继续。项目会话记录会显示后台删除状态，失败的记录可重试。
+浏览器关闭标签页时可以请求后台删除。服务端确认会话已停止后持久化删除请求，返回 HTTP 202，页面随即关闭标签页。后台逐个执行既有的用量持久化、适配器原生历史清理和平台记录删除流程。已受理的工作在服务重启后继续。项目会话记录会显示后台删除状态，失败的记录可重试。项目会话记录里的单条删除和批量删除走同一清理流程。
+
+新开对话和简要压缩先准备并验证新原生身份，确认新会话可用后提交旧会话后台删除，同时返回新会话供页面连接。后台按旧会话的原绑定清理 Agent 原始对话文件，再删除旧平台记录。新会话启动失败时可恢复旧会话。接口返回 `previous_conversation_deletion` 和用于跟踪的旧记录 `history_id`。提交成功为 `pending`。提交失败为 `failed`，同时返回提示。后台执行失败可在项目会话记录中重试。新开确认后工作区保持可用，连接就绪前草稿可编辑，发送按钮暂时禁用。
+
+例如，`POST /api/sessions/:id/new-conversation` 在新会话就绪且旧会话删除请求已入队时返回 `{"ok":true,"session":{...},"history_id":"old-session-id","previous_conversation_deletion":"pending"}`。

@@ -25,7 +25,7 @@ import {withSharedResourceInstructions} from './cli-command.js';
 import {sharedResourceLaunch} from './shared-resources/store.js';
 
 import {snapshotConversation,activateFreshConversation,restoreConversationSnapshot} from './conversation-history.js';
-import {sessionRecordDeletionState} from './session-record-deletion.js';
+import {enqueueSessionRecordDeletion,sessionRecordDeletionState} from './session-record-deletion.js';
 import {beginSessionAction,flushSessionFactsBeforeDelete, recordSessionBinding} from './session-statistics.js';
 import {assertEnvironmentUse,canControlEnvironment} from './agents/environment-access.js';
 
@@ -2958,7 +2958,7 @@ export function compactSessionConversation(sessionId:string,expectedNativeId?:st
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
 }
 
-export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference,replacement?:{environmentId:string;prepare:(context:import('./agents/types.js').AgentContext)=>Promise<string>},expectedNativeId?:string,targetEnvironmentId?:string):Promise<SessionReloadResult&{history_id?:string}> {
+export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference,replacement?:{environmentId:string;prepare:(context:import('./agents/types.js').AgentContext)=>Promise<string>},expectedNativeId?:string,targetEnvironmentId?:string):Promise<SessionReloadResult&{history_id?:string;previous_conversation_deletion?:'pending'|'failed'}> {
   if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'});
   return runSessionLifecycle(sessionId,async()=>{
     const session=getSession(sessionId);
@@ -2992,19 +2992,32 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
         preference=await adapter.controls.validate(context,preference);
       }
       const instructions=adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(session.created_by_user_id, project.path)?.instructions:undefined;
-      fresh=replacement?await replacement.prepare({...context,projectPath:project.path}):environmentChange
+      const prepared=replacement?await replacement.prepare({...context,projectPath:project.path}):environmentChange
         ?await adapter.lifecycle.prepareFreshInEnvironment!({...context,projectPath:project.path},targetEnvironmentId!,instructions,preference)
         :await adapter.lifecycle.prepareFresh({...context,projectPath:project.path},instructions,preference);
+      const existingIdentity=getDb().prepare(`SELECT 1 FROM sessions WHERE COALESCE(agent_id,cli_type)=?
+        AND COALESCE(native_session_id,codex_session_id,claude_session_id)=? LIMIT 1`).get(adapter.descriptor.id,prepared);
+      if(!prepared||prepared===context.nativeId||existingIdentity)throw Error('新会话未返回独立的原生标识');
+      fresh=prepared;
       if(environmentChange)checkTarget();
+      const checkSource=()=>{
+        const current=getSession(sessionId);
+        if(!current||nativeConversationId(current)!==context.nativeId||
+          current.agent_id!==session.agent_id||current.project_id!==session.project_id||
+          (current.agent_environment_id||'native')!==(session.agent_environment_id||'native')) {
+          throw Error(expectedNativeId?'原会话已变化，未发送简要历史':'原会话已变化，请重新打开后重试');
+        }
+      };
+      checkSource();
       if(expectedNativeId){
-        const currentSession=getSession(sessionId);
-        if(!currentSession||nativeConversationId(currentSession)!==expectedNativeId||
-          (currentSession.agent_environment_id||'native')!==(session.agent_environment_id||'native'))throw Error('原会话已变化，未发送简要历史');
         const runtime=await adapter.runtime.read(context);
         if(!runtime||!['idle','interrupted','failed'].includes(runtime.state))throw Error('准备期间原会话开始运行，未发送简要历史');
+        checkSource();
       }
       if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');
       history=snapshotConversation(sessionId);
+      // This row is the rollback source until the replacement is ready.
+      sessionLifecyclePromises.set(history,sessionLifecyclePromises.get(sessionId)!);
       const worker=activeSessions.get(sessionId)?.worker;
       await killSession(sessionId,{preserveLifecycle:true});
       const deadline=Date.now()+7000;
@@ -3015,6 +3028,7 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
       stopped=true;
       if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');
       await waitForSessionReplayFinalization(sessionId);
+      checkSource();
       getDb().prepare('DELETE FROM session_snapshots WHERE session_id=?').run(sessionId);
       getDb().transaction(()=>{
         activateFreshConversation(sessionId,history!,fresh!);
@@ -3030,16 +3044,12 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
       })();activated=true;
       await binding(fresh);
       await resumeCrashedSessionUnlocked(getSession(sessionId)!,project.path,true,true);
-      // Release only the old thread. Never restart the shared server or archive
-      // a user thread and its descendants to reclaim one tab.
-      let warning:string|undefined;
-      try{await adapter.lifecycle.release(context);}catch{warning='新会话已打开，旧会话后台终端回收未确认，请在历史中检查。';}
+      const current=getSession(sessionId);
+      if(!current||nativeConversationId(current)!==fresh||!isSessionActive(sessionId))throw Error('新会话尚未就绪');
       insertEvent({session_id:sessionId,type:'conversation_new',data:{previousSessionId:history,nativeSessionId:fresh}});
       recordNew('completed',{related_native_id:fresh});
-      const current=getSession(sessionId)!;
-      recordSessionBinding(current,fresh,nativeConversationId(session));
-      if(replacement)beginSessionAction(sessionAgentContext(current),'environment',{related_native_id:nativeConversationId(session)??undefined})('completed');
-      return {ok:true,history_id:history,...warning?{warning}:{}};
+      recordSessionBinding(current,fresh,context.nativeId);
+      if(replacement)beginSessionAction(sessionAgentContext(current),'environment',{related_native_id:context.nativeId??undefined})('completed');
     } catch(error) {
       recordNew('unknown');
       try{restoreFresh?.();}catch{/* Preserve the original failure. */}
@@ -3061,7 +3071,31 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
       }
       if(fresh)await ((environmentChange||expectedNativeId)&&adapter.lifecycle.discardFresh?adapter.lifecycle.discardFresh({...context,nativeId:fresh}):adapter.lifecycle.release({...context,nativeId:fresh})).catch(()=>{});
       return {ok:false,error:error instanceof Error?error.message:'新开失败，原会话历史已保留'};
+    } finally {
+      if(history){
+        sessionLifecyclePromises.delete(history);
+        cancelledSessionLifecycles.delete(history);
+        notifySessionLifecycleListeners(history,false);
+      }
     }
+
+    // The old row retains its original native binding for background cleanup.
+    if(replacement){
+      let warning:string|undefined;
+      try{await adapter.lifecycle.release(context);}catch{warning='新会话已打开，旧会话后台终端回收未确认，请在历史中检查。';}
+      return {ok:true,history_id:history,...warning?{warning}:{}};
+    }
+    try {
+      const db=getDb();
+      const queued=db.transaction(()=>{
+        db.prepare('DELETE FROM conversation_input_links WHERE session_id=? AND native_id=?')
+          .run(sessionId,context.nativeId);
+        return enqueueSessionRecordDeletion(history!);
+      })();
+      if(queued)return {ok:true,previous_conversation_deletion:'pending',history_id:history};
+    } catch {/* Leave the old record available if enqueueing failed. */}
+    return {ok:true,previous_conversation_deletion:'failed',history_id:history,
+      warning:'新会话已打开，未能安排旧会话删除，请在项目会话记录中重试。'};
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
 }
 
@@ -3135,7 +3169,7 @@ export function canQueueSessionRecordDeletion(sessionId: string): boolean {
  * Permanently delete an ended session and its adapter-owned history. Durable
  * source cleanup runs before removing the visible record, which allows retries.
  */
-export async function purgeSessionRecord(sessionId: string, options?: {background: boolean}): Promise<{ ok: boolean; error?: string }> {
+export async function purgeSessionRecord(sessionId: string, options?: {background:boolean}): Promise<{ ok: boolean; error?: string }> {
   const db = getDb();
   const session = getSession(sessionId);
   if (!session) return { ok: false, error: 'Session not found' };
@@ -3159,7 +3193,11 @@ export async function purgeSessionRecord(sessionId: string, options?: {backgroun
     }
     await flushSessionFactsBeforeDelete(context);
     await adapter.statistics.facts?.preserveAccountUsage?.(context);
-    await adapter.identity.purgeHistory?.(context);
+    if(context.nativeId){
+      try{await adapter.lifecycle.release(context);}catch{/* An unavailable runtime can still have a deletable history file. */}
+      if(!adapter.identity.purgeHistory)throw Error('此 Agent 尚不支持删除原始对话');
+      await adapter.identity.purgeHistory(context);
+    }
     const current=getSession(sessionId);
     if(!current||activeSessions.has(sessionId)||sessionStatusMayHaveProcess(current.status)){recordDelete('unknown');return {ok:false,error:'会话状态已变化，原记录已保留，请确认会话已停止后重试'};}
     try{adapter.identity.purge?.(context);}catch{/* non-fatal platform binding cleanup */}
@@ -3168,6 +3206,7 @@ export async function purgeSessionRecord(sessionId: string, options?: {backgroun
       try { db.prepare('DELETE FROM session_snapshots WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
       try { db.prepare('DELETE FROM events WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
       db.prepare('DELETE FROM user_ui_state WHERE key = ?').run(`session-control:${sessionId}`);
+      db.prepare('UPDATE tasks SET session_id = NULL WHERE session_id = ?').run(sessionId);
       db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
     })();
     recordDelete('completed');

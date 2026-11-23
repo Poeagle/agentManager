@@ -1768,7 +1768,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       {confirmBulkDeleteEnded && (
         <ConfirmModal
           title="Delete all ended sessions?"
-          message="This permanently deletes all completed, cancelled, and failed session records owned by your account in this project. Running sessions are not affected. Saved screens and associated recoverable history may also be removed."
+          message="This permanently deletes all completed, cancelled, and failed session records owned by your account in this project. Running sessions are not affected. Saved screens and the associated Agent conversation files are also permanently deleted."
           confirmLabel={bulkDeletingEnded ? 'Deleting…' : 'Delete all'}
           onConfirm={() => { void deleteAllEndedSessions(); }}
           onCancel={() => {
