@@ -7,8 +7,11 @@ export function savedSessionTabs():SavedSessionTab[] {
 }
 /** Remove saved browser tabs after the runtime has stopped; keep conversation data. */
 export function removeSessionTabs(sessionId:string,scope?:{userId:string;projectId:string}):void {
- const rows=getDb().prepare("SELECT user_id,key,value FROM user_ui_state WHERE key LIKE 'project:%'").all() as Array<{user_id:string;key:string;value:string}>;
- for(const row of rows){const projectId=row.key.slice(8);if(scope&&(scope.userId!==row.user_id||scope.projectId!==projectId))continue;let state:any;try{state=JSON.parse(row.value);}catch{continue;}
+ const db=getDb();
+ const rows=(scope
+  ?db.prepare("SELECT user_id,key,value FROM user_ui_state WHERE user_id=? AND key=?").all(scope.userId,`project:${scope.projectId}`)
+  :db.prepare("SELECT user_id,key,value FROM user_ui_state WHERE key LIKE 'project:%'").all()) as Array<{user_id:string;key:string;value:string}>;
+ for(const row of rows){const projectId=row.key.slice(8);let state:any;try{state=JSON.parse(row.value);}catch{continue;}
   if(!Array.isArray(state.terminalInstances)||!state.terminalInstances.some((tab:any)=>tab?.id===sessionId))continue;
   state.terminalInstances=state.terminalInstances.filter((tab:any)=>tab?.id!==sessionId);if(state.terminalLabels)delete state.terminalLabels[sessionId];
   if(state.activeTerminalId===sessionId)state.activeTerminalId=state.terminalInstances[0]?.id||null;

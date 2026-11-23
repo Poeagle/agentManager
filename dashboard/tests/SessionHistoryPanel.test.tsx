@@ -35,6 +35,22 @@ async function mount() {
 }
 
 describe('project session deletion', () => {
+  it('shows background deletion and enables retry only after failure', async () => {
+    records = [{...ended,record_deletion:'pending'}];
+    const user = userEvent.setup();
+    await mount();
+    expect(screen.getByText('后台删除中')).toBeVisible();
+    expect(screen.getByRole('button',{name:'删除会话 已关闭的会话'})).toBeDisabled();
+    expect(screen.getByRole('button',{name:'已关闭的会话',exact:true})).toBeDisabled();
+
+    records = [{...ended,record_deletion:'failed'}];
+    await act(async () => { await client.invalidateQueries({queryKey:['project-sessions','project']}); });
+    expect(await screen.findByText('删除失败，可重试')).toBeVisible();
+    await user.click(screen.getByRole('button',{name:'删除会话 已关闭的会话'}));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button',{name:'删除记录',exact:true}));
+    await waitFor(() => expect(screen.queryByText('删除失败，可重试')).not.toBeInTheDocument());
+  });
+
   it('selects only ended sessions and preserves failures during bulk deletion',async()=>{
     records=[ended,active,{...ended,id:'second',task:'Second task',agent_environment_id:'provider:xindu'}];
     vi.mocked(api.sessions.deleteRecord).mockImplementation(async id=>{if(id==='second')throw Error('failed');records=records.filter(row=>row.id!==id);return {ok:true};});

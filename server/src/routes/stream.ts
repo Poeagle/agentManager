@@ -21,6 +21,10 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
     const unsubscribe = subscribe((event: any) => {
       // Internal recovery observation; personalized notifications carry the UI update.
       if(event.type==='session.retry')return;
+      if (event.type === 'session.record-deletion') {
+        try { if (JSON.parse(event.data || '{}').user_id === userId) socket.send(JSON.stringify(event)); } catch { /* Closed socket or malformed event. */ }
+        return;
+      }
       if(event.type==='notification.changed'){
         try{const data=JSON.parse(event.data||'{}');if(data.user_id!==userId||!userHasPermission(userId,'agent_api'))return;socket.send(JSON.stringify(event));}catch{/* Closed socket or malformed event. */}
         return;

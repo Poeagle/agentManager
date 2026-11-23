@@ -25,6 +25,7 @@ import {withSharedResourceInstructions} from './cli-command.js';
 import {sharedResourceLaunch} from './shared-resources/store.js';
 
 import {snapshotConversation,activateFreshConversation,restoreConversationSnapshot} from './conversation-history.js';
+import {sessionRecordDeletionState} from './session-record-deletion.js';
 import {beginSessionAction,flushSessionFactsBeforeDelete, recordSessionBinding} from './session-statistics.js';
 import {assertEnvironmentUse,canControlEnvironment} from './agents/environment-access.js';
 
@@ -318,7 +319,7 @@ function runSessionLifecycle<T>(
   operation: () => Promise<T>,
   afterExisting: () => T,
 ): Promise<T> {
-  if (purgingSessionRecords.has(sessionId)) return Promise.resolve(afterExisting());
+  if (purgingSessionRecords.has(sessionId) || sessionRecordDeletionState(sessionId) === 'pending') return Promise.resolve(afterExisting());
   const existing = sessionLifecyclePromises.get(sessionId);
   if (existing) return existing.then(afterExisting);
 
@@ -2849,6 +2850,9 @@ export function resumeCrashedSession(staleSession: Session, projectPath: string,
 export async function resumeSessionById(sessionId: string, skipCircuitBreaker = true): Promise<{ ok: boolean; error?: string }> {
   const session = getSession(sessionId);
   if (!session) return { ok: false, error: 'Session not found' };
+  if (purgingSessionRecords.has(sessionId) || sessionRecordDeletionState(sessionId) === 'pending') {
+    return {ok:false,error:'会话正在后台删除'};
+  }
   if (activeSessions.has(sessionId) || ['running', 'detached', 'pending', 'released'].includes(session.status)) {
     return { ok: false, error: 'Session is still active' };
   }
@@ -3065,6 +3069,7 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
  * Never create a new CLI process from an automatic browser connection.
  */
 export function recoverSessionOnAttach(sessionId: string): Promise<boolean> {
+  if (sessionRecordDeletionState(sessionId) === 'pending') return Promise.resolve(false);
   const remote=getSession(sessionId);if(remote&&['running','detached'].includes(remote.status)&&agentForSession(remote).descriptor.sessionHost==='managed'&&nativeConversationId(remote)){attachManagedAgent(remote);return Promise.resolve(true);}
   if (isSessionActive(sessionId)) return Promise.resolve(true);
   const existing = sessionRecoveryPromises.get(sessionId);
@@ -3119,18 +3124,24 @@ export async function resumeAgentConversation(projectPath:string,projectId:strin
 /** Compatibility entry point for the existing Claude history route. */
 export function resumeClaudeSession(projectPath:string,projectId:string|null,nativeId:string,task:string,createdByUserId?:string):Promise<Session>{return resumeAgentConversation(projectPath,projectId,'claude',nativeId,task,createdByUserId);}
 
+export function canQueueSessionRecordDeletion(sessionId: string): boolean {
+  const session = getSession(sessionId);
+  return !!session && !sessionStatusMayHaveProcess(session.status) && !activeSessions.has(sessionId) && !isManagedAgentActive(sessionId)
+    && !stoppingWorkers.has(sessionId) && !sessionLifecyclePromises.has(sessionId) && !purgingSessionRecords.has(sessionId);
+}
+
 /**
- * Permanently delete an ended session and its adapter-owned history. Refuses
- * if the session is active. Durable source deletion happens before DB removal;
- * if it fails, retain the visible history row so the user can retry.
+ * Permanently delete an ended session and its adapter-owned history. Durable
+ * source cleanup runs before removing the visible record, which allows retries.
  */
-export async function purgeSessionRecord(sessionId: string): Promise<{ ok: boolean; error?: string }> {
+export async function purgeSessionRecord(sessionId: string, options?: {background: boolean}): Promise<{ ok: boolean; error?: string }> {
   const db = getDb();
   const session = getSession(sessionId);
   if (!session) return { ok: false, error: 'Session not found' };
-  if (activeSessions.has(sessionId) || stoppingWorkers.has(sessionId) || sessionLifecyclePromises.has(sessionId) || purgingSessionRecords.has(sessionId) || sessionStatusMayHaveProcess(session.status)) {
-    return { ok: false, error: 'Stop the session before deleting it' };
+  if (!options?.background && sessionRecordDeletionState(sessionId) === 'pending') {
+    return {ok:false,error:'会话正在后台删除'};
   }
+  if (!canQueueSessionRecordDeletion(sessionId)) return {ok:false,error:'Stop the session before deleting it'};
   purgingSessionRecords.add(sessionId);
   const context=sessionAgentContext(session);
   const recordDelete=beginSessionAction(context,'delete');

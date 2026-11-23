@@ -1050,7 +1050,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   }
 
   async function closeTerminal(id:string,removeRecord=false) {
-    if(removeRecord)await api.sessions.deleteRecord(id,true);else await api.sessions.kill(id);
+    if(removeRecord)await api.sessions.queueRecordDeletion(id);else await api.sessions.kill(id);
     removeTerminalTabFromState(id);
     setCloseConfirm(null);
     void queryClient.invalidateQueries({queryKey:['sessions']});
