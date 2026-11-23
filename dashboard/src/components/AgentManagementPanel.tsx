@@ -1400,6 +1400,24 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
   const client = useQueryClient();
   const provider = row.provider;
   const agentId = row.state.agent.id;
+  const [detected,setDetected] = useState<DetectedAgentModel[]>([]);
+  const detect = useMutation({
+    mutationFn: async () => {
+      if (!provider) throw Error('当前 Provider 不支持模型探测');
+      const result = await api.agentManagement.detectModels(agentId, { providerId: provider.id });
+      if (!result.models.length) throw Error('Provider 未返回可用模型');
+      const saved = await api.agentManagement.updateProvider(agentId, provider.id, {
+        fields: { models: [...new Set(provider.models)], defaultModel: provider.defaultModel || provider.models[0] || '', ...modelCapabilitiesPayload(result.models) },
+      });
+      return { result, saved };
+    },
+    onSuccess: ({ result, saved }) => {
+      setDetected(result.models);
+      client.setQueryData(['agent-management', agentId], saved);
+      onChanged(saved.state);
+    },
+    onError: (error: Error) => onError(`${row.name} · ${error.message}`),
+  });
   const save = useMutation({
     mutationFn: (fields:Record<string,string>)=>api.agentManagement.updateProvider(agentId,provider!.id,{fields}),
     onMutate: ()=>onError(''),
@@ -1429,12 +1447,15 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
       <span className={`agent-management-dot ${enabled ? statusTone(provider?.status ?? (row.environment?.auth_mode ? 'ready' : 'unknown')) : 'unknown'}`} />{status}
     </span></td>
     <td className="agent-provider-balance">{!readOnly && row.balanceId && enabled ? <BalanceSummary id={row.balanceId}/> : '—'}</td>
-    <td><TableActions><TableActionButton onClick={onOpen} disabled={save.isPending} aria-label={`${readOnly ? '查看' : '编辑'} ${provider?.name ?? row.name}${row.state.agent.label ? ` · ${row.state.agent.label}` : ''}`}>
-      {readOnly ? '查看' : <><Pencil size={12}/>编辑</>}
-    </TableActionButton></TableActions></td>
+    <td><TableActions>
+      {provider&&<TableActionButton onClick={()=>detect.mutate()} disabled={readOnly||detect.isPending||save.isPending} aria-label={`探测 ${provider.name} 模型`}><RefreshCw size={12} className={detect.isPending?'animate-spin':undefined}/>探测模型</TableActionButton>}
+      <TableActionButton onClick={onOpen} disabled={save.isPending||detect.isPending} aria-label={`${readOnly ? '查看' : '编辑'} ${provider?.name ?? row.name}${row.state.agent.label ? ` · ${row.state.agent.label}` : ''}`}>
+        {readOnly ? '查看' : <><Pencil size={12}/>编辑</>}
+      </TableActionButton>
+    </TableActions></td>
   </tr>
   {expanded&&<TableDetailRow columnCount={providerColumns.length+2}>
-    {provider?<ProviderModelsExpansion agentId={agentId} provider={provider} readOnly={readOnly} onChanged={onChanged}/>:<div className="provider-model-expansion-empty">此账号模型由 Agent 原生配置管理</div>}
+    {provider?<ProviderModelsExpansion agentId={agentId} provider={provider} detected={detected} readOnly={readOnly} onChanged={onChanged}/>:<div className="provider-model-expansion-empty">此账号模型由 Agent 原生配置管理</div>}
   </TableDetailRow>}</Fragment>;
 }
 

@@ -2,16 +2,17 @@ import {useEffect,useState} from 'react';
 import {useMutation,useQuery} from '@tanstack/react-query';
 import {Pencil,Save,X} from 'lucide-react';
 import {api,type AgentModelConfig,type DetectedAgentModel} from '../lib/api';
-import {ModelCatalogTable,ProviderModelActions,type ModelCatalogRow} from './ModelCatalogTable';
+import {ModelCatalogTable,type ModelCatalogRow} from './ModelCatalogTable';
+import {TableActionButton,TableActions} from './table/TableActions';
 import type {AgentModelMetadata} from '../lib/api';
 
 type ModelOption=Pick<DetectedAgentModel,'model'|'name'>&AgentModelMetadata;
 type ModelPatch=Pick<AgentModelConfig,'provider'|'model'>&Partial<Pick<AgentModelConfig,'contextWindow'|'maxContextWindow'|'effectiveContextWindowPercent'|'supportsImages'>>;
 type ModelRow=ModelCatalogRow&{config?:AgentModelConfig};
 /** A single catalog view owns selection, default model and capability drafts. */
-export function ProviderModelTable({agentId,providerId,options,selected,readOnly,selectionReadOnly=false,busy,detecting,canSave,onSelectedChange,onDetect,onSave,onDirtyChange,onBusyChange}:{
- agentId:string;providerId:string;options:ModelOption[];selected:string[];readOnly:boolean;selectionReadOnly?:boolean;busy:boolean;detecting:boolean;canSave:boolean;
- onSelectedChange:(models:string[])=>void;onDetect:()=>void;onSave:(patches:ModelPatch[])=>Promise<void>;onDirtyChange:(dirty:boolean)=>void;onBusyChange:(busy:boolean)=>void;
+export function ProviderModelTable({agentId,providerId,options,selected,readOnly,selectionReadOnly=false,busy,canSave,onSelectedChange,onSave,onDirtyChange,onBusyChange}:{
+ agentId:string;providerId:string;options:ModelOption[];selected:string[];readOnly:boolean;selectionReadOnly?:boolean;busy:boolean;canSave:boolean;
+ onSelectedChange:(models:string[])=>void;onSave:(patches:ModelPatch[])=>Promise<void>;onDirtyChange:(dirty:boolean)=>void;onBusyChange:(busy:boolean)=>void;
 }){
  const query=useQuery({queryKey:['agent-model-configs',agentId,providerId],queryFn:()=>api.agentManagement.modelConfigs(agentId),retry:false,refetchInterval:300000});
  const [patches,setPatches]=useState<Record<string,Partial<ModelPatch>>>({});
@@ -45,11 +46,6 @@ export function ProviderModelTable({agentId,providerId,options,selected,readOnly
   {key==='effectiveContextWindowPercent'&&<span>%</span>}
  </div>;
  return <form className="provider-models" aria-label="Provider 模型配置" onSubmit={event=>{event.preventDefault();if(!locked&&canSave)save.mutate();}}>
-  <ProviderModelActions selected={selected.length} total={models.length} disabled={readOnly||selectionReadOnly} detecting={detecting} onDetect={onDetect}>
-   {!readOnly&&!editing&&<button type="button" className="agent-management-button" onClick={()=>setEditing(true)}><Pencil size={13}/>编辑模型</button>}
-   {editing&&<button type="button" className="agent-management-button" onClick={()=>{setPatches({});setEditing(false);}}><X size={13}/>取消</button>}
-   {editing&&<button type="submit" className="agent-management-button agent-management-button-primary" disabled={locked||detecting||!canSave}><Save size={13}/>{save.isPending?'保存中…':'保存并重启 Engine'}</button>}
-  </ProviderModelActions>
    <ModelCatalogTable rows={rows} selected={selected} locked={displayLocked} loading={query.isPending} error={query.isError?query.error.message:undefined} onRetry={()=>void query.refetch()}
    onSelectedChange={!readOnly&&!selectionReadOnly?onSelectedChange:undefined}
    renderContext={row=>(editing&&row.config?numberField(row,'contextWindow','上下文长度'):undefined)??row.context?.toLocaleString()??'未提供'}
@@ -58,7 +54,11 @@ export function ProviderModelTable({agentId,providerId,options,selected,readOnly
       disabled={locked||!selected.includes(row.model)}
       onChange={event=>edit(row.model,{supportsImages:event.target.checked})}/>
     {row.config.supportsImages==null?'未知':row.config.supportsImages?'支持':'不支持'}
-   </span>:row.images==null?'未提供':row.images?'支持':'不支持'}/>
+   </span>:row.images==null?'未提供':row.images?'支持':'不支持'}
+   renderActions={()=> <TableActions>
+    {!readOnly&&!editing&&<TableActionButton onClick={()=>setEditing(true)}><Pencil size={12}/>编辑</TableActionButton>}
+    {editing&&<><TableActionButton onClick={()=>{setPatches({});setEditing(false);}}><X size={12}/>取消</TableActionButton><TableActionButton onClick={()=>save.mutate()} disabled={locked||!canSave}><Save size={12}/>{save.isPending?'保存中…':'保存并重启'}</TableActionButton></>}
+   </TableActions>}/>
   {editing&&<p className="provider-models-note">上下文和图片能力来自探测结果；保存后重启 Engine 生效。默认模型会随所选模型自动维护。</p>}
  </form>;
 }

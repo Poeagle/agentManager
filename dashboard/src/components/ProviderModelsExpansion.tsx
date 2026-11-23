@@ -8,11 +8,10 @@ import {ProviderModelTable} from './ProviderModelTable';
 type ModelOption=Pick<DetectedAgentModel,'model'|'name'>&AgentModelMetadata;
 type ModelPatch=Pick<AgentModelConfig,'provider'|'model'>&Partial<Pick<AgentModelConfig,'contextWindow'|'maxContextWindow'|'effectiveContextWindowPercent'|'supportsImages'>>;
 
-export function ProviderModelsExpansion({agentId,provider,readOnly,onChanged}:{agentId:string;provider:AgentProviderState;readOnly:boolean;onChanged:(state:AgentManagementState)=>void}){
+export function ProviderModelsExpansion({agentId,provider,readOnly,detected,onChanged}:{agentId:string;provider:AgentProviderState;readOnly:boolean;detected:DetectedAgentModel[];onChanged:(state:AgentManagementState)=>void}){
  const client=useQueryClient();
  const [selected,setSelected]=useState(provider.models);
  const [defaultModel,setDefaultModel]=useState(provider.defaultModel??'');
- const [detected,setDetected]=useState<DetectedAgentModel[]>([]);
  const [dirty,setDirty]=useState(false);
  const catalogQuery=useQuery({queryKey:['agent-model-catalog'],queryFn:api.agentManagement.modelCatalog,staleTime:5*60*1000});
  const catalog=useMemo(()=>new Map((catalogQuery.data?.models??[]).map(model=>[model.model,model])),[catalogQuery.data]);
@@ -35,18 +34,6 @@ export function ProviderModelsExpansion({agentId,provider,readOnly,onChanged}:{a
    client.invalidateQueries({queryKey:['conversation-controls']}),
   ]);
  };
- const detect=useMutation({mutationFn:async()=>{
-  const result=await api.agentManagement.detectModels(agentId,{providerId:provider.id});
-  if(!result.models.length)throw Error('Provider 未返回可用模型');
-  const models=result.models.map(item=>item.model);
-  // Discovery only extends the catalog. Existing selections and defaults are
-  // user configuration and must survive a probe even when the upstream list changes.
-  const nextSelected=[...new Set(provider.models)];
-  const nextDefault=provider.defaultModel||nextSelected[0]||'';
-  const saved=await api.agentManagement.updateProvider(agentId,provider.id,{fields:{models:nextSelected,defaultModel:nextDefault,...modelCapabilitiesPayload(result.models)}});
-  setDetected(result.models);setSelected(nextSelected);setDefaultModel(nextDefault);updateState(saved.state);
-  return result.models;
- }});
  const save=useMutation({mutationFn:async(patches:ModelPatch[])=>{
   const configs=await api.agentManagement.modelConfigs(agentId);
   const byModel=new Map(configs.models.map(model=>[model.model,model]));
@@ -63,11 +50,11 @@ export function ProviderModelsExpansion({agentId,provider,readOnly,onChanged}:{a
   const result=await api.agentManagement.updateProvider(agentId,provider.id,{fields:{models:selected,defaultModel:defaultModel||selected[0]||'',...modelCapabilitiesPayload(capabilities)}});
   updateState(result.state);setDirty(false);
  }});
- const busy=detect.isPending||save.isPending;
+ const busy=save.isPending;
  return <div className="provider-model-expansion">
   {provider?<ProviderModelTable agentId={agentId} providerId={provider.id} options={options} selected={selected}
-   readOnly={readOnly} busy={busy} detecting={detect.isPending} canSave={!readOnly&&!busy&&(dirty||selected.join('\0')!==provider.models.join('\0')||defaultModel!==(provider.defaultModel??''))}
-   onSelectedChange={models=>{setSelected(models);setDefaultModel(model=>models.includes(model)?model:models[0]||'');}} onDetect={()=>detect.mutate()}
+   readOnly={readOnly} busy={busy} canSave={!readOnly&&!busy&&(dirty||selected.join('\0')!==provider.models.join('\0')||defaultModel!==(provider.defaultModel??''))}
+   onSelectedChange={models=>{setSelected(models);setDefaultModel(model=>models.includes(model)?model:models[0]||'');}}
    onSave={patches=>save.mutateAsync(patches)} onDirtyChange={setDirty} onBusyChange={()=>{}}/>
    :<div className="provider-model-expansion-empty">暂无模型</div>}
   {detect.isError&&<p className="agent-management-error-box" role="alert"><CircleAlert size={13}/>{detect.error.message}</p>}
