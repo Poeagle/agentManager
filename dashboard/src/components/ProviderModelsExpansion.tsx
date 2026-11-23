@@ -38,9 +38,11 @@ export function ProviderModelsExpansion({agentId,provider,readOnly,onChanged}:{a
  const detect=useMutation({mutationFn:async()=>{
   const result=await api.agentManagement.detectModels(agentId,{providerId:provider.id});
   if(!result.models.length)throw Error('Provider 未返回可用模型');
-  const models=result.models.map(item=>item.model),overlap=provider.models.filter(model=>models.includes(model));
-  const nextSelected=provider.id==='native'?models:overlap.length?overlap:models;
-  const nextDefault=provider.defaultModel&&models.includes(provider.defaultModel)?provider.defaultModel:nextSelected[0]??'';
+  const models=result.models.map(item=>item.model);
+  // Discovery only extends the catalog. Existing selections and defaults are
+  // user configuration and must survive a probe even when the upstream list changes.
+  const nextSelected=[...new Set(provider.models)];
+  const nextDefault=provider.defaultModel||nextSelected[0]||'';
   const saved=await api.agentManagement.updateProvider(agentId,provider.id,{fields:{models:nextSelected,defaultModel:nextDefault,...modelCapabilitiesPayload(result.models)}});
   setDetected(result.models);setSelected(nextSelected);setDefaultModel(nextDefault);updateState(saved.state);
   return result.models;

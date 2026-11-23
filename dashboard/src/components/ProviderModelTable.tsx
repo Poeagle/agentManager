@@ -26,8 +26,9 @@ export function ProviderModelTable({agentId,providerId,options,selected,readOnly
   const metadata=option?.context_window||option?.input_modalities||option?.api_pricing?option:config??option;
   const context=option?.context_window,inputs=option?.input_modalities;
   const editable=config?{...config,
-   ...(context?{contextWindow:context,maxContextWindow:context}:{}),
-   ...(inputs?.length?{supportsImages:inputs.includes('image')}:{}),...patches[model],
+   ...(config.contextWindow==null&&context?{contextWindow:context}:{}),
+   ...(config.maxContextWindow==null&&context?{maxContextWindow:context}:{}),
+   ...(config.supportsImages==null&&inputs?.length?{supportsImages:inputs.includes('image')}:{}),...patches[model],
   }:undefined;
   const confirmedImages=metadata?.input_modalities?.length?metadata.input_modalities.includes('image'):undefined;
   return {model,name,metadata,config:editable,context:editable?.contextWindow??metadata?.context_window,
