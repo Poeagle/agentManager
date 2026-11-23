@@ -149,7 +149,7 @@ export function SendGuardSettings({value,canEdit}:{value:string|undefined;canEdi
       <p className="text-xs leading-5" style={{color:'var(--text-secondary)'}}>自动操作需要会话空闲和相应权限，未完成时保留草稿。新开和简要压缩在新会话就绪后会永久删除旧会话及 Agent 原始对话文件。</p>
       <button type="button" className="settings-panel-button settings-panel-button--primary" disabled={!editable} onClick={()=>mutation.mutate()}>保存发送保护规则</button>
     </div>
-    {editor&&<Dialog title={titleFor(editor.index)} appearance="manager" width={760} onClose={()=>setEditor(null)}>
+    {editor&&<Dialog title={titleFor(editor.index)} appearance="manager" size="lg" width={760} onClose={()=>setEditor(null)}>
       <form className="settings-panel-section space-y-3" onSubmit={event=>{
         event.preventDefault();
         if(!canApply)return;

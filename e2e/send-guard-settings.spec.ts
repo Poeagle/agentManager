@@ -21,18 +21,26 @@ test('shows complete rules per row and edits Provider scope in the centered edit
  await expect(table.getByRole('cell',{name:'全部 Provider',exact:true})).toBeVisible();
  await expect(table.getByRole('cell',{name:'发送提醒',exact:true})).toBeVisible();
  await expect(platform.getByRole('spinbutton')).toHaveCount(0);
- await page.setViewportSize({width:390,height:844});
+ await page.setViewportSize({width:1280,height:720});
  const reminderOpen=table.getByRole('button',{name:/编辑规则 1/});
  await reminderOpen.press('Enter');
  const reminder=page.getByRole('dialog',{name:'编辑规则 1'});
  await expect(reminder.getByLabel('触发条件 1数值')).toHaveValue('80');
  await expect(reminder.getByRole('button',{name:'触发条件组合方式'})).toHaveText('或');
+ const desktopBox=(await reminder.boundingBox())!;
+ expect(desktopBox.width).toBeGreaterThanOrEqual(740);
+ const idle=(await reminder.getByLabel('触发条件 2分组 1',{exact:true}).boundingBox())!;
+ const occupancy=(await reminder.getByLabel('触发条件 2分组 2',{exact:true}).boundingBox())!;
+ expect(Math.abs(idle.y-occupancy.y)).toBeLessThan(2);
+ await page.setViewportSize({width:390,height:844});
  for(const [index,[minutes,percent]] of [[30,30],[20,50],[10,60],[60,20]].entries()){
   const branch=reminder.getByRole('region',{name:`触发条件 ${index+2}分组`});
   await expect(branch.getByLabel(`触发条件 ${index+2}分组 1数值`)).toHaveValue(String(minutes));
   await expect(branch.getByLabel(`触发条件 ${index+2}分组 2数值`)).toHaveValue(String(percent));
  }
  const box=(await reminder.boundingBox())!;
+ expect(box.width).toBeLessThanOrEqual(366);
+ expect(await reminder.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
  expect(Math.abs(box.x+box.width/2-195)).toBeLessThan(2);
  expect(Math.abs(box.y+box.height/2-422)).toBeLessThan(2);
  await reminder.getByLabel('Provider 范围').selectOption('selected');
