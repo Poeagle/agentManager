@@ -119,7 +119,6 @@ function historyTurns(messages: CollectedMessage[], promptKey: (label: string, i
         olderOmitted ||= prior.context.older_omitted || prior.context.omitted_turns > 0;
       }
       const input = prior ? prior.input : message.text;
-      if (!prior && automaticConversationContext(input)) continue;
       const attachments = message.attachments?.slice(0, 8).map(({kind,name,path}) => ({
         kind, name: excerpt(name, 255), path: excerpt(path, 1024),
       }));
@@ -241,8 +240,10 @@ export async function prepareBriefSend(sessionId: string, nativeId: string, payl
     const next = page.messages[0].id;
     if (!next || cursors.has(next)) throw Error('会话历史分页不完整，简要压缩未执行。');
     pageNumber++;
+    // Recognize complete startup wrappers before clips can remove their closing tags.
+    const conversationMessages = page.messages.filter(message => message.role !== 'user' || !automaticConversationContext(message.text));
     // Keep bounded excerpts in memory even when individual native messages are large.
-    pages.push(page.messages.map(message => {
+    pages.push(conversationMessages.map(message => {
       const prior = parseBriefContext(message.text);
       const text = prior ? message.text : excerpt(message.text, MAX_FIELD_CHARS * 2);
       if (text !== message.text && (message.role === 'user' || message.phase !== 'commentary')) collectedTruncation = true;

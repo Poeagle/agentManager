@@ -119,6 +119,16 @@ describe('native automatic context',()=>{
  it('labels explicit native project and environment wrappers',()=>{
   expect(automaticConversationContext(rules)).toMatchObject({kind:'project_rules',label:'项目规则'});expect(automaticConversationContext('<environment_context>linux</environment_context>')?.label).toBe('运行环境');expect(automaticConversationContext('<task_notification>done</task_notification>')?.label).toBe('任务通知');
  });
+ it('folds pathless native instructions and environment after switching accounts',()=>{
+  const pathless=rules.replace(' for /project','');
+  const combined=pathless+'\n<environment_context><cwd>/project</cwd></environment_context>';
+  expect(automaticConversationContext(pathless)).toEqual({kind:'project_rules',label:'项目规则',source:'AGENTS.md'});
+  expect(automaticConversationContext(combined)).toEqual({kind:'combined',label:'项目规则 · 运行环境',source:'AGENTS.md'});
+  expect(automaticContextMarkdown(combined)).toContain('## 项目规则\n\n# 项目治理\n自动规则\n\n## 运行环境');
+  expect(automaticConversationContext(combined+'\n请继续处理任务')).toBeNull();
+  expect(automaticConversationContext(pathless.replace('</INSTRUCTIONS>',''))).toBeNull();
+  expect(conversationOutline([{id:'auto',role:'user',text:combined,timestamp:null}])).toEqual([]);
+ });
  it('does not fold normal questions, quoted examples or a user request after context',()=>{
   for(const text of ['请修改 AGENTS.md',`例子：\n${rules}`,rules+'\n\n请修复这个问题','# Context from my IDE setup:\n\n## My request for Codex:\n修复问题'])expect(automaticConversationContext(text)).toBeNull();
  });

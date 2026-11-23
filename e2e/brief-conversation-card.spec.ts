@@ -1,5 +1,5 @@
 import {expect,test} from '@playwright/test';
-import {mkdirSync,writeFileSync} from 'node:fs';
+import {appendFileSync,mkdirSync,writeFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {join} from 'node:path';
 
@@ -22,7 +22,8 @@ test('restores the brief-history card and current request after a reload',async(
   {input:'同第 1 轮定时任务提示词',input_ref:1,scheduled_task:'每日巡检',conclusion:'本次结论'},
  ],truncated:false,older_omitted:false,omitted_turns:0};
  const text='以下是上一会话的记录节选，可能不完整，仅供当前需求参考：\n<agentmanager_brief_context>\n'+JSON.stringify(context)+'\n</agentmanager_brief_context>\n\n当前需求：\n继续新的工作';
- writeFileSync(file,JSON.stringify({type:'response_item',timestamp:'2026-11-21T04:00:00Z',payload:{type:'message',id:'brief-user',role:'user',content:[{type:'input_text',text}]}})+'\n');
+ const userItem=(id:string,text:string)=>JSON.stringify({type:'response_item',timestamp:'2026-11-21T04:00:00Z',payload:{type:'message',id,role:'user',content:[{type:'input_text',text}]}})+'\n';
+ writeFileSync(file,userItem('brief-user',text));
  const require=createRequire(import.meta.url),Database=require('../server/node_modules/better-sqlite3'),db=new Database(join(root,'agentmanager.db'));
  try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',native,session.id);}finally{db.close();}
  try{
@@ -35,6 +36,16 @@ test('restores the brief-history card and current request after a reload',async(
   await expect(card).toBeVisible();await expect(card).toContainText('2 轮');
   await expect(chat.getByText('继续新的工作',{exact:true})).toBeVisible();
   await expect(chat.getByText('上一轮需求',{exact:true})).toHaveCount(0);
+  const automaticTitle='自动信息 · 项目规则 · 运行环境';
+  const automatic=chat.getByRole('button',{name:new RegExp(automaticTitle)});
+  appendFileSync(file,userItem('switched-startup','# AGENTS.md instructions\n\n<INSTRUCTIONS>\n换号后注入的项目说明。\n</INSTRUCTIONS>\n<environment_context><cwd>/project</cwd></environment_context>'));
+  await expect(automatic).toBeVisible();
+  await expect(chat.getByText('换号后注入的项目说明。',{exact:false})).toHaveCount(0);
+  await automatic.click();
+  const automaticDialog=page.getByRole('dialog',{name:automaticTitle});
+  await expect(automaticDialog.getByText('换号后注入的项目说明。',{exact:true})).toBeVisible();
+  await expect(automaticDialog.getByRole('heading',{name:'运行环境',exact:true})).toBeVisible();
+  await page.keyboard.press('Escape');
   await card.click();
   let dialog=page.getByRole('dialog',{name:'简要压缩详情'});
   await expect(dialog.getByText('上一轮需求',{exact:true})).toBeVisible();
@@ -44,7 +55,9 @@ test('restores the brief-history card and current request after a reload',async(
   await expect(dialog.getByText('本次结论',{exact:true})).toBeVisible();
   await page.screenshot({path:testInfo.outputPath('brief-details-desktop.png')});
   await page.keyboard.press('Escape');
-  await page.reload();await expect(card).toBeVisible();
+  await page.reload();await expect(card).toBeVisible();await expect(automatic).toBeVisible();
+  await expect(chat.getByText('继续新的工作',{exact:true})).toBeVisible();
+  await expect(chat.getByText('换号后注入的项目说明。',{exact:false})).toHaveCount(0);
   await page.setViewportSize({width:390,height:844});await card.click();
   dialog=page.getByRole('dialog',{name:'简要压缩详情'});
   await expect(dialog.getByText('上一轮结论',{exact:true})).toBeVisible();

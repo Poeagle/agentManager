@@ -43,6 +43,20 @@ it('keeps existing brief history on repeated compaction without nesting its wrap
   expect(parsed.input).toBe('再继续');
 });
 
+it('excludes long startup instructions from brief history before clipping messages',async()=>{
+  const instructions='# AGENTS.md instructions\n\n<INSTRUCTIONS>\n'+
+    '启动时注入的项目说明。\n'.repeat(3000)+'</INSTRUCTIONS>\n<environment_context>linux</environment_context>';
+  const prior=message('u','user','上一轮需求');
+  vi.spyOn(api.agent,'conversation').mockResolvedValue(page([
+    message('auto','user',instructions),prior,message('a','assistant','上一轮答复','final'),
+  ]));
+  const result=await prepareBriefSend('session','native',{input:'换号后继续'},new AbortController().signal);
+  const brief=parseBriefContext(result.input)!;
+  expect(brief.context.turns).toEqual([{input:'上一轮需求',conclusion:'上一轮答复'}]);
+  expect(brief.context.truncated).toBe(false);
+  expect(brief.input).toBe('换号后继续');
+});
+
 it('shares one verified scheduled prompt while preserving every result and attachment',async()=>{
   const prompt='请巡检服务并记录状态。'.repeat(20);
   const messages=Array.from({length:10},(_,i)=>[

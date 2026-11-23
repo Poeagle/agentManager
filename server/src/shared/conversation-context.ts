@@ -1,3 +1,6 @@
+const AGENTS_OPENING = /^# AGENTS\.md instructions(?: for ([^\r\n]+))?\r?\n\s*<INSTRUCTIONS>/;
+const CONTEXT_OPENING = /^<(environment_context|permissions|skills_instructions|task_notification|turn_aborted|octoally_shared_resources)(?:\s[^>]*)?>/;
+
 /** Recognize native wrappers only, never ordinary prose mentioning rules. */
 export function automaticConversationContext(text:string):{kind:string;label:string;source:string}|null {
   const single=singleContext(text);if(single)return single;
@@ -6,8 +9,8 @@ export function automaticConversationContext(text:string):{kind:string;label:str
   // request must remain an ordinary visible user message.
   let rest=text.trim();const parts:Array<{kind:string;label:string;source:string}>=[];
   while(rest){
-    const agents=/^# AGENTS\.md instructions for [^\r\n]+\r?\n\s*<INSTRUCTIONS>/.exec(rest);
-    const opening=agents||/^<(environment_context|permissions|skills_instructions|task_notification|turn_aborted|octoally_shared_resources)(?:\s[^>]*)?>/.exec(rest);
+    const agents=AGENTS_OPENING.exec(rest);
+    const opening=agents||CONTEXT_OPENING.exec(rest);
     if(!opening)return null;
     const tag=agents?'INSTRUCTIONS':opening[1],end=rest.indexOf(`</${tag}>`,opening[0].length);
     if(end<0)return null;const length=end+tag.length+3,part=singleContext(rest.slice(0,length));if(!part)return null;
@@ -21,8 +24,9 @@ function singleContext(text:string):{kind:string;label:string;source:string}|nul
     const file=/^凭据文件：([^\r\n]+)$/m.exec(value)?.[1]?.trim();
     return {kind:'shared_resources',label:'共享资源',source:file?`.env · ${file}`:''};
   }
-  const agents=/^# AGENTS\.md instructions for ([^\r\n]+)\r?\n\s*<INSTRUCTIONS>\s*[\s\S]*<\/INSTRUCTIONS>\s*$/.exec(value);
-  if(agents)return {kind:'project_rules',label:'项目规则',source:`AGENTS.md · ${agents[1].trim()}`};
+  const agents=AGENTS_OPENING.exec(value);
+  if(agents&&value.endsWith('</INSTRUCTIONS>'))
+    return {kind:'project_rules',label:'项目规则',source:agents[1]?`AGENTS.md · ${agents[1].trim()}`:'AGENTS.md'};
   for(const [tag,kind,label] of [['environment_context','environment','运行环境'],['permissions','permissions','权限说明'],['skills_instructions','skills','技能说明'],['task_notification','task_notice','任务通知'],['turn_aborted','execution_notice','执行通知']]) {
     if(new RegExp(`^<${tag}(?:\\s[^>]*)?>[\\s\\S]*<\\/${tag}>$`).test(value))return {kind,label,source:''};
   }
@@ -34,9 +38,10 @@ export function automaticContextMarkdown(text:string):string {
  if(!automaticConversationContext(text))return text;
  let rest=text.trim();const parts:string[]=[];
  while(rest){
-  const opening=/^# AGENTS\.md instructions for [^\r\n]+\r?\n\s*<INSTRUCTIONS>/.exec(rest)||/^<(environment_context|permissions|skills_instructions|task_notification|turn_aborted|octoally_shared_resources)(?:\s[^>]*)?>/.exec(rest);
+  const agents=AGENTS_OPENING.exec(rest);
+  const opening=agents||CONTEXT_OPENING.exec(rest);
   if(!opening)return text;
-  const tag=opening[1]||'INSTRUCTIONS',end=rest.indexOf(`</${tag}>`,opening[0].length);
+  const tag=agents?'INSTRUCTIONS':opening[1],end=rest.indexOf(`</${tag}>`,opening[0].length);
   if(end<0)return text;
   const original=rest.slice(0,end+tag.length+3),meta=singleContext(original);
   const body=rest.slice(opening[0].length,end).trim();
