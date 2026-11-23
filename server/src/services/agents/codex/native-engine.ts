@@ -32,7 +32,12 @@ const legacyNativeLabel = 'com.ymchen.codex-engine';
 const shouldTakeOverLaunchAgents = () => !config.isDev && config.takeoverCodexLaunchAgents;
 
 export function nativeCodexEngineSocket(): string {
-  return process.env.AGENTMANAGER_CODEX_STREAM_SOCKET?.trim() || config.nativeCodexSocket;
+  // Resolve from the *current* database location so a test run (isolated temp
+  // DB) can never adopt or spawn the developer instance's Engine. config is a
+  // startup snapshot, so using config.nativeCodexSocket here would pin the
+  // production path even after tests swap config.dbPath.
+  return process.env.AGENTMANAGER_CODEX_STREAM_SOCKET?.trim()
+    || join(dirname(config.dbPath), 'codex-engine', 'codex.sock');
 }
 
 function engineDirectory(): string {
