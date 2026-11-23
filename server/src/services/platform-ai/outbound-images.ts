@@ -10,13 +10,38 @@ import {isProjectAttachment,isProjectUploadPath} from '../attachment-storage.js'
 import {privateResourcePath} from '../shared-resources/path-guard.js';
 import {imageMime,MAX_IMAGES,MAX_IMAGE_BYTES} from './attachments.js';
 import {ChannelError} from './channels.js';
+import {MAX_MERMAID_CHARS} from './outbound-mermaid.js';
 
 interface Link {start:number;end:number;path:string;label:string}
-export interface OutboundImage {
-  parent_id:string;after_id:string;path:string;sha256?:string;filename:string;problem?:string;
+type ImageSource = {path:string;sha256?:string}|{diagram:string};
+type ImagePart = ImageSource & {filename:string;problem?:string};
+export type OutboundImage = ImagePart & {
+  parent_id:string;after_id:string;
   media_id?:string;expires_at?:number;bot_id?:string;
+};
+interface CodeBlock {
+  start:number;end:number;sourceStart:number;sourceEnd:number;language:string;closed:boolean;
 }
 interface OutboxSource {id:string;conversation_id:string;dedupe_key:string;content:string;reply_context:string;destination_channel_id?:string|null}
+
+function fencedCodeBlocks(text:string):CodeBlock[] {
+  const blocks:CodeBlock[]=[];
+  let opener:{marker:string;start:number;sourceStart:number;language:string}|undefined;
+  for(const line of text.matchAll(/^ {0,3}(`{3,}|~{3,})([^\r\n]*)/gm)){
+    const [,marker,info]=line;
+    const end=line.index+line[0].length;
+    if(opener){
+      if(marker[0]!==opener.marker[0]||marker.length<opener.marker.length||info.trim())continue;
+      blocks.push({...opener,end,sourceEnd:line.index,closed:true});
+      opener=undefined;
+    }else if(marker[0]!=='`'||!info.includes('`')){
+      const newline=text.indexOf('\n',end);
+      opener={marker,start:line.index,sourceStart:newline<0?text.length:newline+1,language:info.trim().toLowerCase()};
+    }
+  }
+  if(opener)blocks.push({...opener,end:text.length,sourceEnd:text.length,closed:false});
+  return blocks;
+}
 
 function localImagePath(target:string,projectPath?:string):string|null {
   try {
@@ -32,10 +57,14 @@ function localImagePath(target:string,projectPath?:string):string|null {
 
 /** Explicit Markdown image links and ordinary screenshot links only. Code
  * examples are masked; external URLs never become server-side downloads. */
-function imageLinks(text:string,projectPath?:string):Link[] {
-  const source=text.slice(0,32768);
-  const masked=source.replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:\n {0,3}\1[^\n]*(?=\n|$)|(?![\s\S]))/gm,m=>' '.repeat(m.length))
-    .replace(/(`+)[^\n]*?\1/g,m=>' '.repeat(m.length));
+function imageLinks(text:string,blocks:CodeBlock[],projectPath?:string):Link[] {
+  let masked='';
+  let cursor=0;
+  for(const block of blocks){
+    masked+=text.slice(cursor,block.start)+' '.repeat(block.end-block.start);
+    cursor=block.end;
+  }
+  masked=(masked+text.slice(cursor)).replace(/(`+)[^\n]*?\1/g,m=>' '.repeat(m.length));
   const pattern=/!?\[([^\]\n]*)\]\((?:<([^>\n]+)>|([^\s)]+))(?:[ \t]+["'][^\n]*?["'])?\)/g;
   const links:Link[]=[];
   for(const match of masked.matchAll(pattern)) {
@@ -95,27 +124,51 @@ export async function readOutboundImage(userId:string,path:string,expectedHash?:
 export async function prepareOutboundImages(item:OutboxSource,userId:string,projectPath?:string):Promise<string> {
   const saved=JSON.parse((getDb().prepare('SELECT reply_context FROM platform_ai_outbox WHERE id=?').get(item.id) as {reply_context:string}).reply_context);
   if(saved.outbound_images_prepared)return saved.wecom_image_text;
-  const links=imageLinks(item.content,projectPath);
-  if(!links.length)return item.content;
-  const paths=[...new Set(links.map(link=>link.path))].slice(0,MAX_IMAGES);
-  const images:Array<Omit<OutboundImage,'parent_id'|'after_id'>>=[];
-  for(const path of paths) {
-    try {const image=await readOutboundImage(userId,path);images.push({path:image.path,sha256:image.sha256,filename:image.filename});}
-    catch(error){images.push({path,filename:'screenshot.png',problem:error instanceof ChannelError?error.message:'截图无法读取'});}
+  const source=item.content.slice(0,32768);
+  const blocks=fencedCodeBlocks(source);
+  const references=[...imageLinks(source,blocks,projectPath),...blocks
+    .filter(block=>block.closed&&block.language==='mermaid')
+    .map(block=>({start:block.start,end:block.end,diagram:source.slice(block.sourceStart,block.sourceEnd).trim()}))]
+    .sort((a,b)=>a.start-b.start);
+  if(!references.length)return item.content;
+
+  const images=new Map<string,ImagePart>();
+  let text='',cursor=0,screenshotOmitted=false;
+  for(const reference of references){
+    const diagram='diagram' in reference;
+    const key=diagram?'diagram:'+reference.diagram:reference.path;
+    let image=images.get(key);
+    if(!image&&images.size<MAX_IMAGES){
+      if(diagram){
+        image={diagram:reference.diagram,filename:'diagram.png'};
+        if(!reference.diagram||reference.diagram.length>MAX_MERMAID_CHARS)image.problem='流程图源码为空或超过长度限制';
+      }else{
+        try {
+          const file=await readOutboundImage(userId,reference.path);
+          image={path:file.path,sha256:file.sha256,filename:file.filename};
+        }catch(error){
+          image={path:reference.path,filename:'screenshot.png',problem:error instanceof ChannelError?error.message:'截图无法读取'};
+        }
+      }
+      images.set(key,image);
+    }
+    const omitted=!image||!!image.problem;
+    if(!diagram&&omitted)screenshotOmitted=true;
+    const label=diagram
+      ? (omitted?'流程图未附上，请在平台查看':'流程图见下方')
+      : reference.label+(omitted?'（图片未发送，请在平台查看）':'（图片见下方）');
+    text+=item.content.slice(cursor,reference.start)+label;
+    cursor=reference.end;
   }
-  let text=item.content;
-  for(const link of links.slice().reverse()) {
-    const index=paths.indexOf(link.path),problem=index<0?'超过 4 张图片上限':images[index].problem;
-    const label=link.label+(problem?'（图片未发送，请在平台查看）':'（图片见下方）');
-    text=text.slice(0,link.start)+label+text.slice(link.end);
-  }
-  if(images.some(image=>image.problem)||new Set(links.map(link=>link.path)).size>MAX_IMAGES)text+='\n\n> 部分截图无法自动发送；支持有权限读取的 PNG/JPEG，每条最多 4 张、每张最多 8 MB。';
+  text+=item.content.slice(cursor);
+  if(screenshotOmitted)text+='\n\n> 部分截图无法自动发送。支持有权限读取的 PNG/JPEG，每条最多 4 张、每张最多 8 MB。';
   getDb().transaction(()=>{
     let afterId=item.id;
-    images.forEach((image,index)=>{
+    [...images.values()].forEach((image,index)=>{
       const id=nanoid(16),metadata={outbound_image:{...image,parent_id:item.id,after_id:afterId}};
+      const label='diagram' in image?'流程图':'截图';
       getDb().prepare(`INSERT OR IGNORE INTO platform_ai_outbox(id,conversation_id,dedupe_key,content,reply_context,destination_channel_id)
-        VALUES(?,?,?,?,?,?)`).run(id,item.conversation_id,`${item.dedupe_key}:image:${index}`,`截图 ${index+1}`,JSON.stringify(metadata),item.destination_channel_id||null);
+        VALUES(?,?,?,?,?,?)`).run(id,item.conversation_id,`${item.dedupe_key}:image:${index}`,`${label} ${index+1}`,JSON.stringify(metadata),item.destination_channel_id||null);
       afterId=(getDb().prepare('SELECT id FROM platform_ai_outbox WHERE dedupe_key=?').get(`${item.dedupe_key}:image:${index}`) as {id:string}).id;
     });
     getDb().prepare("UPDATE platform_ai_outbox SET reply_context=json_set(reply_context,'$.outbound_images_prepared',1,'$.wecom_image_text',?) WHERE id=?").run(text,item.id);

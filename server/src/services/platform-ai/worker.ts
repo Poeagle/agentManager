@@ -25,6 +25,7 @@ import {authorizeProjectNotice,ProjectNotifications,matchPersonalResult} from '.
 
 import {notificationReplyTarget,prepareReplyNotification,dispatchQuotedReply,quotedReplyOperationId} from './quoted-replies.js';
 import {prepareOutboundImages,readOutboundImage,assertOutboundImageAccess,type OutboundImage} from './outbound-images.js';
+import {renderOutboundMermaid} from './outbound-mermaid.js';
 import {getBotTransport} from './channel-runtime.js';
 
 const OBSERVATION_FALLBACK_MS = 5 * 60 * 1000;
@@ -622,25 +623,39 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
       if(isHandled()){getDb().prepare("UPDATE platform_ai_outbox SET status='cancelled',error='已在网页查看或处理',lease_until=0 WHERE id=?").run(item.id);return;}
       image=metadata.outbound_image as OutboundImage|undefined;
       if(image){
-        if(destination.channel?.kind!=='wecom_bot')throw new ChannelError('此渠道不支持截图主动发送',400,true);
+        if(destination.channel?.kind!=='wecom_bot')throw new ChannelError('此渠道不支持图片主动发送',400,true);
         const parent=getDb().prepare('SELECT status FROM platform_ai_outbox WHERE id=?').get(image.parent_id) as {status:string}|undefined;
-        if(parent?.status!=='sent')throw new ChannelError('正文尚未送达或已被撤销，截图未发送',409,true);
+        if(parent?.status!=='sent')throw new ChannelError('正文尚未送达或已被撤销，图片未发送',409,true);
         if(image.problem)throw new ChannelError(image.problem,400,true);
-        if(!image.sha256||!/^[a-f0-9]{64}$/.test(image.sha256))throw new ChannelError('截图投递记录无效',400,true);
         getDb().prepare('UPDATE platform_ai_outbox SET lease_until=? WHERE id=?').run(Date.now()+600000,item.id);
-        const file=await readOutboundImage(destination.conversation.user_id,image.path,image.sha256);
+        let file:Awaited<ReturnType<typeof readOutboundImage>>|undefined;
+        if('path' in image){
+          if(!image.sha256||!/^[a-f0-9]{64}$/.test(image.sha256))throw new ChannelError('截图投递记录无效',400,true);
+          file=await readOutboundImage(destination.conversation.user_id,image.path,image.sha256);
+        }
         destination=this.deliveryDestination(item);
-        assertOutboundImageAccess(destination.conversation.user_id,file.path);
         let transport=getBotTransport(destination.channel!.id);
         if(transport?.status.state!=='connected'||!transport.uploadImage||!transport.sendImage)throw new ChannelError('企微图片通道尚未就绪，将自动重试',503);
         if(!image.media_id||!image.expires_at||image.expires_at<=Date.now()||image.bot_id!==destination.channel!.config.bot_id){
-          image.media_id=await transport.uploadImage(file.data,file.filename);image.expires_at=Date.now()+2*24*60*60*1000;
-          image.bot_id=destination.channel!.config.bot_id;
+          let data=file?.data;
+          if('diagram' in image){
+            try {data=await renderOutboundMermaid(image.diagram);}
+            catch {throw new ChannelError('流程图无法渲染，请在平台查看',422,true);}
+            destination=this.deliveryDestination(item);
+            transport=getBotTransport(destination.channel!.id);
+            if(transport?.status.state!=='connected'||!transport.uploadImage)throw new ChannelError('企微图片通道尚未就绪，将自动重试',503);
+          }
+          if(!data)throw new ChannelError('图片投递记录无效',400,true);
+          if(file)assertOutboundImageAccess(destination.conversation.user_id,file.path);
+          const botId=destination.channel!.config.bot_id;
+          image.media_id=await transport.uploadImage(data,file?.filename||image.filename);image.expires_at=Date.now()+2*24*60*60*1000;
+          image.bot_id=botId;
           getDb().prepare("UPDATE platform_ai_outbox SET reply_context=json_set(reply_context,'$.outbound_image.media_id',?,'$.outbound_image.expires_at',?,'$.outbound_image.bot_id',?) WHERE id=?")
             .run(image.media_id,image.expires_at,image.bot_id,item.id);
         }
         destination=this.deliveryDestination(item);
-        assertOutboundImageAccess(destination.conversation.user_id,file.path);
+        if(file)assertOutboundImageAccess(destination.conversation.user_id,file.path);
+        if(image.bot_id!==destination.channel!.config.bot_id)throw new ChannelError('企微机器人已更换，将重新上传图片',503);
         transport=getBotTransport(destination.channel!.id);
         if(transport?.status.state!=='connected'||!transport.sendImage)throw new ChannelError('企微图片通道尚未就绪，将自动重试',503);
         await transport.sendImage(destination.projectRecipient?.chat_id||destination.conversation.external_chat_id,image.media_id);
@@ -667,13 +682,13 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         .run(failed ? 'failed' : 'pending', Date.now() + Math.min(3600000, 5000 * 2 ** attempts), publicFailure(error), item.id);
       if(failed&&image&&!image.problem){
         // A text already acknowledged by WeCom remains sent. Report only the
-        // missing screenshot, through the same durable authorization boundary.
+        // missing image, through the same durable authorization boundary.
         try {
           const {conversation}=this.deliveryDestination(item);
           const parent=getDb().prepare("SELECT reply_context FROM platform_ai_outbox WHERE id=? AND status='sent'").get(image.parent_id) as {reply_context:string}|undefined;
           if(parent)getDb().prepare('INSERT OR IGNORE INTO platform_ai_outbox(id,conversation_id,dedupe_key,content,reply_context,destination_channel_id) VALUES(?,?,?,?,?,?)')
-            .run(nanoid(16),conversation.id,item.dedupe_key+':failure','截图未能发送，请在平台查看。',JSON.stringify({notification_target:JSON.parse(parent.reply_context).notification_target}),item.destination_channel_id||null);
-        }catch{this.app.log.warn({notice_id:item.id},'Could not queue screenshot failure notice');}
+            .run(nanoid(16),conversation.id,item.dedupe_key+':failure',('diagram' in image?'流程图':'截图')+'未能发送，请在平台查看。',JSON.stringify({notification_target:JSON.parse(parent.reply_context).notification_target}),item.destination_channel_id||null);
+        }catch{this.app.log.warn({notice_id:item.id},'Could not queue image failure notice');}
       }
     }
   }
