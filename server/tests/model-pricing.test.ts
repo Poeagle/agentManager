@@ -5,7 +5,8 @@ import {deepseekModelPricing,estimateDeepseekCost} from '../src/services/agents/
 import {estimateUsageCredits,estimateUsageUsd} from '../src/services/agents/codex/usage-credits.js';
 import {estimateProviderApiCost,modelRate,providerModelMetadata,providerRateFields,saveModelRates} from '../src/services/agents/provider-pricing.js';
 import {codexApiEstimate,codexApiPricing} from '../src/services/agents/codex/statistics-cost.js';
-import {updateAgentManagement,type StoredProvider} from '../src/services/agents/management-store.js';
+import {readAgentManagement,updateAgentManagement,type StoredProvider} from '../src/services/agents/management-store.js';
+import {refreshStoredProviderBilling} from '../src/services/agents/provider-billing.js';
 import {probeProviderModels} from '../src/services/agents/codex/management.js';
 import {confirmedClaudeContextWindow,confirmedClaudeInputModalities,parseClaudeModelDates} from '../src/services/agents/model-pricing.js';
 
@@ -182,8 +183,23 @@ it('uses a single gateway rate for every fallback model at the time of the recei
  expect(()=>saveModelRates({...shared,providerRateMultiplier:'0'},shared,third)).toThrow('Provider 计费倍率');
 });
 
+it.each([undefined,'0.5'])('keeps receipts priced at their original rate across multiplier-only saves (legacy rate: %s)',legacyRate=>{
+ const baseUrl='https://gateway.example/v1',first=epoch('2026-11-23T01:10:00Z');
+ const prior:StoredProvider['fields']={baseUrl,...legacyRate?{providerRateMultiplier:legacyRate}:{}};
+ const oldCost=estimateProviderApiCost(baseUrl,prior,model,new Date(first-1).toISOString(),tokens)?.amount;
+ const changed={...prior,providerRateMultiplier:'2'};
+ saveModelRates(changed,prior,first);
+ expect(estimateProviderApiCost(baseUrl,changed,model,new Date(first-1).toISOString(),tokens)?.amount).toBe(oldCost);
+ expect(estimateProviderApiCost(baseUrl,changed,model,new Date(first).toISOString(),tokens)?.amount).toBeCloseTo(1.82*2);
+ const cleared={...changed,providerRateMultiplier:''};
+ saveModelRates(cleared,changed,first+1);
+ expect(estimateProviderApiCost(baseUrl,cleared,model,new Date(first-1).toISOString(),tokens)?.amount).toBe(oldCost);
+ expect(estimateProviderApiCost(baseUrl,cleared,model,new Date(first).toISOString(),tokens)?.amount).toBeCloseTo(1.82*2);
+ expect(estimateProviderApiCost(baseUrl,cleared,model,new Date(first+1).toISOString(),tokens)?.amount).toBeCloseTo(1.82);
+});
+
 it('prices native Codex only when its runtime authentication is API mode',async()=>{
- await refreshModelPricing(async url=>String(url)===pricingSources.openai?new Response('### Standard pricing data\n| gpt-6.2-sol | $2 | $10 | $0.10 |'):new Response(null,{status:404}));
+ await refreshModelPricing(async url=>String(url)===pricingSources.openai?new Response('### Standard pricing data\n| gpt-6.2-sol | $2 | $10 | $0.10 |'):new Response(null,{status:404}),undefined,epoch('2026-11-23T01:00:00Z'));
  const fields:StoredProvider['fields']={baseUrl:'https://gateway.example/v1',models:['gpt-6.2-sol'],providerRateMultiplier:'0.12',modelRateMultipliers:[]};
  updateAgentManagement('codex',()=>({defaults:{},providers:[{id:'native',name:'Native',kind:'native',enabled:true,fields}]}));
  const at='2026-11-23T01:30:00.000Z';
@@ -208,6 +224,31 @@ it('keeps Sub2API billing automatic until an explicit manual multiplier replaces
  expect(manual.providerBillingSnapshot).toBeUndefined();
  expect(modelRate(manual,model,at+2000)).toBe(0.75);
  expect(providerRateFields(baseUrl,manual)[0]).not.toHaveProperty('readOnly');
+});
+
+it('keeps a manual multiplier when a pending automatic refresh completes',async()=>{
+ const at=epoch('2026-11-23T01:10:00Z'),baseUrl='https://xindu.xyz/v1';
+ const provider:StoredProvider={id:'gateway',name:'Gateway',kind:'responses',enabled:true,fields:{baseUrl}};
+ const save=(fields:StoredProvider['fields'])=>updateAgentManagement('codex',()=>({defaults:{},providers:[{...provider,fields}]}));
+ const current=()=>readAgentManagement('codex').providers[0].fields;
+ const response=()=>Response.json({billing_scope:'token',resolved_rate_multiplier:0.25,effective_rate_multiplier:0.25});
+ save(provider.fields);
+ await refreshStoredProviderBilling('codex',()=> 'fixture-key',{fetch:async()=>response(),now:at});
+ expect(current()).toMatchObject({providerRateMultiplier:'0.25',providerRateSource:'sub2api'});
+ let finish!: (value:Response)=>void;
+ const fetchBilling=vi.fn(()=>new Promise<Response>(resolve=>{finish=resolve;}));
+ const refresh=refreshStoredProviderBilling('codex',()=> 'fixture-key',{fetch:fetchBilling,now:at+2});
+ expect(fetchBilling).toHaveBeenCalledOnce();
+ const previous=current(),manual={...previous,providerRateMultiplier:'0.5'};
+ saveModelRates(manual,previous,at+1);
+ save(manual);
+ finish(response());
+ await refresh;
+ await refreshStoredProviderBilling('codex',()=> 'fixture-key',{fetch:fetchBilling,now:at+3});
+ expect(fetchBilling).toHaveBeenCalledOnce();
+ expect(current().providerRateMultiplier).toBe('0.5');
+ expect(modelRate(current(),model,at)).toBe(0.25);
+ expect(modelRate(current(),model,at+1)).toBe(0.5);
 });
 
 it.each([false,true])('recovers historical context thresholds only when both tariff tiers match (price changed: %s)',async(changed)=>{

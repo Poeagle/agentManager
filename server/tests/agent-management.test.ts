@@ -379,6 +379,36 @@ describe('native Codex Provider connection editing', () => {
    database.cleanup();
   }
  });
+ it('saves the native API multiplier without writing Codex files or restarting the Engine', async () => {
+  const database=createTestDatabase(),configPath=join(database.dir,'config.toml');
+  const config=[
+   'model_provider = "gateway"',
+   'model = "model-a"',
+   '[model_providers.gateway]',
+   'base_url = "https://fixture.example/v1"',
+   'env_key = "FIXTURE_API_KEY"',
+  ].join('\n');
+  writeFileSync(configPath,config);
+  vi.stubEnv('CODEX_HOME',database.dir);
+  const restart=vi.spyOn(await import('../src/services/agents/codex/native-engine.js'),'restartNativeCodexEngine');
+  try{
+   const management=codexManagement({id:'codex',label:'Codex'} as any);
+   const result=await management.updateProvider('native',{fields:{providerRateMultiplier:'0.5'}});
+   expect(result.providers.find(provider=>provider.id==='native')?.fields).toContainEqual(expect.objectContaining({key:'providerRateMultiplier',value:'0.5'}));
+   expect(readAgentManagement('codex').providers[0].fields).toMatchObject({baseUrl:'https://fixture.example/v1',models:['model-a'],providerRateMultiplier:'0.5'});
+   expect(readFileSync(configPath,'utf8')).toBe(config);
+   expect(restart).not.toHaveBeenCalled();
+
+   writeFileSync(configPath,'model = "model-a"\n');
+   writeFileSync(join(database.dir,'auth.json'),'{}');
+   await expect(management.updateProvider('native',{fields:{providerRateMultiplier:'2'}})).rejects.toThrow('仅 API Provider');
+   expect(readAgentManagement('codex').providers[0].fields.providerRateMultiplier).toBe('0.5');
+  }finally{
+   restart.mockRestore();
+   vi.unstubAllEnvs();
+   database.cleanup();
+  }
+ });
  it('updates only models from the model table without requiring a connection payload', async () => {
   const database=createTestDatabase();
   const home=join(database.dir,'native-models');
@@ -402,6 +432,7 @@ describe('native Codex Provider connection editing', () => {
   vi.stubEnv('CODEX_HOME',home);
   try{
    const management=codexManagement({id:'codex',label:'Codex'} as any);
+   const before=await management.inspectProvider?.('native');
    const state=await management.updateProvider('native',{
     fields:{models:['model-a'],defaultModel:'model-a'},
    });
@@ -410,7 +441,7 @@ describe('native Codex Provider connection editing', () => {
    expect(config).toContain('model = "model-a"');
    expect(JSON.parse(readFileSync(catalog,'utf8')).models.map((model:{slug:string})=>model.slug)).toEqual(['model-a']);
    expect(state.providers.find(provider=>provider.id==='native')).toMatchObject({
-    status:'ready',
+    status:before?.status,
     fields:expect.arrayContaining([
      expect.objectContaining({key:'baseUrl',value:'https://existing.example/v1'}),
      expect.objectContaining({key:'models',value:['model-a']}),

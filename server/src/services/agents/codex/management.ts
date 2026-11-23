@@ -484,6 +484,10 @@ async function updateNativeConnection(input:AgentProviderInput):Promise<{restart
   const current=nativeCodexConnectionConfig();
   const next=validateNativeConnection(input,current);
   const connectionChanged=(input.fields?.baseUrl!==undefined&&next.baseUrl!==current.baseUrl)||input.apiKey!==undefined;
+  if(input.fields?.providerRateMultiplier!==undefined){
+    const previous=readAgentManagement('codex').providers.find(item=>item.id==='native')?.fields;
+    saveModelRates({...previous,...input.fields,baseUrl:next.baseUrl},previous);
+  }
   let config=existsSync(configPath())?readFileSync(configPath(),'utf8'):'';
   const providerId=config.match(/^\s*model_provider\s*=\s*"([^"]+)"/m)?.[1]||'';
   if(!providerId)throw Object.assign(Error('Codex config.toml 尚未配置 model_provider，无法保存连接设置'),{statusCode:409});
@@ -505,7 +509,7 @@ async function updateNativeConnection(input:AgentProviderInput):Promise<{restart
     stored.providers.push(nativeRecord);
   }
   const priorFields = nativeRecord.fields;
-  nativeRecord.fields = { ...priorFields, ...(input.fields || {}) };
+  nativeRecord.fields = { ...priorFields, ...(input.fields || {}), ...next };
   saveModelRates(nativeRecord.fields, priorFields);
   writeAgentManagement('codex', stored);
 
@@ -1232,22 +1236,32 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         renameCodexProvider(providerId, input.name);
         return inspect();
       }
-      if (input.fields?.providerRateMultiplier !== undefined && Object.keys(input.fields).length === 1 &&
-          input.name === undefined && input.kind === undefined && input.enabled === undefined && input.apiKey === undefined) {
-        updateAgentManagement('codex', current => {
-          const prior = current.providers.find(item => item.id === providerId);
-          if (!prior) throw Object.assign(Error('Provider 不支持设置计费倍率'), { statusCode: 409 });
-          const fields = {...prior.fields,providerRateMultiplier:input.fields!.providerRateMultiplier};
-          saveModelRates(fields,prior.fields);
-          return {...current,providers:current.providers.map(item=>item.id===providerId?{...item,fields}:item)};
-        });
-        return inspect(false);
+      if (input.fields?.providerRateMultiplier !== undefined) {
+        const native = providerId==='native' ? nativeCodexConnectionConfig() : undefined;
+        if (native && native.authMode!=='api') {
+          throw Object.assign(Error('仅 API Provider 支持设置计费倍率'), {statusCode:409});
+        }
+        if (Object.keys(input.fields).length===1 &&
+            input.name===undefined && input.kind===undefined && input.enabled===undefined && input.apiKey===undefined) {
+          const rate = input.fields.providerRateMultiplier;
+          const connection = native && {baseUrl:native.baseUrl,models:native.models,defaultModel:native.defaultModel};
+          updateAgentManagement('codex', current => {
+            const prior = current.providers.find(item=>item.id===providerId);
+            if (!prior && !connection) throw Object.assign(Error('Provider 不支持设置计费倍率'), {statusCode:409});
+            const previous = prior?.fields ?? connection;
+            const fields = {...previous,...connection,providerRateMultiplier:rate};
+            saveModelRates(fields,previous);
+            const updated = prior ? {...prior,fields} : {id:providerId,name:nativeProviderName(),kind:'native',enabled:true,fields};
+            return {...current,providers:prior?current.providers.map(item=>item.id===providerId?updated:item):[...current.providers,updated]};
+          });
+          return inspect(false);
+        }
       }
       await assertEnvironmentIdle(providerId==='native'?'native':'provider:'+providerId);
       if (providerId === 'native') {
         report?.({ stage: 'validate', message: '校验 Engine 启动命令与附加参数', progress: 10 });
         let restartRequired=true;
-        if(input.fields?.baseUrl!==undefined||input.fields?.models!==undefined||input.fields?.defaultModel!==undefined||input.apiKey!==undefined) {
+        if(input.fields?.baseUrl!==undefined||input.fields?.models!==undefined||input.fields?.defaultModel!==undefined||input.apiKey!==undefined||input.fields?.providerRateMultiplier!==undefined) {
           report?.({ stage: 'save', message: '写入 Codex 连接配置与加密凭据', progress: 20 });
           restartRequired=(await updateNativeConnection(input)).restartRequired;
         }

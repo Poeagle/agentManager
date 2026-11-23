@@ -10,7 +10,7 @@ export interface ProviderBillingSnapshot {
  peakMultiplier?:number;peakStart?:string;peakEnd?:string;timeZone?:string;
 }
 export interface ProviderBillingMetadata extends Omit<ProviderBillingSnapshot,'observedAt'|'effectiveRate'>{observedAt:string;}
-type RateVersion = {at:number;rates:Record<string,number>;providerRate?:number|null;providerBilling?:ProviderBillingSnapshot};
+type RateVersion = {at:number;rates:Record<string,number>;providerRate?:number|null;providerBilling?:ProviderBillingSnapshot;fallbackRate?:number};
 
 export function providerRateFields(base:unknown,fields?:Fields) {
   if(!base)return [];
@@ -19,11 +19,24 @@ export function providerRateFields(base:unknown,fields?:Fields) {
   return [{key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text' as const,
     ...(fields?.providerRateSource==='sub2api'?{label:'Provider 自动倍率（可手动覆盖）'}:{}),
     value:typeof fields?.providerRateMultiplier==='string'?fields.providerRateMultiplier:'',
-    description:fields?.providerRateSource==='sub2api'?'当前值从 Sub2API 账单接口获取；手动修改后改用手填倍率，自动同步不再覆盖。':'第三方未提供模型费率时，用此倍率折算官方参考价。'}];
+    description:(fields?.providerRateSource==='sub2api'?'当前值由 Sub2API 提供，手动修改后将覆盖自动同步。':'第三方未提供模型费率时，用此倍率折算官方参考价。')+' 仅修改倍率时，保存后立即用于后续请求。'}];
 }
 
 function versions(fields?:Fields):RateVersion[] {
   return typeof fields?.modelRateVersions==='string'?JSON.parse(fields.modelRateVersions) as RateVersion[]:[];
+}
+
+function configuredRate(fields?:Fields) {
+  return fields?.providerRateMultiplier ? Number(fields.providerRateMultiplier) : 1;
+}
+
+function appendRateVersion(history:RateVersion[], version:RateVersion, previous?:Fields) {
+  // Legacy estimates used the current provider rate whenever no version applied.
+  // Freeze that fallback before changing it so older receipts retain their cost.
+  const fallbackRate=configuredRate(previous);
+  for(const entry of history) entry.fallbackRate??=fallbackRate;
+  if(history.at(-1)?.at!==0) history.push({at:0,rates:{},fallbackRate});
+  history.unshift({...version,fallbackRate:1});
 }
 
 export function saveModelRates(next:Fields, previous?:Fields, now=Date.now()) {
@@ -63,10 +76,10 @@ export function saveModelRates(next:Fields, previous?:Fields, now=Date.now()) {
   const entries=[...rates].sort(([a],[b])=>a.localeCompare(b));
   const normalized=entries.map(([model,rate])=>`${model}=${rate}`);
   if(providerRate!==history[0]?.providerRate||JSON.stringify(normalized)!==JSON.stringify(sameEndpoint?previous?.modelRateMultipliers??[]:[])){
-    history.unshift({at:now,rates:Object.fromEntries(entries),providerRate});
+    appendRateVersion(history,{at:now,rates:Object.fromEntries(entries),providerRate},sameEndpoint?previous:undefined);
   }
   next.modelRateMultipliers=normalized;
-  if(history.length)next.modelRateVersions=JSON.stringify(history.slice(0,128));
+  if(history.length)next.modelRateVersions=JSON.stringify(history);
 }
 
 export function saveProviderBillingSnapshot(next:Fields,previous:Fields,snapshot:ProviderBillingSnapshot){
@@ -75,11 +88,11 @@ export function saveProviderBillingSnapshot(next:Fields,previous:Fields,snapshot
   ...(snapshot.peakEnabled?{peakMultiplier:snapshot.peakMultiplier,peakStart:snapshot.peakStart,peakEnd:snapshot.peakEnd,timeZone:snapshot.timeZone}:{})};
  const first=history[0];
  if(first?.providerRate!==snapshot.resolvedRate||JSON.stringify(first.providerBilling?{...first.providerBilling,observedAt:0}:null)!==JSON.stringify({...stored,observedAt:0}))
-  history.unshift({at,rates:first?.rates??{},providerRate:snapshot.resolvedRate,providerBilling:stored});
+  appendRateVersion(history,{at,rates:first?.rates??{},providerRate:snapshot.resolvedRate,providerBilling:stored},previous);
  next.providerRateMultiplier=String(snapshot.resolvedRate);
  next.providerRateSource='sub2api';
  next.providerBillingSnapshot=JSON.stringify(stored);
- next.modelRateVersions=JSON.stringify(history.slice(0,128));
+ next.modelRateVersions=JSON.stringify(history);
 }
 
 export function providerBillingSnapshot(fields?:Fields):ProviderBillingSnapshot|undefined{
@@ -208,11 +221,12 @@ export function estimateProviderApiCost(base:unknown,fields:Fields|undefined,mod
     catalog&&!useDeepseek?estimatePublicApiCost(catalog,id,at,tokens,cacheWrites):null;
   const breakdown=useDeepseek?(cacheWrites?.some(Boolean)?null:estimateDeepseekBreakdown(id,epoch,tokens)):estimate?.breakdown;
   if(!breakdown)return null;
-  const version=rateVersion(fields,model,epoch);
+  const version=versions(fields).find(entry=>entry.at<=epoch);
   const providerRate=version?.providerRate;
   const schedule=version?.providerBilling;
   const peak=providerRate!==undefined&&providerRate!==null&&schedule&&isPeak(epoch,schedule)?schedule.peakMultiplier??1:1;
-  const fallbackRate=official||deepseek||useProvider?1:providerRate??(version?.rates&&Object.hasOwn(version.rates,model)?version.rates[model]:undefined)??(fields?.providerRateMultiplier?Number(fields.providerRateMultiplier):undefined)??1;
+  const modelRate=version?.rates&&Object.hasOwn(version.rates,model)?version.rates[model]:undefined;
+  const fallbackRate=official||deepseek||useProvider?1:providerRate??modelRate??version?.fallbackRate??configuredRate(fields);
   const multiplier=fallbackRate*peak;
   const {input,cache,output,reasoning}=breakdown;
   return {unit:useDeepseek?'CNY' as const:'USD' as const,amount:(input+cache+output)*multiplier,breakdown:{input:input*multiplier,cache:cache*multiplier,

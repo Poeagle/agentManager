@@ -584,6 +584,7 @@ function ProviderEditor({
   onBusyChange,
   onRemoved,
   nativeApi = false,
+  apiMode = false,
   accountMode = false,
 }: {
   agentId: string;
@@ -595,6 +596,7 @@ function ProviderEditor({
   onBusyChange: (busy: boolean) => void;
   onRemoved: () => void;
   nativeApi?: boolean;
+  apiMode?: boolean;
   accountMode?: boolean;
 }) {
   const queryClient = useQueryClient();
@@ -633,9 +635,16 @@ function ProviderEditor({
     );
   const [fields, setFields] = useState<Record<string, string>>(initial);
   const [saveApiKey, setSaveApiKey] = useState(false);
+  const rateField = apiMode ? provider.fields.find(field=>field.key==='providerRateMultiplier'&&!field.readOnly) : undefined;
+  const rate = fields.providerRateMultiplier?.trim() ?? '';
+  const rateChanged = !!rateField && rate!==valueText(rateField.value);
+  const initialFields = initial();
   const [selectedModels, setSelectedModels] = useState<string[]>(
     provider.models,
   );
+  const rateOnly = rateChanged && !saveApiKey && displayName.trim()===provider.name &&
+    JSON.stringify(selectedModels)===JSON.stringify(provider.models) &&
+    provider.fields.every(field=>field.key==='providerRateMultiplier'||fields[field.key]===initialFields[field.key]);
   const availableModels = provider.id === "native"
     ? splitLines(fields.models || "")
     : selectedModels;
@@ -669,7 +678,6 @@ function ProviderEditor({
     setFields(initial());
     setDisplayName(provider.name);
     setError("");
-    setSaved(false);
     setSaveApiKey(false);
     setSelectedModels(provider.models);
     setEngineOperation({
@@ -698,6 +706,7 @@ function ProviderEditor({
   }, [fields, provider.fields, provider.models, provider.name, displayName,saveApiKey,selectedModels]);
   const beginEngineOperation = (message: string) => {
     setError("");
+    setSaved(false);
     setEngineOperation({
       busy: true,
       message,
@@ -720,6 +729,14 @@ function ProviderEditor({
   };
   const update = useMutation({
     mutationFn: async (patches?:Parameters<typeof api.agentManagement.updateModelConfigs>[1]) => {
+      if (rateOnly) {
+        setError("");
+        setSaved(false);
+        const {state} = await api.agentManagement.updateProvider(agentId, provider.id, {
+          fields: {providerRateMultiplier:rate},
+        });
+        return {provider:state.providers.find(item=>item.id===provider.id),state,nextModels:selectedModels,nextDefault:fields.defaultModel||''};
+      }
       beginEngineOperation("正在校验 Provider 配置…");
       const discovery=provider.id==='native'?{models:detected}:await api.agentManagement.detectModels(agentId,{
         providerId:provider.id,endpoint:fields.baseUrl,apiKey:saveApiKey?fields.envKey:undefined,
@@ -757,18 +774,19 @@ function ProviderEditor({
                     : splitLines(fields[field.key] || "")
                   : fields[field.key] || "",
           ]),
-        ),...modelCapabilitiesPayload(observations)},
+        ),...modelCapabilitiesPayload(observations),...(rateChanged?{providerRateMultiplier:rate}:{})},
       }, recordEngineProgress);
-      return {result,nextModels,nextDefault};
+      return {provider:result.provider,state:undefined,nextModels,nextDefault};
     },
-    onSuccess: ({result,nextModels,nextDefault}) => {
-      queryClient.setQueryData(
-        ["agent-provider", agentId, provider.id],
-        result.provider,
-      );
-      void queryClient.invalidateQueries({
-        queryKey: ["agent-management", agentId],
-      });
+    onSuccess: ({provider:updated,state,nextModels,nextDefault}) => {
+      if (updated) queryClient.setQueryData(["agent-provider", agentId, provider.id], updated);
+      if (state) queryClient.setQueryData(["agent-management", agentId], {state});
+      else void queryClient.invalidateQueries({queryKey:["agent-management", agentId]});
+      if (rateChanged) {
+        for (const key of ['agent-model-configs','agent-model-catalog','conversation-usage-intervals','conversation-metadata-details']) {
+          void queryClient.invalidateQueries({queryKey:[key]});
+        }
+      }
       queryClient.invalidateQueries({ queryKey: ["agent-management-list"] });
       void queryClient.invalidateQueries({
         queryKey: ["conversation-controls"],
@@ -780,7 +798,7 @@ function ProviderEditor({
       setEngineOperation((current) => ({
         ...current,
         busy: false,
-        success: true,
+        success: !state,
         message: "Provider 配置已保存，Engine 已就绪",
         progress: 100,
       }));
@@ -1038,7 +1056,7 @@ function ProviderEditor({
             detect.isPending
               ? "正在探测此 Provider 的模型…"
               : update.isPending
-                ? engineOperation.message
+                ? rateOnly ? "正在保存倍率…" : engineOperation.message
                 : engineOperation.busy
                   ? engineOperation.message
                   : modelsSaving?"正在保存模型配置…":"正在删除 Provider…"
@@ -1108,12 +1126,16 @@ function ProviderEditor({
               </button>
             </div>
           </div>}
-          {!accountMode&&provider.fields.some(field=>!['models','defaultModel','baseUrl','envKey'].includes(field.key))&&<ProviderAdvancedSettings label="Codex 设置">
+          {rateField&&<div className="agent-management-form agent-management-engine-form">
+            <FieldEditor field={rateField} value={fields.providerRateMultiplier||''} disabled={readOnly||busy}
+              onChange={value=>setFields(current=>({...current,providerRateMultiplier:String(value)}))}/>
+          </div>}
+          {!accountMode&&provider.fields.some(field=>!['models','defaultModel','baseUrl','envKey','providerRateMultiplier'].includes(field.key))&&<ProviderAdvancedSettings label="Codex 设置">
            <div className="agent-management-form agent-management-engine-form">
             {provider.fields
               .filter(
                 (field) =>
-                  !['models','defaultModel','baseUrl','envKey'].includes(field.key),
+                  !['models','defaultModel','baseUrl','envKey','providerRateMultiplier'].includes(field.key),
               )
               .map((field) => (
                 <FieldEditor
@@ -1135,10 +1157,10 @@ function ProviderEditor({
               ))}
            </div>
           </ProviderAdvancedSettings>}
-          {nativeApi&&!readOnly&&<div className="agent-management-actions"><button type="button" className="agent-management-button agent-management-button-primary" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate(undefined)}><Save size={13}/>保存连接配置并重启 Engine</button></div>}
-          {nativeApi&&<p className="agent-management-hint">保存前会校验模型并确认 Provider 没有运行中的任务；配置写入 Codex，Engine 重启后生效。</p>}
+          {nativeApi&&!readOnly&&<div className="agent-management-actions"><button type="button" className="agent-management-button agent-management-button-primary" disabled={busy||!rateOnly&&(usage.busy||!usage.verified)} onClick={()=>update.mutate(undefined)}><Save size={13}/>{rateOnly?'保存倍率':'保存连接配置并重启 Engine'}</button></div>}
+          {nativeApi&&!rateOnly&&<p className="agent-management-hint">保存前会校验模型并确认 Provider 没有运行中的任务。更改地址或密钥后会重启 Engine。</p>}
       </section>
-      {!readOnly&&!nativeApi&&!accountMode&&<div className="agent-management-actions"><button type="button" className="agent-management-button agent-management-button-primary" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>void saveProvider()}><Save size={13}/>保存并探测模型</button></div>}
+      {!readOnly&&!nativeApi&&!accountMode&&<div className="agent-management-actions"><button type="button" className="agent-management-button agent-management-button-primary" disabled={busy||!rateOnly&&(usage.busy||!usage.verified)} onClick={()=>void saveProvider()}><Save size={13}/>{rateOnly?'保存倍率':'保存并探测模型'}</button></div>}
       {!accountMode&&files.length>0&&<section className="agent-management-section provider-files"><button type="button" className="agent-management-button" aria-expanded={filesOpen} onClick={()=>setFilesOpen(!filesOpen)}><ChevronRight size={13} style={{transform:filesOpen?'rotate(90deg)':undefined}}/>配置文件 ({files.length})</button>{filesOpen&&<ConfigFiles agentId={agentId} files={files} readOnly={readOnly} onDirtyChange={onFileDirtyChange}/>}</section>}
       {deleteOpen && (
         <ProviderDeleteDialog
@@ -1293,7 +1315,6 @@ interface ProviderRow {
   connection: string | undefined;
   auth: string;
   authMode?: 'api'|'account'|null;
-  accountEmail?: string;
   balanceId?: string;
   provider?: AgentProviderState;
   environment?: CodexEnvironment;
@@ -1309,73 +1330,17 @@ const providerColumns: TableColumn<ProviderRow>[] = [
   {key:'name',title:'Provider',value:row=>row.name},
   {key:'agent',title:'Agent',value:row=>row.state.agent.label},
   {key:'auth',title:'接入方式',value:row=>row.auth},
-  {key:'account',title:'账号',value:row=>row.accountEmail},
   {key:'connection',title:'连接',value:row=>row.connection},
-  {key:'rate',title:'倍率',kind:'number',interactive:false,value:row=>providerRate(row.provider,row.environment)},
+  {key:'rate',title:'倍率',kind:'number',interactive:false,value:providerRate},
   {key:'status',title:'状态',value:row=>rowStatus(row)},
   {key:'balance',title:'余额',value:()=>null,interactive:false},
 ];
 
-function providerRate(provider?:AgentProviderState, environment?:CodexEnvironment) {
+function providerRate({provider,authMode}:ProviderRow) {
+  if (authMode!=='api') return null;
   const field=provider?.fields.find(item=>item.key==='providerRateMultiplier');
   const value=valueText(field?.value);
-  if(value)return Number(value);
-  return provider?.kind==='native'||provider?.kind==='official'||environment?.auth_mode==='account'?1:null;
-}
-
-function providerRateSource(provider?:AgentProviderState) {
-  const field=provider?.fields.find(item=>item.key==='providerRateMultiplier');
-  return field?.label.includes('自动')?'sub2api':field?.label.includes('可手动覆盖')?'sub2api':undefined;
-}
-
-function InlineProviderRate({row,readOnly,onError}:{row:ProviderRow;readOnly:boolean;onError:(message:string)=>void}) {
-  const client=useQueryClient();
-  const provider=row.provider,rate=providerRate(provider,row.environment),initialRate=useRef(rate);
-  const field=provider?.fields.find(item=>item.key==='providerRateMultiplier');
-  const editable=!!provider&&!field?.readOnly&&provider.kind!=='native'&&provider.kind!=='official'&&row.environment?.auth_mode!=='account';
-  const canWrite=!readOnly;
-  const [editing,setEditing]=useState(false);
-  const [draft,setDraft]=useState(rate==null?'':String(rate));
-  const [error,setError]=useState('');
-  const input=useRef<HTMLInputElement>(null);
-  useEffect(()=>{if(!editing)setDraft(rate==null?'':String(rate));},[editing,rate]);
-  useEffect(()=>{if(editing)input.current?.select();},[editing]);
-  useEffect(()=>{
-    if(rate!==initialRate.current){initialRate.current=rate;setEditing(false);setError('');}
-  },[rate]);
-  const save=useMutation<{state:AgentManagementState},Error,string>({
-    mutationFn:(value:string)=>api.agentManagement.updateProvider(row.state.agent.id,provider!.id,{fields:{providerRateMultiplier:value}}),
-    onMutate:()=>{setError('');onError('');},
-    onSuccess:async result=>{
-      const updated=result.state.providers.find(item=>item.id===provider?.id);
-      if(updated)client.setQueryData(['agent-provider',row.state.agent.id,updated.id],updated);
-      client.setQueryData(['agent-management',row.state.agent.id],{state:result.state});
-      await Promise.all(['agent-management-list','agent-model-configs','agent-model-catalog','conversation-controls','session-environments','conversation-usage-intervals','conversation-metadata-details'].map(key=>client.invalidateQueries({queryKey:[key]})));
-      setEditing(false);
-    },
-    onError:(failure:Error)=>{setError(failure.message);onError(`${row.name} · ${failure.message}`);},
-    onSettled:()=>{setEditing(false);},
-  });
-  if(!editable||!canWrite)return <td className="agent-provider-rate">{rate==null?'—':`${rate}×`}</td>;
-  const begin=()=>{initialRate.current=rate;setDraft(rate==null?'':String(rate));setError('');setEditing(true);};
-  const commit=()=>{
-    if(save.isPending)return;
-    const normalized=draft.trim();
-    if(normalized===String(rate??'')){setEditing(false);return;}
-    if(!/^\d{1,4}(?:\.\d{1,6})?$/.test(normalized)||Number(normalized)<=0){setError('请输入大于 0 的倍率，最多 6 位小数');return;}
-    save.mutate(normalized);
-  };
-  return <td className="agent-provider-rate"><div className="agent-provider-rate-inline">
-    {editing?<input ref={input} aria-label={`${row.name} 倍率`} inputMode="decimal" value={draft} disabled={save.isPending}
-      aria-invalid={!!error} title={error||'输入后按 Enter 保存，Esc 取消'}
-      onChange={event=>{setDraft(event.target.value.replace(/[^\d.]/g,''));setError('');}}
-      onBlur={commit}
-      onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();commit();}else if(event.key==='Escape'){event.preventDefault();setDraft(String(rate??''));setEditing(false);setError('');}}}/>:
-      <button type="button" className="agent-provider-rate-edit" aria-label={`${row.name} 倍率 ${rate==null?'未设置':`${rate}×`}，点击编辑`} disabled={save.isPending} onClick={begin} title={providerRateSource(provider)==='sub2api'?'当前为自动读取值；手动保存后将覆盖自动同步':field?.description}>
-        {save.isPending?<Loader2 size={12} className="animate-spin"/>:rate==null?'—':`${rate}×`}
-      </button>}
-    {error&&<span className="agent-provider-rate-error" role="alert">{error}</span>}
-  </div></td>;
+  return value ? Number(value) : null;
 }
 
 function CodexQuotaSummary({id}:{id:string}) {
@@ -1437,6 +1402,7 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
   });
   const enabled = provider?.enabled ?? row.environment?.enabled;
   const status = rowStatus(row, provider);
+  const rate = providerRate(row);
   const codexEnvironmentCatalog=agentId==='codex'&&(row.authMode==='account'||row.environment?.kind==='account');
   const quotaId=agentId==='codex'&&row.authMode==='account'?(row.environment?.id??'native'):undefined;
   return <Fragment><tr>
@@ -1444,9 +1410,8 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
     <td><strong title={provider?.name ?? row.name}>{provider?.name ?? row.name}</strong></td>
     <td><span className="agent-provider-agent"><AgentIcon id={row.state.agent.id}/>{row.state.agent.label}</span></td>
     <td>{row.auth}</td>
-    <td title={row.accountEmail}>{row.accountEmail || '—'}</td>
     <td title={row.connection}>{row.connection || '—'}</td>
-    <InlineProviderRate row={row} readOnly={readOnly} onError={onError}/>
+    <td className="agent-provider-rate">{rate==null?'—':`${rate}×`}</td>
     <td><span className="agent-provider-status" title={enabled ? provider?.statusText : undefined}>
       <span className={`agent-management-dot ${enabled ? statusTone(provider?.status ?? (row.environment?.auth_mode ? 'ready' : 'unknown')) : 'unknown'}`} />{status}
     </span></td>
@@ -1538,7 +1503,7 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
     };
   })});
   const emailByRow = new Map(accountRows.map((row,index)=>[row.key,accountIdentities[index].data?.account?.email]));
-  const rows = providerRows.map(row=>({...row,accountEmail:emailByRow.get(row.key)??undefined}));
+  const rows = providerRows.map(row=>({...row,connection:emailByRow.get(row.key)||row.connection}));
   const table = useTableModel(rows, providerColumns);
   const creatable = allStates.filter(state=>state.providerManagement?.create);
   const confirmDiscard = () => !dirty && !fileDirty || window.confirm('有未保存的 Provider 修改，确定丢弃吗？');
@@ -1599,7 +1564,7 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
       <TableActionButton onClick={()=>void accounts.refetch()}>重试</TableActionButton>
     </div>}
     {rowError&&<div className="agent-management-error-box" role="alert"><CircleAlert size={14}/>{rowError}</div>}
-    <DataTable label="Agent Provider" model={table} actions actionsWidth={168} expandable minWidth={1040} className="agent-provider-table"
+    <DataTable label="Agent Provider" model={table} actions actionsWidth={168} expandable minWidth={900} className="agent-provider-table"
       loading={catalog.isPending} error={catalog.isError ? catalog.error.message : undefined} onRetry={refresh}
       empty={!table.rows.length} emptyMessage={rows.length ? '没有符合筛选条件的 Provider' : '暂无 Provider'}>
       {table.rows.map(row=><ProviderTableRow key={row.key} row={row} readOnly={readOnly} expanded={expandedProviders.has(row.key)}
@@ -1633,7 +1598,7 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
           : editEnvironment?.kind==='account' ?
             <CodexAccountProviderEditor key={editRow.key} environment={editEnvironment} readOnly={readOnly} inDialog onSaved={finish} onRemoved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
           : editProvider && <ProviderEditor key={editRow.key} agentId={editRow.state.agent.id} provider={editProvider}
-            defaults={editRow.state.defaults ?? []} nativeApi={editNativeApi} accountMode={editRow.authMode==='account'} readOnly={readOnly}
+            defaults={editRow.state.defaults ?? []} nativeApi={editNativeApi} apiMode={editRow.authMode==='api'} accountMode={editRow.authMode==='account'} readOnly={readOnly}
             onDirtyChange={setDirty} onFileDirtyChange={setFileDirty} onBusyChange={setBusy} onRemoved={finish}/>}
       </>}
       </div>

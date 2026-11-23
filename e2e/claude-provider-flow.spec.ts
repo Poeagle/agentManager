@@ -43,7 +43,7 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
   if(route.request().method()!=='PUT')return route.continue();
   const body=route.request().postDataJSON();
   const rate=body.fields.providerRateMultiplier;
-  if(rate!==undefined){expect(rate).toBe('1.2');createdState!.providers[0].fields.find(field=>field.key==='providerRateMultiplier')!.value=rate;}
+  if(rate!==undefined){expect(body.fields).toEqual({providerRateMultiplier:'1.2'});createdState!.providers[0].fields.find(field=>field.key==='providerRateMultiplier')!.value=rate;}
   if(body.fields.modelCapabilities)JSON.parse(body.fields.modelCapabilities);
   return route.fulfill({json:{state:createdState}});
  });
@@ -111,11 +111,13 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await expect(row).toContainText('—');
  await row.getByRole('button',{name:/展开Provider Xindu Real 的模型/}).click();
  const nested=page.getByRole('table',{name:'Provider 模型'});
- const modelEditor=page.getByRole('form',{name:'Provider 模型配置'});
- await expect(nested.getByRole('checkbox',{name:'启用 claude-fable-5-1'})).toBeChecked();
- await modelEditor.getByRole('button',{name:'编辑模型'}).click();
- await nested.getByRole('spinbutton',{name:'claude-fable-5-1 上下文长度'}).fill('500001');
- await modelEditor.getByRole('button',{name:'保存并重启 Engine'}).click();
+ const capabilityRow=nested.getByRole('row',{name:/启用 claude-fable-5-1/});
+ await expect(capabilityRow.getByRole('checkbox',{name:'启用 claude-fable-5-1'})).toBeChecked();
+ await capabilityRow.getByRole('button',{name:'编辑',exact:true}).click();
+ await capabilityRow.getByRole('spinbutton',{name:'claude-fable-5-1 上下文长度'}).fill('500001');
+ await capabilityRow.getByRole('button',{name:'保存并重启'}).click();
+ await expect(capabilityRow.getByRole('button',{name:'保存并重启'})).toBeDisabled();
+ await capabilityRow.getByRole('button',{name:'取消',exact:true}).click();
  await row.getByRole('button',{name:/编辑 Xindu Real/}).click();
  const edit=page.getByRole('dialog',{name:'编辑 Provider · Xindu Real'});
  await expect(edit.getByLabel('Claude API 地址')).toHaveValue('https://xindu.example');

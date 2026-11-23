@@ -59,20 +59,6 @@
 .agent-provider-status .agent-management-dot { flex: none; }
 .agent-provider-table .agent-provider-balance { font-variant-numeric: tabular-nums; }
 .agent-provider-rate { text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap; }
-.agent-provider-rate-inline { position:relative;display:flex;align-items:center;justify-content:flex-end;min-width:58px;min-height:24px; }
-.agent-provider-rate-inline input,
-.agent-provider-rate-edit {
-  box-sizing:border-box;width:60px;height:24px;min-height:24px;padding:2px 6px;
-  border:1px solid transparent;border-radius:5px;background:transparent;color:var(--text-primary);
-  font:11px/18px ui-monospace,monospace;font-variant-numeric:tabular-nums;text-align:right;
-}
-.agent-provider-rate-edit { cursor:text; }
-.agent-provider-rate-edit::after { content:'✎';margin-left:4px;color:var(--text-muted);font-family:var(--app-font-family); }
-.agent-provider-rate-edit:hover,
-.agent-provider-rate-edit:focus-visible { border-color:var(--border);background:var(--bg-secondary);color:var(--text-primary); }
-.agent-provider-rate-inline input { border-color:var(--accent);background:var(--bg-primary); }
-.agent-provider-rate-inline input[aria-invalid=true] { border-color:var(--error,#dc2626); }
-.agent-provider-rate-error { position:absolute;top:calc(100% + 3px);right:0;z-index:2;padding:3px 6px;border:1px solid color-mix(in srgb,var(--error,#dc2626) 40%,var(--border));border-radius:4px;background:var(--bg-primary);color:var(--error,#dc2626);font:10px/16px var(--app-font-family);white-space:nowrap; }
 .agent-provider-table .data-table td,.agent-provider-table .data-table th { vertical-align:middle; }
 .provider-model-expansion { min-width:0; }
 .provider-model-expansion .provider-models { margin:0; padding:0; border:0; }

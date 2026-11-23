@@ -91,7 +91,13 @@ it.each(['native','account'] as const)('uses the Provider model table for the %s
  mount();
  const providerTable=within(await screen.findByRole('table',{name:'Agent Provider'}));
  const providerRow=within(await providerTable.findByRole('row',{name:/Official/}));
- expect(await providerRow.findByRole('cell',{name:'official@example.invalid'})).toBeVisible();
+ const providerHeaders=providerTable.getAllByRole('columnheader');
+ expect(providerTable.queryByRole('columnheader',{name:'账号'})).not.toBeInTheDocument();
+ const connectionColumn=providerHeaders.indexOf(providerTable.getByRole('columnheader',{name:'连接'}));
+ await providerRow.findByRole('cell',{name:'official@example.invalid'});
+ expect(providerRow.getAllByRole('cell')[connectionColumn]).toHaveTextContent('official@example.invalid');
+ const rateColumn=providerHeaders.indexOf(providerTable.getByRole('columnheader',{name:'倍率'}));
+ expect(providerRow.getAllByRole('cell')[rateColumn]).toHaveTextContent('—');
  expect(await providerRow.findByRole('cell',{name:'72%'})).toBeVisible();
  expect(api.codexEnvironments.quota).toHaveBeenCalledWith(id);
  expect(api.codexEnvironments.details).not.toHaveBeenCalled();
@@ -185,23 +191,32 @@ it('expands the Provider model table and probes only that Provider',async()=>{
  expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','fixture',expect.objectContaining({fields:expect.objectContaining({models:['model-a','model-b'],defaultModel:'model-a'})}));
  expect(within(table).getByRole('checkbox',{name:'启用 model-a'})).toBeChecked();expect(within(table).getByRole('checkbox',{name:'启用 new-model'})).not.toBeChecked();
 });
-it('edits and immediately refreshes the Provider multiplier in the parent row',async()=>{
+it('shows the rate read-only and saves a rate-only edit while the Engine is busy',async()=>{
  provider={...provider,fields:[...provider.fields,{key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text',value:'1.2'}]};state={...state,providers:[provider]};
+ vi.mocked(api.codexEnvironments.usage).mockResolvedValue({tabs:[],busy:true,verified:true});
  const invalidate=vi.spyOn(client,'invalidateQueries');
- mount();const button=await screen.findByRole('button',{name:'Fixture API 倍率 1.2×，点击编辑'});
- fireEvent.click(button);const input=screen.getByRole('textbox',{name:'Fixture API 倍率'});
- expect(input).toHaveValue('1.2');fireEvent.change(input,{target:{value:'2.5'}});fireEvent.keyDown(input,{key:'Enter'});
+ const dialog=await open();
+ expect(screen.getByRole('cell',{name:'1.2×'})).toBeVisible();
+ expect(screen.queryByRole('button',{name:/倍率/})).not.toBeInTheDocument();
+ const input=within(dialog).getByRole('textbox',{name:'Provider 计费倍率'});
+ expect(input).toHaveValue('1.2');
+ fireEvent.change(input,{target:{value:'2.5'}});
+ fireEvent.click(within(dialog).getByRole('button',{name:'保存倍率'}));
  await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('codex','fixture',{fields:{providerRateMultiplier:'2.5'}}));
- await waitFor(()=>expect(screen.getByRole('button',{name:'Fixture API 倍率 2.5×，点击编辑'})).toBeVisible());
- expect(invalidate).toHaveBeenCalledWith({queryKey:['agent-model-configs']});
+ expect(api.agentManagement.detectModels).not.toHaveBeenCalled();
+ expect(api.agentManagement.updateProviderStream).not.toHaveBeenCalled();
+ expect(await screen.findByRole('cell',{name:'2.5×'})).toBeVisible();
  expect(invalidate).toHaveBeenCalledWith({queryKey:['conversation-usage-intervals']});
 });
-it('rejects an invalid inline multiplier without sending a partial update',async()=>{
+it('shows errors from a rejected rate-only save without updating the table',async()=>{
  provider={...provider,fields:[...provider.fields,{key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text',value:'1.2'}]};state={...state,providers:[provider]};
- mount();fireEvent.click(await screen.findByRole('button',{name:'Fixture API 倍率 1.2×，点击编辑'}));
- const input=screen.getByRole('textbox',{name:'Fixture API 倍率'});fireEvent.change(input,{target:{value:'0'}});fireEvent.keyDown(input,{key:'Enter'});
- expect(await screen.findByRole('alert')).toHaveTextContent('请输入大于 0 的倍率');expect(api.agentManagement.updateProvider).not.toHaveBeenCalled();
- fireEvent.keyDown(input,{key:'Escape'});expect(screen.getByRole('button',{name:'Fixture API 倍率 1.2×，点击编辑'})).toBeVisible();
+ vi.mocked(api.agentManagement.updateProvider).mockRejectedValueOnce(Error('Provider 计费倍率必须为正数'));
+ const dialog=await open();
+ fireEvent.change(within(dialog).getByRole('textbox',{name:'Provider 计费倍率'}),{target:{value:'0'}});
+ fireEvent.click(within(dialog).getByRole('button',{name:'保存倍率'}));
+ expect(await within(dialog).findByRole('alert')).toHaveTextContent('Provider 计费倍率必须为正数');
+ expect(screen.getByRole('cell',{name:'1.2×'})).toBeVisible();
+ expect(api.agentManagement.updateProviderStream).not.toHaveBeenCalled();
 });
 it('keeps existing selections when discovery has no overlap and leaves them unchanged on probe failure',async()=>{
  mount();fireEvent.click(await screen.findByRole('button',{name:/展开Provider Fixture API 的模型/}));const table=await screen.findByRole('table',{name:'Provider 模型'});

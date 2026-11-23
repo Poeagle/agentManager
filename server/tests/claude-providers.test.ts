@@ -165,7 +165,7 @@ describe('Claude managed providers',()=>{
   });
   const stored=readAgentManagement('claude').providers.find(provider=>provider.id==='anthropic');
   expect(stored).toMatchObject({fields:{baseUrl:'https://native.example',models:['claude-fable-5','opus','sonnet','haiku'],defaultModel:'claude-fable-5'}});
-  expect(nativeClaudeProviderState()).toMatchObject({status:'ready',authentication:{status:'authenticated'}});
+  expect(nativeClaudeProviderState()).toMatchObject({status:'ready',authentication:{status:'authenticated',mode:'api'}});
   expect(claudeProviderForEnvironment('claude-provider:anthropic')).toMatchObject({authToken:'native-token',defaultModel:'claude-fable-5'});
   expect(ensureNativeClaudeProvider()).toBeUndefined();
  });

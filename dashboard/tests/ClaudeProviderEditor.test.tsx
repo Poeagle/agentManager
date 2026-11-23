@@ -42,6 +42,15 @@ it('saves model-specific Claude Code routing controls',async()=>{
     providerRateMultiplier:'1.3',haikuModel:'deepseek-flash',subagentModel:'deepseek-flash',effort:'max',autoCompactWindow:'786432',
   })})));
 });
+it('saves just the multiplier without detecting models',async()=>{
+ vi.mocked(api.agentManagement.updateProvider).mockResolvedValue({state:{agent:{id:'claude',label:'Claude'},providers:[provider]} as any});
+ mount();
+ fireEvent.click(screen.getByText('Claude Code 设置',{exact:true}));
+ fireEvent.change(screen.getByLabelText('Provider 计费倍率'),{target:{value:'2.5'}});
+ fireEvent.click(screen.getByRole('button',{name:'保存 Provider'}));
+ await waitFor(()=>expect(api.agentManagement.updateProvider).toHaveBeenCalledWith('claude','gateway',{fields:{providerRateMultiplier:'2.5'}}));
+ expect(api.agentManagement.detectModels).not.toHaveBeenCalled();
+});
 it('keeps a configured key masked and saves only a replacement value',async()=>{
  vi.mocked(api.agentManagement.updateProvider).mockResolvedValue({state:{agent:{id:'claude',label:'Claude'},providers:[provider]} as any});
  mount();const key=screen.getByLabelText('Claude API Key');expect(key).toHaveValue('');expect(key).toHaveAttribute('placeholder','留空保持不变');expect(screen.getByText('已配置')).toBeVisible();

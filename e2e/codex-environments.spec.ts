@@ -49,7 +49,9 @@ test('keeps Provider actions aligned and models and config files on one line', a
  await page.getByRole('button',{name:'Agent 配置'}).click();
  const providers=page.getByRole('table',{name:'Agent Provider'});
  const accountRow=providers.getByRole('row',{name:/Fixture Account/});
- await expect(accountRow.getByRole('cell',{name:'fixture@example.invalid'})).toBeVisible();
+ await expect(providers.getByRole('columnheader',{name:'账号',exact:true})).toHaveCount(0);
+ const connectionColumn=await providers.getByRole('columnheader',{name:'连接',exact:true}).evaluate((cell:HTMLTableCellElement)=>cell.cellIndex);
+ await expect(accountRow.getByRole('cell').nth(connectionColumn)).toHaveText('fixture@example.invalid');
  await expect(accountRow.getByRole('cell',{name:'72%'})).toBeVisible();
  const apiRow=providers.getByRole('row',{name:/Fixture Gateway/});
  await expect(apiRow.getByRole('cell',{name:'12.00'})).toBeVisible();
@@ -90,7 +92,7 @@ test('keeps Provider actions aligned and models and config files on one line', a
  await expect.poll(()=>dialog.getByRole('region',{name:/配置文件，/}).evaluate(el=>el.scrollWidth>el.clientWidth)).toBe(true);
 });
 
-test('edits the Provider multiplier directly in the row and applies it immediately',async({page})=>{
+test('saves the read-only Provider multiplier through the edit dialog',async({page})=>{
  const status=await(await page.request.get('/api/auth/status')).json();
  expect((await page.request.post(status.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
  await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true'}}});
@@ -109,58 +111,54 @@ test('edits the Provider multiplier directly in the row and applies it immediate
   return {agent,state:{agent,providers:[provider],defaults:[],providerManagement:{create:true}}};
  });
  const updates:unknown[]=[];
+ const engineRequests:string[]=[];
  await page.route('**/api/agent-management**',route=>{
   const path=new URL(route.request().url()).pathname;
-  if(path==='/api/agent-management')return route.fulfill({json:{agents:agents.map(({agent,state})=>({agent,state}))}});
+  if(path==='/api/agent-management')return route.fulfill({json:{agents}});
   const agentEntry=agents.find(item=>path.startsWith(`/api/agent-management/${item.agent.id}`))!;
-  let {state}=agentEntry;
+  const {state}=agentEntry;
   const provider=state.providers[0];
-  if(path.endsWith('/detect-models'))return route.fulfill({json:{models:provider.models.map(model=>({model,name:model,description:''}))}});
-  if(path.endsWith('/model-configs'))return route.fulfill({json:{models:[]}});
-  if(route.request().method()==='PUT'&&path.endsWith('/update-stream')){
-   const {fields}=route.request().postDataJSON();
-   updates.push({agent:state.agent.id,fields});
-   for(const field of provider.fields)if(field.key in fields)field.value=fields[field.key];
-   return route.fulfill({contentType:'application/x-ndjson',body:JSON.stringify({type:'complete',provider})+"\n"});
+  if(path.endsWith('/detect-models')||path.endsWith('/update-stream')){
+   engineRequests.push(path);
+   return route.fulfill({status:500,json:{error:'unexpected Engine operation'}});
   }
+  if(path.endsWith('/model-configs'))return route.fulfill({json:{models:[]}});
   if(route.request().method()==='PUT'){
    const {fields}=route.request().postDataJSON();
    updates.push({agent:state.agent.id,fields});
-   expect(fields.providerRateMultiplier).toBe('1.2');
-   if(fields.providerRateMultiplier==='0')return route.fulfill({status:400,json:{error:'Provider 计费倍率必须为正数'}});
-   for(const field of provider.fields)if(field.key in fields)field.value=fields[field.key];
-   provider.models=fields.models;
-   provider.defaultModel=fields.defaultModel;
-   state={...state,providers:[provider]};
-   agentEntry.state=state;
-   return route.fulfill({json:{provider,state}});
+   provider.fields.find(field=>field.key==='providerRateMultiplier')!.value=fields.providerRateMultiplier;
+   return route.fulfill({json:{state}});
   }
-  return route.fulfill({json:{provider}});
+  return route.fulfill({json:path.endsWith('/gateway')?{provider}:{state}});
  });
  await page.route('**/api/codex/environments**',route=>route.fulfill({json:{environments:[],users:[]}}));
- await page.route('**/api/codex/environments/*/usage',route=>route.fulfill({json:{tabs:[],busy:false,verified:true}}));
- const open=async()=>{
-  await page.goto('/');
-  await page.getByTitle('My account').click();
-  await page.getByRole('button',{name:'Agent 配置'}).click();
- };
+ await page.route('**/api/codex/environments/*/usage',route=>route.fulfill({json:{tabs:[],busy:true,verified:true}}));
  await page.setViewportSize({width:560,height:850});
- await open();
+ await page.goto('/');
+ await page.getByTitle('My account').click();
+ await page.getByRole('button',{name:'Agent 配置'}).click();
  const region=page.getByRole('region',{name:/Agent Provider，/});
  await expect.poll(()=>region.evaluate(el=>el.scrollWidth>el.clientWidth)).toBe(true);
  for(const {agent} of agents){
-  const row=region.getByRole('row').filter({hasText:`${agent.label} Gateway`});
-  const rate=row.getByRole('button',{name:new RegExp(`^${agent.label} Gateway 倍率`)});
-  await rate.click();
-  const input=row.getByRole('textbox',{name:`${agent.label} Gateway 倍率`});
-  await expect(input).toBeVisible();
-  await input.fill('1.2');
-  await input.press('Enter');
-  await expect.poll(()=>updates.some(item=>JSON.stringify(item).includes('"agent":"'+agent.id+'"'))).toBe(true);
-  await expect(row.getByRole('button',{name:`${agent.label} Gateway 倍率 1.2×，点击编辑`})).toBeVisible();
-  expect(updates.at(-1)).toMatchObject({agent:agent.id,fields:{providerRateMultiplier:'1.2'}});
+  const name=`${agent.label} Gateway`;
+  const row=region.getByRole('row').filter({hasText:name});
+  await expect(row.getByRole('cell',{name:agent.id==='codex'?'0.25×':'1×',exact:true})).toBeVisible();
+  await expect(row.getByRole('button',{name:/倍率/})).toHaveCount(0);
+  await row.getByRole('button',{name:`编辑 ${name} · ${agent.label}`}).click();
+  const dialog=page.getByRole('dialog',{name:`编辑 Provider · ${name}`});
+  if(agent.id==='claude')await dialog.getByText('Claude Code 设置',{exact:true}).click();
+  await dialog.getByRole('textbox',{name:'Provider 计费倍率'}).fill('1.2');
+  await dialog.getByRole('button',{name:agent.id==='codex'?'保存倍率':'保存 Provider',exact:true}).click();
+  if(agent.id==='codex'){
+   await expect(dialog.getByText('Provider 已保存',{exact:true})).toBeVisible();
+   await dialog.getByRole('button',{name:`关闭编辑 Provider · ${name}`,exact:true}).click();
+  }
+  await expect(dialog).toHaveCount(0);
+  await expect(row.getByRole('cell',{name:'1.2×',exact:true})).toBeVisible();
+  expect(updates.at(-1)).toEqual({agent:agent.id,fields:{providerRateMultiplier:'1.2'}});
  }
  expect(updates.length).toBe(2);
+ expect(engineRequests).toEqual([]);
 });
 
 

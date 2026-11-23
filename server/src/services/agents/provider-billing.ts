@@ -47,14 +47,18 @@ export async function readProviderBilling(baseUrl:string,key:string,options:{fet
  }catch{return {status:'unavailable',error:controller.signal.aborted?'timeout':'network'};}finally{clearTimeout(timer);}
 }
 
+function usesAutomaticRate(provider:StoredProvider) {
+ return provider.fields.providerRateMultiplier===undefined||provider.fields.providerRateSource==='sub2api';
+}
+
 export async function refreshStoredProviderBilling(agentId:string,keyFor:(provider:StoredProvider)=>string,options:{fetch?:typeof fetch;now?:number;providerId?:string}={}):Promise<void>{
- const providers=readAgentManagement(agentId).providers.filter(provider=>provider.enabled&&(!options.providerId||provider.id===options.providerId));
+ const providers=readAgentManagement(agentId).providers.filter(provider=>provider.enabled&&usesAutomaticRate(provider)&&(!options.providerId||provider.id===options.providerId));
  for(const provider of providers){
   const baseUrl=provider.fields.baseUrl;if(typeof baseUrl!=='string')continue;
   const result=await readProviderBilling(baseUrl,keyFor(provider),{fetch:options.fetch,now:options.now});
   if(result.status!=='available')continue;
   updateAgentManagement(agentId,current=>({...current,providers:current.providers.map(latest=>{
-   if(latest.id!==provider.id||latest.fields.baseUrl!==baseUrl)return latest;
+   if(latest.id!==provider.id||latest.fields.baseUrl!==baseUrl||!usesAutomaticRate(latest))return latest;
    const fields={...latest.fields};saveProviderBillingSnapshot(fields,latest.fields,result.snapshot);
    return {...latest,fields};
   })}));

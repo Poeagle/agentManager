@@ -205,7 +205,11 @@ function nativeProviderState(): AgentProviderState {
     managed: true,
     status: configured && baseUrl ? 'ready' : 'warning',
     statusText: configured && baseUrl ? '原生配置可切换' : configured ? '缺少 API 地址' : '缺少 API Key',
-    authentication: { status: configured ? 'authenticated' : 'missing', method: 'ANTHROPIC_AUTH_TOKEN（原生配置）' },
+    authentication: {
+      status: configured ? 'authenticated' : 'missing',
+      method: 'ANTHROPIC_AUTH_TOKEN（原生配置）',
+      ...(baseUrl ? {mode:'api' as const} : {}),
+    },
     models,
     defaultModel: env.ANTHROPIC_MODEL || null,
     fields: [
@@ -522,6 +526,7 @@ export function claudeProviderState(
     authentication: {
       status: configured ? 'authenticated' : 'missing',
       method: 'ANTHROPIC_AUTH_TOKEN（加密存储）',
+      mode: 'api',
     },
     models,
     defaultModel:

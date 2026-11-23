@@ -31,6 +31,9 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
     images:probe?.input_modalities?.length?probe.input_modalities.includes('image'):metadata.input_modalities?.length?metadata.input_modalities.includes('image'):saved?.supportsImages??null};
  });
  const original=provider?fromProvider(provider):empty();
+ const rate=provider?.authentication.mode!=='account'&&provider?rateField(provider):undefined;
+ const rateChanged=!!rate&&!rate.readOnly&&draft.providerRateMultiplier.trim()!==original.providerRateMultiplier;
+ const rateOnly=rateChanged&&!probed.length&&JSON.stringify({...draft,providerRateMultiplier:original.providerRateMultiplier})===JSON.stringify(original);
  const dirty=JSON.stringify(draft)!==JSON.stringify(original)||!!confirmDelete||!!Object.keys(modelCapabilitiesPayload(probed)).length;
  const change=(patch:Partial<Draft>)=>{setSaved(false);setError('');onDirtyChange?.(true);setDraft(previous=>({...previous,...patch}));};
  const updateState=(result:{state:AgentManagementState})=>{client.setQueryData(['agent-management','claude'],result);void client.invalidateQueries({queryKey:['agent-management-list']});void client.invalidateQueries({queryKey:['session-environments']});};
@@ -58,6 +61,7 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
   void client.invalidateQueries({queryKey:['session-environments']});
  };
  const save=useMutation<{state:AgentManagementState},Error,void>({mutationFn:async()=>{
+  if(provider&&rateOnly) return api.agentManagement.updateProvider('claude',provider.id,{fields:{providerRateMultiplier:draft.providerRateMultiplier.trim()}});
   if(!provider&&!draft.id.trim())throw Error('请填写 Provider ID');
   if(!draft.baseUrl.trim())throw Error('请填写 API 地址');
   if(!provider&&!draft.apiKey.trim())throw Error('请填写 API Key');
@@ -71,10 +75,14 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
   const models=[...new Set(draft.models.filter(model=>discovered.includes(model)))];
   if(!models.length)throw Error('请至少勾选一个探测返回的模型');
   const defaultModel=draft.defaultModel&&models.includes(draft.defaultModel)?draft.defaultModel:models[0];
-  const fields={baseUrl:draft.baseUrl.trim(),models,defaultModel,haikuModel:draft.haikuModel.trim(),subagentModel:draft.subagentModel.trim(),effort:draft.effort.trim(),autoCompactWindow:draft.autoCompactWindow.trim(),contextWindow:draft.contextWindow.trim(),maxOutputTokens:draft.maxOutputTokens.trim(),...(provider?.fields.some(item=>item.key==='providerRateMultiplier')?{providerRateMultiplier:draft.providerRateMultiplier.trim()}:{}),...modelCapabilitiesPayload(discovery.models)};
+  const fields={baseUrl:draft.baseUrl.trim(),models,defaultModel,haikuModel:draft.haikuModel.trim(),subagentModel:draft.subagentModel.trim(),effort:draft.effort.trim(),autoCompactWindow:draft.autoCompactWindow.trim(),contextWindow:draft.contextWindow.trim(),maxOutputTokens:draft.maxOutputTokens.trim(),...(rateChanged?{providerRateMultiplier:draft.providerRateMultiplier.trim()}:{}),...modelCapabilitiesPayload(discovery.models)};
   const input={name:draft.name.trim()||draft.id.trim(),kind:provider?.kind||'anthropic-compatible',enabled:provider?.enabled??true,...draft.apiKey.trim()?{apiKey:draft.apiKey.trim()}:{},fields};
   return provider?api.agentManagement.updateProvider('claude',provider.id,input):api.agentManagement.createProvider('claude',{...input,id:draft.id.trim()});
- },onSuccess:result=>{updateState(result);refreshSessionControls();setSaved(true);setError('');setEditingModels(false);onDirtyChange?.(false);onSaved(provider?.id||draft.id.trim());},onError:(failure:Error)=>setError(failure.message)});
+ },onSuccess:result=>{updateState(result);refreshSessionControls();
+  if(rateChanged) for(const key of ['agent-model-configs','agent-model-catalog','conversation-usage-intervals','conversation-metadata-details']) {
+   void client.invalidateQueries({queryKey:[key]});
+  }
+  setSaved(true);setError('');setEditingModels(false);onDirtyChange?.(false);onSaved(provider?.id||draft.id.trim());},onError:(failure:Error)=>setError(failure.message)});
  const remove=useMutation({mutationFn:()=>api.agentManagement.deleteProvider('claude',provider!.id),onSuccess:result=>{updateState(result);setConfirmDelete(false);onDirtyChange?.(false);onSaved(undefined);},onError:(failure:Error)=>setError(failure.message)});
  const toggle=useMutation({mutationFn:(enabled:boolean)=>api.agentManagement.providerAction('claude',provider!.id,enabled?'enable':'disable'),onSuccess:updateState,onError:(failure:Error)=>setError(failure.message)});
  const busy=save.isPending||remove.isPending||toggle.isPending||detect.isPending;
@@ -98,7 +106,7 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
     }}/>
    <ProviderAdvancedSettings label="Claude Code 设置">
    <div className="agent-management-form agent-management-engine-form">
-    {provider&&rateField(provider)&&!rateField(provider)?.readOnly&&<label className="agent-management-field"><span>{rateField(provider)?.label}</span><input aria-label={rateField(provider)?.label} inputMode="decimal" value={draft.providerRateMultiplier} placeholder="按官方参考价折算，留空使用原价" disabled={readOnly||busy} onChange={event=>change({providerRateMultiplier:event.target.value})}/></label>}
+    {rate&&!rate.readOnly&&<label className="agent-management-field"><span>{rate.label}</span><input aria-label={rate.label} inputMode="decimal" value={draft.providerRateMultiplier} placeholder="按官方参考价折算，留空使用原价" disabled={readOnly||busy} onChange={event=>change({providerRateMultiplier:event.target.value})}/></label>}
     <label className="agent-management-field"><span>Haiku 模型</span><input aria-label="Claude Haiku 模型" value={draft.haikuModel} placeholder="可选，例如 deepseek-flash" disabled={readOnly||busy} onChange={event=>change({haikuModel:event.target.value})}/></label>
     <label className="agent-management-field"><span>子 Agent 模型</span><input aria-label="Claude 子 Agent 模型" value={draft.subagentModel} placeholder="可选，例如 deepseek-flash" disabled={readOnly||busy} onChange={event=>change({subagentModel:event.target.value})}/></label>
     <label className="agent-management-field"><span>Effort 等级</span><input aria-label="Claude Effort 等级" value={draft.effort} placeholder="可选，例如 max" disabled={readOnly||busy} onChange={event=>change({effort:event.target.value})}/></label>
