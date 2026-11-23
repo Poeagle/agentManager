@@ -63,6 +63,22 @@ describe('memory cleanup settings API', () => {
     expect(read.json().settings).toMatchObject(settings);
   });
 
+  it('saves, normalizes and clears the Harness root URL without storing credentials', async () => {
+    const write = (value: unknown, headers = adminHeaders) => app.inject({
+      method: 'PUT', url: '/api/settings', headers, payload: { settings: { deepseek_harness_url: value } },
+    });
+    expect((await write('https://harness.example.net/app')).json().settings.deepseek_harness_url).toBe('https://harness.example.net/app/');
+    for (const value of ['javascript:alert(1)', 'https://test:secret@harness.example.net/',
+      'https://harness.example.net/?token=test', 'https://harness.example.net/#token', 12]) {
+      expect((await write(value)).statusCode).toBe(400);
+      expect(getSetting('deepseek_harness_url')).toBe('https://harness.example.net/app/');
+    }
+    const member = createUser({ username: 'member', password: 'password2' });
+    const cookie = `agentmanager_session=${createSession(member.id)}`;
+    expect((await write('http://127.0.0.1:3080/', { cookie })).statusCode).toBe(403);
+    expect((await write('')).json().settings.deepseek_harness_url).toBe('');
+  });
+
   it('persists custom font names and can restore the default without accepting CSS syntax',async()=>{
     for(const family of ['霞鹜文楷','Microsoft YaHei','']){
       const update=await app.inject({method:'PUT',url:'/api/settings',headers:adminHeaders,payload:{settings:{app_font_family:family}}});expect(update.statusCode).toBe(200);expect((await app.inject({url:'/api/settings',headers:adminHeaders})).json().settings.app_font_family).toBe(family);

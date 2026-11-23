@@ -276,15 +276,14 @@ Codex 压缩记录中的 `replacement_history` 是模型后续使用的上下文
 | 会话状态与最近助手消息 | 生命周期来自平台会话记录。工作状态使用 Agent 适配器的运行状态和当前终端信号，终端静默仅表示近期未观察到输出。消息预览显示最近可读的助手消息及原始消息时间。 |
 | 会话内存与进程 | Linux 隔离组采集 `memory.current`，通过本组和子组的 `cgroup.procs` 统计不同进程。其他本地会话使用已确认的进程树及 RSS 合计，共享页可能重复计入。汇总标明采样覆盖，缺失值保留为未知。 |
 
-## DeepSeek Harness 的后续接入
+## DeepSeek Harness 网页接入
 
-官方提供 `dsh sdk`（stdio JSON-RPC）和 `dsh acp`（stdio ACP），以及 `dsh web`。
-可在独立 Agent 目录实现上述服务宿主接口，保留平台内对话。
-现有 `dsh web` 实例的认证、会话枚举和绑定协议仍需验证；本次未实现或部署 DSH 适配器。
+项目标签可嵌入已配置的 `dsh web`。Harness 插件按当前项目目录打开原生工作区，
+对话、工具调用和授权由 Harness 网页及实例处理。该标签使用项目浏览器状态恢复，
+不创建平台会话记录，也不注册 Agent 对话能力。部署和模型接入见
+[DeepSeek Harness 网页标签](deepseek-harness-web.md)。
 
-官方资料：
-[项目](https://github.com/deepseek-ai/deepseek-harness)、
-[CLI 说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/README.md)。
+官方也提供 `dsh sdk`（stdio JSON-RPC）与 `dsh acp`（stdio ACP），可用于未来的受管 Agent 接入。
 
 ## Codex 账号环境
 

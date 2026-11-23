@@ -13,7 +13,19 @@ import { MEMORY_REAPER_DEFAULTS, memoryCleanupSettingError } from '../services/m
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** Default values for all settings */
+const DEEPSEEK_HARNESS_URL = 'deepseek_harness_url';
+
+function normalizeHarnessUrl(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 2048) throw Error();
+  if (!value.trim()) return '';
+  const url = new URL(value.trim());
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || /[?#]/u.test(url.href)) throw Error();
+  if (!url.pathname.endsWith('/')) url.pathname += '/';
+  return url.href;
+}
+
 const DEFAULTS: Record<string, string> = {
+  [DEEPSEEK_HARNESS_URL]: '',
   ...MEMORY_REAPER_DEFAULTS,
   [SEND_GUARD_KEY]:JSON.stringify(DEFAULT_SEND_GUARD),
   session_claude_command: 'claude --dangerously-skip-permissions',
@@ -69,6 +81,13 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
     if(Object.hasOwn(settings,SEND_GUARD_KEY)){
       if(!isAdmin(req.user!.id))return reply.code(403).send({error:'只有管理员可以设置发送保护'});
       try{if(typeof settings[SEND_GUARD_KEY]!=='string'||settings[SEND_GUARD_KEY].length>20000)throw Error('发送保护配置过大或格式无效');validateSendGuard(JSON.parse(settings[SEND_GUARD_KEY]));}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'发送保护配置无效'});}
+    }
+    if (Object.hasOwn(settings, DEEPSEEK_HARNESS_URL)) {
+      try {
+        settings[DEEPSEEK_HARNESS_URL] = normalizeHarnessUrl(settings[DEEPSEEK_HARNESS_URL]);
+      } catch {
+        return reply.code(400).send({ error: '请输入 DeepSeek Harness 的 HTTP(S) 根地址，地址不能包含账号、密码或登录参数。' });
+      }
     }
     const cleanupError = memoryCleanupSettingError(settings);
     if (cleanupError) return reply.status(400).send({ error: cleanupError });

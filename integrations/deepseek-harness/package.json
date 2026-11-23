@@ -1,0 +1,27 @@
+{
+  "name": "dsh-octoally-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "dsh": "0.2.2-rc.5"
+  },
+  "exports": {
+    ".": "./host.js",
+    "./client": "./client.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  }
+}

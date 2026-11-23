@@ -1,3 +1,4 @@
+import { HARNESS_URL_SETTING } from './lib/deepseek-harness';
 import {agentSupports} from './lib/agents';
 import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -67,7 +68,7 @@ function normalizeOrder(value: unknown): string[] {
   });
 }
 
-function loadAppState(userId: string): { activeTab: string; projectTabs: ProjectTab[]; projectOrder?: string[] } | null {
+function loadAppState(userId: string): { activeTab: string; projectTabs: ProjectTab[]; projectOrder?: string[]; pendingSync?: boolean } | null {
   try {
     const raw = localStorage.getItem(appStateKey(userId));
     if (!raw) return null;
@@ -79,9 +80,9 @@ function loadAppState(userId: string): { activeTab: string; projectTabs: Project
   return null;
 }
 
-function saveAppState(userId: string, activeTab: string, projectTabs: ProjectTab[], projectOrder: string[]) {
+function saveAppState(userId: string, activeTab: string, projectTabs: ProjectTab[], projectOrder: string[], pendingSync: boolean) {
   try {
-    localStorage.setItem(appStateKey(userId), JSON.stringify({ activeTab, projectTabs, projectOrder }));
+    localStorage.setItem(appStateKey(userId), JSON.stringify({ activeTab, projectTabs, projectOrder, pendingSync }));
   } catch { /* storage quota or privacy mode */ }
 }
 
@@ -226,18 +227,13 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     connectStream();
   }, [queryClient]);
 
-  // Persist app state to localStorage (instant-paint cache + offline fallback).
-  useEffect(() => {
-    saveAppState(authUser.id, activeTab, projectTabs, projectOrder);
-  }, [authUser.id, activeTab, projectTabs, projectOrder]);
-
   // ── Cross-device sync: pull the open project tabs and active project. This
   // server-side copy is the durable fallback when browser storage is lost.
   useEffect(() => {
     let cancelled = false;
     api.userState.getAll()
       .then(({ state }) => {
-        if (cancelled) return;
+        if (cancelled || savedState?.pendingSync) return;
         const serverApp = state?.app as { projectTabs?: ProjectTab[]; activeTab?: string; projectOrder?: string[] } | undefined;
         const tabs = serverApp?.projectTabs;
         if (Array.isArray(tabs)) {
@@ -270,16 +266,21 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       .catch(() => { /* offline / unauthenticated: keep using localStorage */ })
       .finally(() => { if (!cancelled) setServerHydrated(true); });
     return () => { cancelled = true; };
-  }, [authUser.id]);
+  }, [authUser.id, savedState?.pendingSync]);
 
   // Debounced write-back of the shared tab set to the server (after hydration).
   useEffect(() => {
     if (!serverHydrated) return;
-    const h = setTimeout(() => {
-      api.userState.set('app', { projectTabs, activeTab, projectOrder }).catch(() => {});
+    // Retain the browser's selection if it reloads before the shared write completes.
+    saveAppState(authUser.id, activeTab, projectTabs, projectOrder, true);
+    let cancelled = false;
+    const timeout = setTimeout(() => {
+      api.userState.set('app', { projectTabs, activeTab, projectOrder }).then(() => {
+        if (!cancelled) saveAppState(authUser.id, activeTab, projectTabs, projectOrder, false);
+      }).catch(() => {});
     }, 500);
-    return () => clearTimeout(h);
-  }, [serverHydrated, projectTabs, activeTab, projectOrder]);
+    return () => { cancelled = true; clearTimeout(timeout); };
+  }, [authUser.id, serverHydrated, projectTabs, activeTab, projectOrder]);
 
   const reorderProjectTabs = useCallback((targetProjectId: string) => {
     if (!draggingProjectTabId || draggingProjectTabId === targetProjectId) return;
@@ -313,6 +314,14 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       setFocusSessionId(`__voice_create_${quickLaunch}${suffix}`);
     }
   }, [projects]);
+
+  const [focusHarnessProjectId, setFocusHarnessProjectId] = useState<string | null>(null);
+  const clearHarnessFocus = useCallback(() => setFocusHarnessProjectId(null), []);
+  const openHarnessProject = useCallback((projectId: string, name: string) => {
+    handleOpenProject(projectId, name);
+    setFocusSessionId(null);
+    setFocusHarnessProjectId(projectId);
+  }, [handleOpenProject]);
 
   const openNotification=useCallback((notification:Notification,raw=false)=>{
     if(!notification.project_id)return;
@@ -614,6 +623,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
             <Suspense fallback={<div className="h-full" style={{ background: 'var(--bg-primary)' }} />}>
               <ProjectDashboard
                 onOpenProject={handleOpenProject}
+                onOpenHarness={openHarnessProject}
                 onOpenSession={(projectId, sessionId) => {
                   const project = projects.find((item) => item.id === projectId);
                   if (!project) return;
@@ -659,6 +669,9 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                       terminalsSuspended={showPlatformCenter}
                       focusSessionId={isActive ? focusSessionId : null}
                       onFocusSessionHandled={handleFocusSessionHandled}
+                      configuredHarnessUrl={appSettings?.settings?.[HARNESS_URL_SETTING]}
+                      focusHarness={isActive && focusHarnessProjectId === tab.projectId}
+                      onFocusHarnessHandled={clearHarnessFocus}
                     />
                   </Suspense>
                 </ErrorBoundary>
