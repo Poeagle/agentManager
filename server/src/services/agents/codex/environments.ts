@@ -24,7 +24,7 @@ export function allCodexEnvironments():CodexEnvironment[] {
  const management=readAgentManagement('codex');
  const nativeName=typeof management.defaults.nativeDisplayName==='string'?management.defaults.nativeDisplayName.trim():'';
  const result:CodexEnvironment[]=[{id:'native',name:nativeName||overrides.get('native')?.name||'本机默认 Codex',kind:'native',...permissions('native')}];
- for(const p of management.providers)result.push({id:'provider:'+p.id,name:p.name||overrides.get('provider:'+p.id)?.name||p.id,kind:'provider',provider:p.id,...permissions('provider:'+p.id),enabled:p.enabled&&permissions('provider:'+p.id).enabled});
+ for(const p of management.providers.filter(provider=>provider.id!=='native'))result.push({id:'provider:'+p.id,name:p.name||overrides.get('provider:'+p.id)?.name||p.id,kind:'provider',provider:p.id,...permissions('provider:'+p.id),enabled:p.enabled&&permissions('provider:'+p.id).enabled});
  for(const r of records.filter(r=>r.kind==='account'&&!JSON.parse(r.config).retired))result.push({id:r.id,name:r.name,kind:'account',enabled:!!r.enabled,allowed_user_ids:r.allowed_user_ids?JSON.parse(r.allowed_user_ids):[],connection:publicAccountConnection(JSON.parse(r.config))});
  return result;
 }
