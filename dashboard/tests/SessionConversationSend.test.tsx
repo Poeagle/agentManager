@@ -47,6 +47,24 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it('distinguishes send preflight from submission while the draft is still pending', async () => {
+    const preflight=deferred<Awaited<ReturnType<typeof api.agent.checkSend>>>();
+    const response=deferred<SendResult>();
+    vi.mocked(api.agent.checkSend).mockReturnValue(preflight.promise);
+    const submit=vi.spyOn(api.agent,'sendInput').mockReturnValue(response.promise);
+    await mount();
+    input('延迟发送的消息');
+    fireEvent.click(screen.getByRole('button',{name:'发送消息',exact:true}));
+    expect(await screen.findByText('检查中…')).toBeVisible();
+    expect(submit).not.toHaveBeenCalled();
+
+    await act(async()=>preflight.resolve({needs_confirmation:false} as Awaited<ReturnType<typeof api.agent.checkSend>>));
+    expect(await screen.findByText('正在发送…')).toBeVisible();
+    expect(submit).toHaveBeenCalledOnce();
+    await act(async()=>response.resolve({status:'submitted'} as SendResult));
+    expect(await screen.findByRole('status',{name:'等待 Agent 接收'})).toBeVisible();
+  });
+
   it('shows submission, waiting for native receipt and delivery across a browser remount',async()=>{
     const response=deferred<SendResult>();
     const submit=vi.spyOn(api.agent,'sendInput').mockReturnValue(response.promise);
