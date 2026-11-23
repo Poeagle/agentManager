@@ -39,14 +39,83 @@
   flex-wrap: wrap;
   gap: 8px;
 }
-.agent-management-tabs { display:flex; gap:4px; margin:0 0 10px; border-bottom:1px solid var(--border); }
+.agent-management-navigation {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin-bottom:10px;
+  border-bottom:1px solid var(--border);
+}
+.agent-management-tabs { display:flex; flex:none; gap:4px; }
 .agent-management-tabs button { min-height:32px; padding:0 10px; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--text-secondary); font:inherit; cursor:pointer; }
 .agent-management-tabs button[aria-selected="true"] { border-bottom-color:var(--accent); color:var(--text-primary); }
 .agent-management-tabs button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
-.agent-model-information .agent-provider-toolbar { margin-bottom:8px; }
-.agent-model-information-table .data-table td { padding:5px 7px; font-size:11px; line-height:16px; white-space:nowrap; }
-.agent-model-information-table .data-table th { padding:6px 7px; white-space:nowrap; }
-.agent-model-information-table code { font-size:11px; }
+.agent-model-information-toolbar {
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:8px;
+  flex:1;
+  min-width:0;
+  padding-block:2px;
+}
+.agent-model-information-toolbar .agent-management-button { flex:none; min-height:28px; }
+.agent-model-information-summary {
+  display:flex;
+  justify-content:flex-end;
+  flex-wrap:wrap;
+  gap:0 10px;
+  color:var(--text-secondary);
+  font-size:11px;
+  line-height:15px;
+}
+.agent-model-information-summary span { overflow-wrap:anywhere; }
+.agent-model-information { container-type:inline-size; }
+.agent-model-information .agent-model-information-table { overflow:clip; }
+.agent-model-information .agent-model-information-table .data-table :is(th,td) {
+  padding:5px 8px;
+  font-size:11px;
+  line-height:16px;
+  white-space:normal;
+  overflow-wrap:anywhere;
+  text-overflow:clip;
+}
+.agent-model-information-table th:nth-child(1) { width:10%; }
+.agent-model-information-table th:nth-child(2) { width:23%; }
+.agent-model-information-table th:nth-child(3) { width:13%; }
+.agent-model-information-table th:nth-child(4) { width:12%; }
+.agent-model-information-table th:nth-child(n+5) { width:14%; }
+.agent-model-information-table .smart-table-heading { gap:2px; }
+.agent-model-information-table .smart-table-sort { white-space:normal; overflow:visible; }
+.agent-model-information-table .smart-table-sort > span { overflow:visible; }
+.agent-model-information-table .smart-table-sort svg,
+.agent-model-information-table .smart-table-filter svg { width:10px; height:10px; }
+.agent-model-information-table code { font-size:inherit; }
+.agent-model-price-line {
+  display:flex;
+  align-items:baseline;
+  flex-wrap:wrap;
+  gap:0 6px;
+  font-variant-numeric:tabular-nums;
+}
+.agent-model-price-line small { color:var(--text-secondary); font-size:10px; line-height:14px; }
+@container (width < 600px) {
+  .agent-model-information-table .data-table,
+  .agent-model-information-table :is(thead,tbody) { display:block; }
+  .agent-model-information-table .data-table tr {
+    display:grid;
+    grid-template-columns:repeat(12,minmax(0,1fr));
+  }
+  .agent-model-information .agent-model-information-table .data-table :is(th,td) {
+    grid-column:span 3;
+    width:auto;
+    padding:4px 5px;
+  }
+  .agent-model-information .agent-model-information-table :is(th,td):first-child { grid-column:span 2; }
+  .agent-model-information .agent-model-information-table :is(th,td):is(:nth-child(2),:nth-child(n+5)) { grid-column:span 4; }
+  .agent-model-information .agent-model-information-table td[colspan] { grid-column:1/-1; }
+  .agent-model-information .agent-model-information-table tbody td:nth-child(-n+4):not([colspan]) { border-bottom:0; }
+}
 .agent-provider-toolbar { justify-content: space-between; margin-bottom: 10px; }
 .agent-provider-toolbar > span { color: var(--text-secondary); font-size: 12px; }
 .agent-provider-toolbar .agent-management-button { min-height: 32px; }

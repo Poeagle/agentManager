@@ -1,64 +1,103 @@
+import type {ReactNode} from 'react';
 import {useQuery} from '@tanstack/react-query';
-import type {AgentModelMetadata,AgentModelPricing} from '../lib/api';
-import {api} from '../lib/api';
+import {api,type AgentModelMetadata,type AgentModelPricing} from '../lib/api';
 import {DataTable} from './table/DataTable';
 import {useTableModel} from './table/use-table-model';
 
 type ModelRow=AgentModelMetadata&{vendor:string;model:string;providers:string[]};
+type RateKey='input'|'output'|'cached';
 
 function amount(value:number,currency:string){
- return `${currency} ${value.toFixed(2)}`;
+ if(currency==='USD')return '$'+value;
+ if(currency==='CNY')return '¥'+value;
+ return `${value} ${currency}`;
 }
 
-function pricingValues(pricing:AgentModelPricing|undefined,key:'input'|'output'|'cached',credits?:ModelRow['reference_credits']){
+function inputRule(label:string|undefined){
+ if(!label)return '';
+ const chinese=label.match(/^([≤≥<>])\s*(\S+)\s+输入\s*Token$/i);
+ if(chinese)return `输入 ${chinese[1]}${chinese[2]}`;
+ const english=label.match(/^(?:for\s+)?prompts?\s+(up to|over|above|greater than|more than)\s+([\d,]+)\s+tokens?$/i);
+ if(!english)return label;
+ const threshold=Number(english[2].replaceAll(',',''));
+ const count=threshold%1000===0?`${threshold/1000}K`:String(threshold);
+ return `输入 ${english[1].toLowerCase()==='up to'?'≤':'>'}${count}`;
+}
+
+function priceLines(pricing:AgentModelPricing|undefined,key:RateKey,credits:ModelRow['reference_credits']){
  if(!pricing){
-  const creditRate=credits?.[key];
-  return creditRate==null?'未提供':`Credits ${creditRate.toFixed(2)}`;
+  const rate=credits?.[key];
+  return rate==null?[]:[{amount:amount(rate,'Credits'),rule:''}];
  }
  if(pricing.peak&&pricing.off_peak){
-  const rates=[pricing.peak[key],pricing.off_peak[key]];
-  if(rates.some(value=>value==null))return '未提供';
-  return `高峰 ${amount(rates[0]!,pricing.currency)} · 空闲 ${amount(rates[1]!,pricing.currency)}`;
+  return [
+   {value:pricing.peak[key],rule:'高峰'},
+   {value:pricing.off_peak[key],rule:'空闲'},
+  ].flatMap(({value,rule})=>value==null?[]:[{amount:amount(value,pricing.currency),rule}]);
  }
- const bands=pricing.bands?.flatMap(band=>{
+ return pricing.bands?.flatMap(band=>{
   const value=band.rates[key];
-  if(value==null)return [];
-  return [`${band.label?`${band.label} `:''}${amount(value,pricing.currency)}`];
+  return value==null?[]:[{amount:amount(value,pricing.currency),rule:inputRule(band.label)}];
  })??[];
- return bands.length?bands.join(' · '):'未提供';
 }
 
-function releaseDate(row:ModelRow){return row.release_date||'未提供';}
-export function AgentModelInformation({active=true}:{active?:boolean}){
- const query=useQuery({queryKey:['agent-model-catalog'],queryFn:api.agentManagement.modelCatalog,enabled:active,refetchInterval:30*60*1000});
- const rows=query.data?.models??[];
- const table=useTableModel(rows,[
-  {key:'vendor',title:'厂商',value:row=>row.vendor},
-  {key:'model',title:'模型名称',value:row=>row.model},
-  {key:'released',title:'发布时间',value:releaseDate,kind:'date'},
-  {key:'context',title:'上下文窗口',value:row=>row.official_context_window??row.context_window,kind:'number',format:value=>typeof value==='number'?value.toLocaleString('en-US'):value==null?'未提供':String(value)},
-  {key:'input',title:'未缓存输入 / 百万 Token',value:row=>pricingValues(row.api_pricing,'input',row.reference_credits)},
-  {key:'output',title:'输出 / 百万 Token',value:row=>pricingValues(row.api_pricing,'output',row.reference_credits)},
-  {key:'cached',title:'缓存命中输入 / 百万 Token',value:row=>pricingValues(row.api_pricing,'cached',row.reference_credits)},
- ]);
- return <section className="agent-model-information" aria-label="模型资料">
-  <div className="agent-provider-toolbar"><span aria-live="polite">{table.rows.length} 个模型</span>
-   <button type="button" className="agent-management-button" onClick={()=>void query.refetch()} disabled={query.isFetching}>
-    {query.isFetching?'更新中…':'更新资料'}
-   </button>
+const missing=<span aria-label="未提供" title="未提供">—</span>;
+const rateColumns=[
+ {key:'input',title:'未缓存输入'},
+ {key:'output',title:'输出'},
+ {key:'cached',title:'缓存命中'},
+] as const;
+const rateUnit='每百万 Token';
+const columns=[
+ {key:'vendor',title:'厂商',value:(row:ModelRow)=>row.vendor},
+ {key:'model',title:'模型',value:(row:ModelRow)=>row.model},
+ {key:'released',title:'发布日期',value:(row:ModelRow)=>row.release_date,kind:'date'},
+ {key:'context',title:'上下文',value:(row:ModelRow)=>row.official_context_window??row.context_window,kind:'number'},
+ ...rateColumns.map(({key,title})=>({
+  key,title,description:`${title}费率（${rateUnit}）`,
+  value:(row:ModelRow)=>priceLines(row.api_pricing,key,row.reference_credits).map(line=>[line.rule,line.amount].filter(Boolean).join(' ')).join(' · ')||null,
+ })),
+] as const;
+
+export function AgentModelInformation({active=true,tabs}:{active?:boolean;tabs?:ReactNode}){
+ const query=useQuery({queryKey:['agent-model-catalog'],queryFn:api.agentManagement.modelCatalog,enabled:active,refetchInterval:active?30*60*1000:false});
+ const table=useTableModel(query.data?.models??[],columns);
+ return <>
+  <div className="agent-management-navigation">
+   {tabs}
+   {active&&<div className="agent-model-information-toolbar">
+    <div className="agent-model-information-summary">
+     <span aria-live="polite">{table.rows.length} 个模型</span>
+     <span>费率 / 百万 Token</span>
+    </div>
+    <button type="button" className="agent-management-button" onClick={()=>void query.refetch()} disabled={query.isFetching}>
+     {query.isFetching?'更新中…':'更新资料'}
+    </button>
+   </div>}
   </div>
-  <DataTable label="模型资料" model={table} minWidth={1040} className="agent-model-information-table"
-   loading={query.isPending} error={query.isError?query.error.message:undefined} onRetry={()=>void query.refetch()}
-   empty={!table.rows.length} emptyMessage="暂无模型资料">
-   {table.rows.map(row=><tr key={`${row.vendor}:${row.model}`}>
-    <td>{row.vendor}</td>
-    <td title={row.providers.length?row.providers.join('、'):'官方模型资料'}><code>{row.model}</code></td>
-    <td>{releaseDate(row)}</td>
-    <td>{row.official_context_window??row.context_window?Number(row.official_context_window??row.context_window).toLocaleString('en-US'):'未提供'}</td>
-    <td>{pricingValues(row.api_pricing,'input',row.reference_credits)}</td>
-    <td>{pricingValues(row.api_pricing,'output',row.reference_credits)}</td>
-    <td>{pricingValues(row.api_pricing,'cached',row.reference_credits)}</td>
-   </tr>)}
-  </DataTable>
- </section>;
+  {active&&<section className="agent-model-information" aria-label="模型资料">
+   <DataTable label="模型资料" model={table} fitWidth className="agent-model-information-table"
+    loading={query.isPending} error={query.isError?query.error.message:undefined} onRetry={()=>void query.refetch()}
+    empty={!table.rows.length} emptyMessage="暂无模型资料">
+    {table.rows.map(row=>{
+     const context=row.official_context_window??row.context_window;
+     return <tr key={`${row.vendor}:${row.model}`}>
+      <td>{row.vendor}</td>
+      <td title={row.providers.length?row.providers.join('、'):'官方模型资料'}><code>{row.model}</code></td>
+      <td>{row.release_date||missing}</td>
+      <td>{context==null?missing:context.toLocaleString('en-US')}</td>
+      {rateColumns.map(({key})=>{
+       const rates=priceLines(row.api_pricing,key,row.reference_credits);
+       return <td key={key}>
+        {rates.length?rates.map((rate,index)=><div className="agent-model-price-line" key={index}>
+         <span>{rate.amount}</span>
+         {rate.rule&&<small>{rate.rule}</small>}
+        </div>):missing}
+       </td>;
+      })}
+     </tr>;
+    })}
+   </DataTable>
+  </section>}
+ </>;
 }
