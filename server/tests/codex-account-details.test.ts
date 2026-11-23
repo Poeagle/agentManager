@@ -13,7 +13,7 @@ let db:ReturnType<typeof createTestDatabase>,app:FastifyInstance,id:string,admin
 beforeEach(async()=>{
  vi.clearAllMocks();db=createTestDatabase();const admin=createUser({username:'details-admin',password:'password1',role:'admin'}),member=createUser({username:'details-member',password:'password1'});adminCookie='agentmanager_session='+createSession(admin.id);memberCookie='agentmanager_session='+createSession(member.id);
  id=(await saveCodexEnvironment({name:'Selected account',connection:{username:'fixture_user',codexCommand:'codex'},allowed_user_ids:[member.id]})).id;
- state.command.mockResolvedValue(JSON.stringify({executable:'/fixture/user/bin/codex',version:'codex-cli 0.fixture',home:'/fixture/user/.codex',pid:123,config:{path:'/fixture/user/.codex/config.toml',exists:true},settings:{model:'fixture-model',model_provider:'openai',model_reasoning_effort:'high',api_key:'DO_NOT_RETURN_CONFIG_SECRET'},secret:'DO_NOT_RETURN_METADATA_SECRET'}));
+ state.command.mockResolvedValue(JSON.stringify({executable:'/fixture/user/bin/codex',version:'codex-cli 0.fixture',home:'/fixture/user/.codex',pid:123,config:{path:'/fixture/user/.codex/config.toml',exists:true},settings:{model:'fixture-model',model_provider:'openai',model_reasoning_effort:'high',model_context_window:700000,api_key:'DO_NOT_RETURN_CONFIG_SECRET'},secret:'DO_NOT_RETURN_METADATA_SECRET'}));
  state.local.mockImplementation(()=>state.command());
  state.rpc.mockResolvedValue({account:{type:'chatgpt',email:'fixture@example.invalid',planType:'fixture-plan',accessToken:'DO_NOT_RETURN_AUTH_SECRET'}});state.models.mockResolvedValue([{model:'fixture-model',name:'Fixture model',description:'Selected account model',efforts:[],defaultEffort:'high'}]);
  app=Fastify();app.addHook('onRequest',authHook);await app.register(codexEnvironmentRoutes,{prefix:'/api'});
@@ -22,13 +22,21 @@ afterEach(async()=>{await app.close();db.cleanup();});
 describe('selected system-user Codex account details',()=>{
  it('returns live identity, version, resolved paths, public defaults and models without auth or configuration secrets',async()=>{
   const r=await app.inject({url:'/api/codex/environments/'+encodeURIComponent(id)+'/details',headers:{cookie:adminCookie}});expect(r.statusCode).toBe(200);
-  expect(r.json().details).toMatchObject({id,version:'codex-cli 0.fixture',home:'/fixture/user/.codex',authentication:{status:'authenticated',email:'fixture@example.invalid',plan:'fixture-plan'},settings:{model:'fixture-model',model_provider:'openai'},engine:{state:'connected',pid:123},models:[{model:'fixture-model'}]});
-  expect(r.body).not.toContain('DO_NOT_RETURN');expect(r.body).not.toContain('accessToken');expect(state.models).toHaveBeenCalledWith(id,true);expect(state.rpc).toHaveBeenCalledWith('account/read',{});expect(state.rpc.mock.calls.map(call=>call[0])).not.toContain('turn/start');
+  expect(r.json().details).toMatchObject({id,version:'codex-cli 0.fixture',home:'/fixture/user/.codex',authentication:{status:'authenticated',email:'fixture@example.invalid',plan:'fixture-plan'},settings:{model:'fixture-model',model_provider:'openai',model_context_window:'700000'},engine:{state:'connected',pid:123},models:[{model:'fixture-model'}]});
+  expect(r.body).not.toContain('DO_NOT_RETURN');expect(r.body).not.toContain('accessToken');expect(state.models).toHaveBeenCalledWith(id,true,true);expect(state.rpc).toHaveBeenCalledWith('account/read',{});expect(state.rpc.mock.calls.map(call=>call[0])).not.toContain('turn/start');
  });
  it('provides the same native account details and redacts identity for unprivileged settings readers',async()=>{
   const adminResult=await app.inject({url:'/api/codex/environments/native/details',headers:{cookie:adminCookie}});expect(adminResult.statusCode).toBe(200);expect(adminResult.json().details).toMatchObject({id:'native',authentication:{email:'fixture@example.invalid',plan:'fixture-plan'},engine:{pid:456},models:[{model:'fixture-model'}]});
-  expect(state.models).toHaveBeenCalledWith('native',true);expect(adminResult.body).not.toContain('DO_NOT_RETURN');
+  expect(state.models).toHaveBeenCalledWith('native',true,true);expect(adminResult.body).not.toContain('DO_NOT_RETURN');
   const memberResult=await app.inject({url:'/api/codex/environments/native/details',headers:{cookie:memberCookie}});expect(memberResult.statusCode).toBe(200);expect(memberResult.json().details.authentication).toMatchObject({email:null,plan:null});expect(memberResult.body).not.toContain('fixture@example.invalid');
+ });
+ it('prefers the resolved Codex window and uses the account file when it is unavailable',async()=>{
+  state.rpc.mockImplementation(async(method:string)=>method==='account/read'?{account:{type:'chatgpt'}}:{config:{model_context_window:600000}});
+  const url='/api/codex/environments/'+encodeURIComponent(id)+'/details';
+  const headers={cookie:adminCookie};
+  expect((await app.inject({url,headers})).json().details.settings.model_context_window).toBe('600000');
+  state.rpc.mockImplementation(async(method:string)=>method==='account/read'?{account:{type:'chatgpt'}}:{config:{model_context_window:-1}});
+  expect((await app.inject({url,headers})).json().details.settings.model_context_window).toBe('700000');
  });
  it('uses the runtime API configuration when host TOML parsing is unavailable',async()=>{
   state.local.mockResolvedValue(JSON.stringify({executable:'/fixture/codex',home:'/fixture',config:{path:'/fixture/config.toml',exists:true,notice:'解析失败'},settings:{}}));

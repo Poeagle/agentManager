@@ -15,7 +15,7 @@ export async function readCodexAccountDetails(id:string) {
   if(environment.kind!=='account'&&environment.kind!=='native')throw Object.assign(Error('此详情接口仅适用于 Codex 登录账号'),{statusCode:400});
   const engine=await engineForEnvironment(id);
   const {auth,runtime}=await runInCodexEngine(engine,()=>withCodexConnection(async request=>({auth:await request('account/read',{}),runtime:await request('config/read',{}).catch(()=>null)})));
-  const models=await readEngineModelsForEnvironment(id,true);
+  const models=await readEngineModelsForEnvironment(id,true,auth.account?.type==='chatgpt');
   const native=environment.kind==='native';
   const connection=native?{codexCommand:nativeEngineConfig().command,codexHome:process.env.CODEX_HOME||'',username:userInfo().username}:environmentConnection(environment);
   const tag=createHash('sha256').update(config.dbPath+':'+id).digest('hex').slice(0,12);
@@ -36,6 +36,8 @@ try:
   for key in ['model','model_provider','model_reasoning_effort','approval_policy','sandbox_mode']:
    value=parsed.get(key)
    if isinstance(value,str):settings[key]=value[:500]
+  window=parsed.get('model_context_window')
+  if type(window) is int and 0<window<=9007199254740991:settings['model_context_window']=window
   provider=parsed.get('model_providers',{}).get(parsed.get('model_provider',''),{})
   if isinstance(provider,dict) and isinstance(provider.get('base_url'),str):
    url=urllib.parse.urlsplit(provider['base_url']);settings['base_url']=urllib.parse.urlunsplit((url.scheme,url.hostname or '','','',''))[:500]
@@ -51,6 +53,8 @@ print(json.dumps({'executable':command,'version':result.stdout.strip()[:200],'ho
   const safeUrl=(value:unknown)=>{if(typeof value!=='string')return null;try{const url=new URL(value);if(!['http:','https:'].includes(url.protocol))return null;url.username='';url.password='';url.search='';url.hash='';return url.toString().slice(0,500);}catch{return null;}};
   const settings=Object.fromEntries(['model','model_provider','model_reasoning_effort','approval_policy','sandbox_mode'].map(key=>[key,text(live?.[key])??text(metadata.settings?.[key])]));
   settings.base_url=safeUrl(provider?.base_url)??text(metadata.settings?.base_url);
+  const window=[live?.model_context_window,metadata.settings?.model_context_window].find(value=>Number.isSafeInteger(value)&&value>0);
+  settings.model_context_window=window===undefined?null:String(window);
   return {
     id,system_user:connection.username,checked_at:new Date().toISOString(),
     executable:text(metadata.executable),version:text(metadata.version),home:text(metadata.home),

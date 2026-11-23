@@ -99,8 +99,8 @@ except Exception:print('[]')`;
 const catalogs=new Map<string,{until:number;data:ModelChoice[]}>();
 const loadingCatalogs=new Map<string,Promise<ModelChoice[]>>();
 const catalogFailures=new Map<string,{until:number;error:unknown}>();
-async function readEngineModels(force=false):Promise<ModelChoice[]> {
-  const engine=currentCodexEngine(),key=JSON.stringify([engine.socket,engine.models]);
+async function readEngineModels(force=false,codexContextOnly=false):Promise<ModelChoice[]> {
+  const engine=currentCodexEngine(),key=JSON.stringify([engine.socket,engine.models,codexContextOnly]);
   const catalog=catalogs.get(key);if(!force&&catalog&&catalog.until>Date.now())return catalog.data;
   const loading=loadingCatalogs.get(key);if(loading)return loading;
   const failure=catalogFailures.get(key);if(!force&&failure&&failure.until>Date.now())throw failure.error;
@@ -121,7 +121,8 @@ async function readEngineModels(force=false):Promise<ModelChoice[]> {
         if(engine.models&&!engine.models.includes(item.model))continue;
         if(item.hidden||typeof item.model!=='string'||typeof item.displayName!=='string'||!Array.isArray(item.supportedReasoningEfforts))continue;
         const efforts=item.supportedReasoningEfforts.filter((e:any)=>typeof e.reasoningEffort==='string').map((e:any)=>({value:e.reasoningEffort,description:typeof e.description==='string'?e.description:''}));
-        const info=metadata.find(m=>m&&typeof m==='object'&&m.slug===item.model);const contextWindow=info?.context_window??item.contextWindow;
+        const info=metadata.find(m=>m&&typeof m==='object'&&m.slug===item.model);
+        const contextWindow=codexContextOnly?item.contextWindow??info?.context_window:info?.context_window??item.contextWindow;
         const modalities=info?.input_modalities??item.inputModalities,credit=creditRate(item.model);
         const rate=credit?.rates.cached!=null?[credit.rates.input,credit.rates.cached,credit.rates.output]:null;
         const CREDIT_RATE_DATE=credit?.as_of??'';
@@ -130,7 +131,7 @@ async function readEngineModels(force=false):Promise<ModelChoice[]> {
           const choice=data[data.length-1],details=providerModelMetadata(item.model,upstream,gateway?.fields);
           Object.assign(choice,details,{
             release_date:details.release_date??choice.release_date,
-            context_window:choice.context_window??details.context_window,
+            context_window:choice.context_window??(codexContextOnly?null:details.context_window),
             input_modalities:choice.input_modalities?.length?choice.input_modalities:details.input_modalities,
           });
         }
@@ -273,7 +274,7 @@ export async function assertCodexLaunchModel(request:(method:string,params:unkno
  if(typeof config.model==='string'&&!(await readEngineModels()).some(m=>m.model===config.model))throw Error(`配置模型 ${config.model} 不在当前模型服务 ${config.model_provider||'默认'} 的可用目录中；请修正配置后新开会话`);
 }
 
-export async function readEngineModelsForEnvironment(id:string,force=false):Promise<ModelChoice[]> {
+export async function readEngineModelsForEnvironment(id:string,force=false,codexContextOnly=false):Promise<ModelChoice[]> {
  const {engineForEnvironment}=await import('./environments.js');
- return runInCodexEngine(await engineForEnvironment(id),()=>readEngineModels(force));
+ return runInCodexEngine(await engineForEnvironment(id),()=>readEngineModels(force,codexContextOnly));
 }

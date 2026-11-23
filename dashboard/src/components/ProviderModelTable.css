@@ -14,7 +14,7 @@
 .provider-models-note{margin:0;color:var(--text-secondary);font-size:11px;line-height:18px;}
 .provider-model-table .data-table th{text-align:left;white-space:nowrap;}
 .provider-model-table .data-table td{text-align:left;vertical-align:middle;}
-.provider-model-table .data-table td:nth-child(-n+1):has(input[type=checkbox]),.provider-model-table .data-table th:first-child{text-align:center;}
+.provider-model-table .data-table td:first-child:has(input[type=checkbox]),.provider-model-table .data-table th[aria-label="启用"]{text-align:center;}
 .provider-model-table .data-table td{white-space:nowrap;}
 .provider-model-table input:is([type=checkbox],[type=radio]){width:14px;height:14px;vertical-align:middle;accent-color:var(--accent);}
 .provider-model-table code{font-size:11px;}

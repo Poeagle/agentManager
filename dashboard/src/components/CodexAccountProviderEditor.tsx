@@ -63,6 +63,7 @@ export function CodexAccountProviderEditor({environment,onSaved,onDirtyChange,on
       const result=await api.codexEnvironments.save({name,enabled,allowed_user_ids:environment?.allowed_user_ids ?? [],connection},environment?.id);
       setPassword('');onDirtyChange?.(false);
       await Promise.all(['codex-environment-management','session-environments','codex-environments'].map(key=>client.invalidateQueries({queryKey:[key]})));
+      await client.invalidateQueries({queryKey:['codex-account-details',result.environment.id]});
       onSaved(result.environment);
     } catch(failure) {setError(failure instanceof Error?failure.message:'保存失败');}
     finally {setWorking(null);}

@@ -2,7 +2,7 @@ import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {render,screen,fireEvent,waitFor,within,act} from '@testing-library/react';
 import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {AgentManagementPanel} from '../src/components/AgentManagementPanel';
-import {api,type AgentManagementState,type AgentProviderState,type AgentModelConfig} from '../src/lib/api';
+import {api,type AgentManagementState,type AgentProviderState,type AgentModelConfig,type CodexAccountDetails} from '../src/lib/api';
 vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,agentManagement:{...actual.api.agentManagement,list:vi.fn(),get:vi.fn(),provider:vi.fn(),modelCatalog:vi.fn(),modelConfigs:vi.fn(),updateModelConfigs:vi.fn(),updateProvider:vi.fn(),updateProviderStream:vi.fn(),detectModels:vi.fn()},codexEnvironments:{...actual.api.codexEnvironments,management:vi.fn(),usage:vi.fn(),details:vi.fn(),configFiles:vi.fn(async()=>({files:[]})),quota:vi.fn(async()=>({quota:null,reason:'not_applicable'}))}}};});
 let client:QueryClient,provider:AgentProviderState,state:AgentManagementState,configs:AgentModelConfig[];
 const createFixture=()=>({
@@ -67,8 +67,38 @@ it('keeps a native Codex account in the account details instead of the API form'
  vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[{id:'native',name:'Native Account',kind:'native',enabled:true,auth_mode:'account',allowed_user_ids:null}],users:[]});
  vi.mocked(api.codexEnvironments.details).mockResolvedValue({details:{id:'native',checked_at:'',home:'/fixture/.codex',executable:'codex',version:'0.test',engine:{state:'connected',pid:1},authentication:{status:'authenticated',type:'chatgpt',email:'account@example.invalid',plan:'plus'},config:{path:'/fixture/.codex/config.toml',exists:true,notice:null},settings:{model:'model-a'},models:[{model:'model-a',name:'Model A'}]}});
  const dialog=await open('Native Account');
+ expect(await within(dialog).findByRole('heading',{name:'账号与运行状态'})).toBeInTheDocument();
  expect(within(dialog).queryByRole('button',{name:'保存连接配置并重启 Engine'})).not.toBeInTheDocument();
  expect(within(dialog).queryByRole('textbox',{name:'Responses API 地址'})).not.toBeInTheDocument();
+ fireEvent.click(within(dialog).getByRole('button',{name:'编辑配置'}));
+ expect(within(dialog).getByRole('button',{name:'重命名'})).toBeInTheDocument();
+ expect(within(dialog).queryByRole('button',{name:/探测模型/})).not.toBeInTheDocument();
+});
+it.each(['native','account'] as const)('uses the Provider model table for the %s Codex environment',async kind=>{
+ const id=kind==='native'?'native':'account:fixture',name='Official';
+ provider={...provider,id:'native',name,kind:'native',models:['model-a'],authentication:{status:'authenticated',method:'ChatGPT',mode:'account'},fields:[]};
+ state={...state,providers:kind==='native'?[provider]:[]};
+ vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[{id,kind,name,enabled:true,auth_mode:'account',allowed_user_ids:null}],users:[]});
+ const details:CodexAccountDetails={
+  id,checked_at:'',executable:null,version:null,home:null,
+  engine:{state:'connected',pid:1},authentication:{status:'authenticated',type:'chatgpt',email:null,plan:'plus'},
+  config:{path:null,exists:true,notice:null},settings:{model_context_window:'700000'},
+  models:[{model:'model-a'},{model:'model-b',context_window:500000,official_context_window:1050000,input_modalities:['text','image'],release_date:'2026-11-17'}],
+ };
+ vi.mocked(api.codexEnvironments.details).mockResolvedValue({details});
+ mount();
+ fireEvent.click(await screen.findByRole('button',{name:`展开Provider ${name} 的模型`}));
+ const table=await screen.findByRole('table',{name:'Provider 模型'});
+ const model=await within(table).findByRole('row',{name:/model-b/});
+ expect(within(table).getAllByRole('columnheader').map(column=>column.getAttribute('aria-label'))).toEqual(['模型 ID','上下文长度','图片输入','发布时间']);
+ expect(model).toHaveTextContent('700,000（配置）');
+ expect(model).toHaveTextContent('官方 1,050,000');
+ expect(model).toHaveTextContent('支持');
+ expect(screen.queryByRole('button',{name:/探测.*模型/})).not.toBeInTheDocument();
+ expect(api.codexEnvironments.details).toHaveBeenCalledWith(id);
+ expect(api.agentManagement.updateProvider).not.toHaveBeenCalled();
+ act(()=>{client.setQueryData(['codex-account-details',id],{details:{...details,settings:{model_context_window:null}}});});
+ expect(await within(model).findByText('500,000')).toBeInTheDocument();
 });
 it('keeps existing native models selected and leaves newly detected models disabled',async()=>{
  provider={...provider,id:'native',name:'Fixture API',kind:'native',models:['stale-model'],defaultModel:'stale-model',fields:[

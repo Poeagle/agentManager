@@ -21,8 +21,8 @@ export function ProviderModelActions({selected,total,disabled,detecting,onDetect
  </div></div>;
 }
 
-export function ModelCatalogTable<Row extends ModelCatalogRow>({rows,selected,locked,loading,error,onRetry,onSelectedChange,renderContext,renderImages,extraColumns=[],renderExtra,renderActions}: {
- rows:Row[];selected:string[];locked?:boolean;loading?:boolean;error?:string;onRetry?:()=>void;
+export function ModelCatalogTable<Row extends ModelCatalogRow>({rows,selected=[],locked,loading,error,emptyMessage='暂无模型，请先探测',onRetry,onSelectedChange,renderContext,renderImages,extraColumns=[],renderExtra,renderActions}: {
+ rows:Row[];selected?:string[];locked?:boolean;loading?:boolean;error?:string;emptyMessage?:string;onRetry?:()=>void;
  onSelectedChange?:(models:string[])=>void;
  renderContext?:(row:Row)=>ReactNode;renderImages?:(row:Row)=>ReactNode;renderActions?:(row:Row)=>ReactNode;
  extraColumns?:TableColumn<Row>[];renderExtra?:(row:Row)=>ReactNode;
@@ -36,7 +36,7 @@ export function ModelCatalogTable<Row extends ModelCatalogRow>({rows,selected,lo
   {key:'released',title:'发布时间',value:row=>row.metadata?.release_date},
   ...extraColumns,
  ]);
- return <DataTable label="Provider 模型" model={table} actions={!!renderActions} className="provider-model-table" minWidth={extraColumns.length?980:720} loading={loading} error={error} onRetry={onRetry} empty={!rows.length} emptyMessage="暂无模型，请先探测">
+ return <DataTable label="Provider 模型" model={table} actions={!!renderActions} className="provider-model-table" minWidth={extraColumns.length?980:720} loading={loading} error={error} onRetry={onRetry} empty={!rows.length} emptyMessage={emptyMessage}>
   {table.rows.map(row=>{
    const enabled=chosen.has(row.model),officialWindow=row.metadata?.official_context_window;
    return <tr key={row.model}>

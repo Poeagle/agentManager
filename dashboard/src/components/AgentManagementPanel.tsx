@@ -5,7 +5,7 @@ import {ModelCatalogTable,ProviderModelActions} from './ModelCatalogTable';
 import {modelCapabilitiesPayload} from './ModelPricing';
 import {ProviderAdvancedSettings,ProviderConnectionFields} from './ProviderConnectionFields';
 import {useProviderUsage} from '../lib/use-provider-usage';
-import {CodexAccountProvider} from './CodexAccountProvider';
+import {CodexAccountModelExpansion,CodexAccountProvider} from './CodexAccountProvider';
 import {BalanceSummary,useEngineBalance} from './CodexEngineBalance';
 import {CodexAccountProviderEditor} from './CodexAccountProviderEditor';
 import {ClaudeProviderEditor} from './ClaudeProviderEditor';
@@ -599,6 +599,7 @@ function ProviderEditor({
   onBusyChange,
   onRemoved,
   nativeApi = false,
+  accountMode = false,
 }: {
   agentId: string;
   provider: AgentProviderState;
@@ -609,6 +610,7 @@ function ProviderEditor({
   onBusyChange: (busy: boolean) => void;
   onRemoved: () => void;
   nativeApi?: boolean;
+  accountMode?: boolean;
 }) {
   const queryClient = useQueryClient();
   const nativeDetails=useQuery({queryKey:['codex-account-details','native'],queryFn:()=>api.codexEnvironments.details('native'),enabled:nativeApi,retry:false});
@@ -1017,9 +1019,9 @@ function ProviderEditor({
         onDirtyChange={onDirtyChange}
       />}
       <section className="agent-management-section agent-management-engine-settings">
-        {!readOnly&&<p className="codex-account-description">钱包余额：<BalanceSummary id={provider.id==='native'?'native':'provider:'+provider.id}/></p>}
+        {!readOnly&&!accountMode&&<p className="codex-account-description">钱包余额：<BalanceSummary id={provider.id==='native'?'native':'provider:'+provider.id}/></p>}
         <div className="agent-management-section-title"><h4>连接配置</h4><button type="button" className="agent-management-button" onClick={()=>setRuntimeOpen(true)}><FileCode2 size={13}/>运行信息</button></div>
-        {provider.id==='native'&&provider.authentication.mode==='uninitialized'&&!readOnly&&<div className="agent-management-uninitialized-guide">
+        {!accountMode&&provider.id==='native'&&provider.authentication.mode==='uninitialized'&&!readOnly&&<div className="agent-management-uninitialized-guide">
           <p className="agent-management-uninitialized-title">原生 Codex Provider 尚未初始化</p>
           <p className="agent-management-uninitialized-description">请选择认证方式以开始配置：</p>
           <div className="agent-management-uninitialized-options">
@@ -1105,7 +1107,7 @@ function ProviderEditor({
             <label className="agent-management-field"><span>模型<b aria-label="必填">*</b><InfoTip text="每行一个模型 ID；保存时同步 Codex 模型目录。" /></span><textarea aria-label="模型" rows={3} value={fields.models||''} disabled={readOnly||busy} onChange={event=>setFields(current=>({...current,models:event.target.value}))}/></label>
             <label className="agent-management-field"><span>默认模型<InfoTip text="新会话默认模型；必须来自上方模型列表。" /></span><input aria-label="默认模型" value={fields.defaultModel||''} disabled={readOnly||busy} onChange={event=>setFields(current=>({...current,defaultModel:event.target.value}))}/></label>
           </div>}
-          {provider.id==='native'&&provider.authentication.mode==='uninitialized'&&!readOnly&&saveApiKey&&<div className="agent-management-form agent-management-engine-form">
+          {!accountMode&&provider.id==='native'&&provider.authentication.mode==='uninitialized'&&!readOnly&&saveApiKey&&<div className="agent-management-form agent-management-engine-form">
             <label className="agent-management-field agent-management-field-baseUrl"><span>Responses API 地址<b aria-label="必填">*</b><InfoTip text="保存到 Codex config.toml 当前 Provider；重启 Engine 后生效。" /></span><input aria-label="Responses API 地址" inputMode="url" value={fields.baseUrl||''} disabled={readOnly||busy} placeholder="https://api.example.com/v1" onChange={event=>setFields(current=>({...current,baseUrl:event.target.value}))}/></label>
             <label className="agent-management-field"><span>API Key<b aria-label="必填">*</b><InfoTip text="平台加密保存，不写入 config.toml 或前端回显；重启 Engine 后生效。" /></span><input aria-label="API Key" type="password" autoComplete="new-password" value={fields.envKey||''} disabled={readOnly||busy} placeholder="输入 API Key" onChange={event=>{setFields(current=>({...current,envKey:event.target.value}));}}/></label>
             <label className="agent-management-field"><span>模型<b aria-label="必填">*</b><InfoTip text="每行一个模型 ID；探测完成后自动填充。" /></span><textarea aria-label="模型" rows={3} value={fields.models||''} disabled={readOnly||busy||detect.isPending} placeholder="探测完成后显示" onChange={event=>setFields(current=>({...current,models:event.target.value}))}/></label>
@@ -1121,7 +1123,7 @@ function ProviderEditor({
               </button>
             </div>
           </div>}
-          {provider.fields.some(field=>!['models','defaultModel','baseUrl','envKey'].includes(field.key))&&<ProviderAdvancedSettings label="Codex 设置">
+          {!accountMode&&provider.fields.some(field=>!['models','defaultModel','baseUrl','envKey'].includes(field.key))&&<ProviderAdvancedSettings label="Codex 设置">
            <div className="agent-management-form agent-management-engine-form">
             {provider.fields
               .filter(
@@ -1151,8 +1153,8 @@ function ProviderEditor({
           {nativeApi&&!readOnly&&<div className="agent-management-actions"><button type="button" className="agent-management-button agent-management-button-primary" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>update.mutate(undefined)}><Save size={13}/>保存连接配置并重启 Engine</button></div>}
           {nativeApi&&<p className="agent-management-hint">保存前会校验模型并确认 Provider 没有运行中的任务；配置写入 Codex，Engine 重启后生效。</p>}
       </section>
-      {!readOnly&&!nativeApi&&<div className="agent-management-actions"><button type="button" className="agent-management-button agent-management-button-primary" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>void saveProvider()}><Save size={13}/>保存并探测模型</button></div>}
-      {files.length>0&&<section className="agent-management-section provider-files"><button type="button" className="agent-management-button" aria-expanded={filesOpen} onClick={()=>setFilesOpen(!filesOpen)}><ChevronRight size={13} style={{transform:filesOpen?'rotate(90deg)':undefined}}/>配置文件 ({files.length})</button>{filesOpen&&<ConfigFiles agentId={agentId} files={files} readOnly={readOnly} onDirtyChange={onFileDirtyChange}/>}</section>}
+      {!readOnly&&!nativeApi&&!accountMode&&<div className="agent-management-actions"><button type="button" className="agent-management-button agent-management-button-primary" disabled={update.isPending||engineOperation.busy||usage.busy||!usage.verified} onClick={()=>void saveProvider()}><Save size={13}/>保存并探测模型</button></div>}
+      {!accountMode&&files.length>0&&<section className="agent-management-section provider-files"><button type="button" className="agent-management-button" aria-expanded={filesOpen} onClick={()=>setFilesOpen(!filesOpen)}><ChevronRight size={13} style={{transform:filesOpen?'rotate(90deg)':undefined}}/>配置文件 ({files.length})</button>{filesOpen&&<ConfigFiles agentId={agentId} files={files} readOnly={readOnly} onDirtyChange={onFileDirtyChange}/>}</section>}
       {deleteOpen && (
         <ProviderDeleteDialog
           environmentId={provider.id==='native'?'native':'provider:'+provider.id}
@@ -1305,6 +1307,7 @@ interface ProviderRow {
   name: string;
   connection: string | undefined;
   auth: string;
+  authMode?: 'api'|'account'|null;
   balanceId?: string;
   provider?: AgentProviderState;
   environment?: CodexEnvironment;
@@ -1436,6 +1439,7 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
   });
   const enabled = provider?.enabled ?? row.environment?.enabled;
   const status = rowStatus(row, provider);
+  const codexEnvironmentCatalog=agentId==='codex'&&(row.authMode==='account'||row.environment?.kind==='account');
   return <Fragment><tr>
     <td><TableExpandButton expanded={expanded} label={`Provider ${row.name} 的模型`} onClick={onToggle}/></td>
     <td><strong title={provider?.name ?? row.name}>{provider?.name ?? row.name}</strong></td>
@@ -1448,14 +1452,15 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
     </span></td>
     <td className="agent-provider-balance">{!readOnly && row.balanceId && enabled ? <BalanceSummary id={row.balanceId}/> : '—'}</td>
     <td><TableActions>
-      {provider&&<TableActionButton onClick={()=>detect.mutate()} disabled={readOnly||detect.isPending||save.isPending} aria-label={`探测 ${provider.name} 模型`}><RefreshCw size={12} className={detect.isPending?'animate-spin':undefined}/>探测模型</TableActionButton>}
+      {provider&&!codexEnvironmentCatalog&&<TableActionButton onClick={()=>detect.mutate()} disabled={readOnly||detect.isPending||save.isPending} aria-label={`探测 ${provider.name} 模型`}><RefreshCw size={12} className={detect.isPending?'animate-spin':undefined}/>探测模型</TableActionButton>}
       <TableActionButton onClick={onOpen} disabled={save.isPending||detect.isPending} aria-label={`${readOnly ? '查看' : '编辑'} ${provider?.name ?? row.name}${row.state.agent.label ? ` · ${row.state.agent.label}` : ''}`}>
         {readOnly ? '查看' : <><Pencil size={12}/>编辑</>}
       </TableActionButton>
     </TableActions></td>
   </tr>
   {expanded&&<TableDetailRow columnCount={providerColumns.length+2}>
-    {provider?<ProviderModelsExpansion agentId={agentId} provider={provider} detected={detected} readOnly={readOnly} onChanged={onChanged}/>:<div className="provider-model-expansion-empty">此账号模型由 Agent 原生配置管理</div>}
+    {codexEnvironmentCatalog?<CodexAccountModelExpansion id={row.environment?.id??'native'} enabled={!!enabled}/>
+      :provider?<ProviderModelsExpansion agentId={agentId} provider={provider} detected={detected} readOnly={readOnly} onChanged={onChanged}/>:null}
   </TableDetailRow>}</Fragment>;
 }
 
@@ -1500,17 +1505,21 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
     const providers: ProviderRow[] = state.providers.map(provider=>{
       const environment = codex ? environments.find(item=>item.id===(provider.id==='native'?'native':`provider:${provider.id}`)) : undefined;
       const liveProvider = codex ? providerStates.get(provider.id) ?? provider : provider;
-      const mode = environment?.auth_mode ?? (nativeApiConfigured(liveProvider) || provider.managed && !['native','official'].includes(provider.kind) ? 'api' : null);
+      const mode = environment?.auth_mode
+        ?? (nativeApiConfigured(liveProvider) || liveProvider.authentication.mode==='api' || provider.managed && !['native','official'].includes(provider.kind) ? 'api'
+          : liveProvider.authentication.mode==='account' ? 'account' : null);
       return {
         key:`${state.agent.id}:${provider.id}`, state, provider:liveProvider, environment, name:liveProvider.name,
         connection:valueText(liveProvider.fields.find(field=>field.key==='baseUrl')?.value),
         auth:mode==='api'?'API Key':mode==='account'?'账号':liveProvider.authentication.mode==='api'?'API Key':provider.kind==='native'||provider.kind==='official'?'原生':'待检测',
+        authMode:mode,
         balanceId:codex && mode==='api' ? environment?.id ?? `provider:${provider.id}` : undefined,
       };
     });
     if (codex) for (const environment of environments.filter(item=>item.kind==='account')) providers.push({
       key:`codex:${environment.id}`,state,environment,name:environment.name,connection:environment.connection?.username,
       auth:environment.auth_mode==='api'?'API Key':environment.auth_mode==='account'?'账号':'SSH',
+      authMode:environment.auth_mode,
       balanceId:environment.auth_mode==='api'?environment.id:undefined,
     });
     return providers;
@@ -1536,12 +1545,13 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
     if (!readOnly && agents.some(item=>item.agent.id==='codex')) void accounts.refetch();
     states.forEach(query=>{ if (query.data) void query.refetch(); });
     void client.invalidateQueries({queryKey:['agent-provider']});
+    void client.invalidateQueries({queryKey:['codex-account-details']});
     void client.invalidateQueries({queryKey:['codex-engine-balance']});
   };
   const editRow = dialog?.type === 'edit' ? rows.find(row=>row.key===dialog.row.key) ?? dialog.row : null;
   const editProvider = editRow?.state.providers.find(provider=>provider.id===editRow.provider?.id);
   const editEnvironment = editRow?.environment;
-  const editNativeApi = editProvider?.id==='native' && (editEnvironment?.auth_mode==='api' || nativeApiConfigured(editProvider));
+  const editNativeApi = editProvider?.id==='native' && editRow?.authMode==='api';
   const title = editRow ? `${readOnly ? '查看' : '编辑'} Provider · ${editRow.name}` : '新增 Provider';
   const toggleDetails = () => {
     if (dialog?.type !== 'edit' || busy || !confirmDiscard()) return;
@@ -1578,13 +1588,13 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
       {table.rows.map(row=><ProviderTableRow key={row.key} row={row} readOnly={readOnly} expanded={expandedProviders.has(row.key)}
         onToggle={()=>setExpandedProviders(current=>{const next=new Set(current);if(next.has(row.key))next.delete(row.key);else next.add(row.key);return next;})}
         onChanged={state=>client.setQueryData(['agent-management',state.agent.id],{state})} onError={setRowError}
-        onOpen={()=>setDialog({type:'edit',row,accountDetails:readOnly})}/>)}
+        onOpen={()=>setDialog({type:'edit',row,accountDetails:readOnly||row.authMode==='account'||row.environment?.kind==='account'})}/>)}
     </DataTable>
     {dialog && <Dialog appearance="manager" className="agent-provider-dialog" title={title} size="image" width={1160}
       maxWidth="calc(100vw - 32px)" busy={busy} onClose={close} initialFocus={dialogStart}
       actions={dialog.type==='edit' && editRow?.state.agent.id==='codex' &&
         (editEnvironment?.kind==='account'||editProvider?.id==='native') && !dialog.accountDetails &&
-        <button type="button" className="agent-management-button" disabled={busy} onClick={toggleDetails}>{editNativeApi?'账号详情':'配置界面'}</button>}>
+        <button type="button" className="agent-management-button" disabled={busy} onClick={toggleDetails}>{editNativeApi?'账号详情':'配置文件与状态'}</button>}>
       <div ref={dialogStart} tabIndex={-1} className="agent-provider-dialog-content">
       {dialog.type==='add' ? <>
         <div className="agent-provider-dialog-options">
@@ -1606,7 +1616,7 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
           : editEnvironment?.kind==='account' ?
             <CodexAccountProviderEditor key={editRow.key} environment={editEnvironment} readOnly={readOnly} inDialog onSaved={finish} onRemoved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
           : editProvider && <ProviderEditor key={editRow.key} agentId={editRow.state.agent.id} provider={editProvider}
-            defaults={editRow.state.defaults ?? []} nativeApi={editNativeApi} readOnly={readOnly}
+            defaults={editRow.state.defaults ?? []} nativeApi={editNativeApi} accountMode={editRow.authMode==='account'} readOnly={readOnly}
             onDirtyChange={setDirty} onFileDirtyChange={setFileDirty} onBusyChange={setBusy} onRemoved={finish}/>}
       </>}
       </div>

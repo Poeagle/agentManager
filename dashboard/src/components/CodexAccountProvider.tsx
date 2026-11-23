@@ -5,10 +5,31 @@ import {CheckCircle2,Edit3,Loader2,RefreshCw,ShieldCheck,Trash2,UserRound} from 
 import {api,type AgentProviderState,type CodexAccountDetails,type CodexEnvironment} from '../lib/api';
 import {CodexAccountProviderEditor} from './CodexAccountProviderEditor';
 import {ProviderDeleteDialog} from './ProviderDeleteDialog';
-import {DataTable} from './table/DataTable';
-import {useTableModel} from './table/use-table-model';
 import {useEngineBalance,balanceError} from './CodexEngineBalance';
-import {ModelPricing,modelMultiplierLabel} from './ModelPricing';
+import {ModelCatalogTable} from './ModelCatalogTable';
+
+function useAccountDetails(id:string,enabled=true) {
+  return useQuery({queryKey:['codex-account-details',id],queryFn:()=>api.codexEnvironments.details(id),enabled,retry:false,staleTime:10000});
+}
+
+export function CodexAccountModelExpansion({id,enabled}:{id:string;enabled:boolean}) {
+  const query=useAccountDetails(id,enabled);
+  const details=query.data?.details;
+  const window=Number(details?.settings.model_context_window);
+  const configuredWindow=Number.isSafeInteger(window)&&window>0?window:undefined;
+  const rows=(details?.models??[]).map(model=>({
+    model:model.model,
+    name:model.name,
+    metadata:model,
+    context:configuredWindow??model.context_window,
+    images:model.input_modalities?.length?model.input_modalities.includes('image'):null,
+  }));
+  return <div className="provider-model-expansion">
+    <ModelCatalogTable rows={rows} loading={query.isLoading} error={enabled?query.error?.message:undefined}
+      onRetry={()=>void query.refetch()} emptyMessage={enabled?'Codex 未返回可用模型':'Provider 已停用'}
+      renderContext={configuredWindow?()=> <span title="Codex 配置窗口。会话的有效窗口以运行时上报为准。">{configuredWindow.toLocaleString()}（配置）</span>:undefined}/>
+  </div>;
+}
 
 export function CodexAccountProvider({environment,readOnly=false,onDirtyChange,onNativeEdit,nativeInfo}: {
   environment:CodexEnvironment;readOnly?:boolean;onDirtyChange?:(dirty:boolean)=>void;onNativeEdit?:()=>void;nativeInfo?:AgentProviderState;
@@ -17,22 +38,9 @@ export function CodexAccountProvider({environment,readOnly=false,onDirtyChange,o
   const [editing,setEditing]=useState(false);
   const [dirty,setDirty]=useState(false);
   const [deleting,setDeleting]=useState(false);
-  const query=useQuery({queryKey:['codex-account-details',environment.id],queryFn:()=>api.codexEnvironments.details(environment.id),enabled:!editing,retry:false,staleTime:10000});
+  const query=useAccountDetails(environment.id,!editing);
   const fallback:CodexAccountDetails|undefined=nativeInfo?{id:'native',checked_at:'',executable:null,version:null,home:nativeInfo.codexHome||null,engine:{state:nativeInfo.status==='ready'?'connected':nativeInfo.status==='unavailable'?'disconnected':'unknown',pid:nativeInfo.pid??null},authentication:{status:nativeInfo.authentication.status==='authenticated'?'authenticated':nativeInfo.authentication.status==='missing'?'unauthenticated':'unknown',type:null,email:null,plan:null},config:{path:null,exists:false,notice:null},settings:{model:nativeInfo.defaultModel},models:nativeInfo.models.map(model=>({model}))}:undefined;
   const details=query.data?.details||fallback;
-  const modelTable=useTableModel(details?.models??[],[
-    {key:'name',title:'模型名称',value:m=>m.name||m.model},
-    {key:'model',title:'模型 ID',value:m=>m.model},
-    {key:'release',title:'发布时间',value:m=>m.release_date},
-    {key:'window',title:'官方上下文',value:m=>m.official_context_window,kind:'number'},
-    {key:'pricing',title:'官方计费标准',value:m=>m.api_pricing?.currency},
-    {key:'provider',title:'第三方 API 费率',value:m=>m.provider_pricing?.currency},
-    {key:'multiplier',title:'手填倍率',value:m=>m.api_pricing?.provider_multiplier,kind:'number'},
-    {key:'description',title:'说明',value:m=>m.description},
-    {key:'default',title:'默认强度',value:m=>m.defaultEffort},
-    {key:'efforts',title:'支持强度',value:m=>m.efforts?.map(e=>e.value||'默认').join('、')},
-    {key:'tiers',title:'服务层级',value:m=>m.service_tiers?.map(t=>t.name).join('、')},
-  ]);
   const native=environment.kind==='native';
   const apiMode=details?.authentication.type==='apiKey'||environment.auth_mode==='api'||nativeInfo?.authentication.mode==='api';
   const balance=useEngineBalance(environment.id,apiMode&&!readOnly&&environment.enabled);
@@ -48,14 +56,7 @@ export function CodexAccountProvider({environment,readOnly=false,onDirtyChange,o
     {details&&<div className="codex-account-detail-sections">
       {apiMode?<section className="codex-account-card"><h4><CheckCircle2 size={15}/>API 与运行状态</h4><dl className="codex-account-detail-grid"><div><dt>认证方式</dt><dd>API Key</dd></div><div><dt>接口地址</dt><dd>{details.settings.base_url||'未提供'}</dd></div><div><dt>Key 状态</dt><dd>{balance.data?.error==='unauthorized'?'无效或无权限':balance.data?.error==='missing_key'?'未配置':balance.data?.status==='available'?'有效':'未确认'}</dd></div><div><dt>当前余额</dt><dd>{readOnly?'仅管理员可查看':balance.data?.amount!==undefined?`${balance.data.currency||''} ${balance.data.amount.toFixed(2)}${balance.data.status==='stale'?' · 已过期':''}`:'暂不可用'}</dd></div><div><dt>今日实际扣费</dt><dd>{balance.data?.todayActualCost!=null?`${balance.data.currency||''} ${balance.data.todayActualCost.toFixed(2)}`:'未提供'}</dd></div><div><dt>钱包模式</dt><dd>{balance.data?.mode||'未提供'}</dd></div><div><dt>读取时间</dt><dd>{balance.data?.checkedAt?new Date(balance.data.checkedAt).toLocaleString():'未提供'} · 默认每 5 分钟更新</dd></div><div><dt>订阅额度</dt><dd>此认证方式不提供订阅额度</dd></div></dl>{balance.data?.error&&<p role="status">{balanceError(balance.data.error)}</p>}</section>:<section className="codex-account-card"><h4><CheckCircle2 size={15}/>账号与运行状态</h4><dl className="codex-account-detail-grid"><div><dt>登录状态</dt><dd>{details.authentication.status==='authenticated'?'已登录':details.authentication.status==='unauthenticated'?'未登录':'未提供'}</dd></div><div><dt>账号身份</dt><dd>{details.authentication.email||'该接入未提供邮箱'}</dd></div><div><dt>登录方式 / 套餐</dt><dd>{[details.authentication.type,details.authentication.plan].filter(Boolean).join(' · ')||'未提供'}</dd></div><div><dt>Codex 引擎</dt><dd>{details.engine.state==='connected'?'已连接':details.engine.state==='disconnected'?'未连接':'未知'}{details.engine.pid?` · PID ${details.engine.pid}`:''}</dd></div><div><dt>周额度剩余</dt><dd>{!environment.enabled?'已停用':quota.isPending?'读取中…':quota.data?.quota?<span className="codex-account-quota"><progress aria-label="周额度剩余" max={100} value={quota.data.quota.remainingPercent}/><strong>{quota.data.quota.remainingPercent}%</strong></span>:quota.data?.reason==='not_applicable'?'此登录方式未提供':'暂不可用'}</dd></div><div><dt>额度重置时间</dt><dd>{quota.data?.quota?.resetsAt?new Date(quota.data.quota.resetsAt*1000).toLocaleString():'未知'}</dd></div><div><dt>执行用户</dt><dd>{details.system_user||environment.connection?.username||'未提供'}</dd></div><div><dt>Codex 版本</dt><dd>{details.version||'未提供'}</dd></div></dl></section> }
       <section className="codex-account-card"><h4>Codex 配置</h4><dl className="codex-account-detail-grid"><div className="codex-account-wide"><dt>实际可执行文件</dt><dd><code>{details.executable||environment.connection?.codexCommand}</code></dd></div><div className="codex-account-wide"><dt>实际 CODEX_HOME</dt><dd><code>{details.home||'未提供'}</code></dd></div><div><dt>默认模型</dt><dd>{details.settings.model||'使用 Codex 默认值'}</dd></div><div><dt>模型 Provider</dt><dd>{details.settings.model_provider||'使用 Codex 默认值'}</dd></div><div><dt>默认推理强度</dt><dd>{details.settings.model_reasoning_effort||'使用 Codex 默认值'}</dd></div><div><dt>执行确认策略</dt><dd>{details.settings.approval_policy||'未提供'}</dd></div><div><dt>沙箱模式</dt><dd>{details.settings.sandbox_mode||'未提供'}</dd></div><div><dt>本机连接</dt><dd>{native?'本机直接运行':`127.0.0.1:${environment.connection?.port} · ${environment.connection?.authMethod==='password'?'SSH 密码':'SSH 密钥 / Agent'}`}</dd></div>{details.config.exists&&<div className="codex-account-wide"><dt>配置来源</dt><dd><code>{details.config.path}</code></dd></div>}</dl>{details.config.notice&&<p className="agent-management-hint">{details.config.notice}</p>}</section>
-      <section className="codex-account-card"><h4>可用模型 <span className="agent-management-pill">{details.models.length}</span></h4><DataTable label="账号可用模型" model={modelTable} minWidth={1350} empty={!modelTable.rows.length} emptyMessage="该账号未返回可用模型">{modelTable.rows.map(model=><tr key={model.model}>
-        <td title={model.name||model.model}>{model.name||model.model}</td><td title={model.model}><code>{model.model}</code></td>
-        <td>{model.release_date??'未提供'}</td><td>{model.official_context_window?.toLocaleString()??model.context_window?.toLocaleString()??'未提供'}</td>
-        <td><ModelPricing pricing={model.api_pricing} credits={!apiMode?model.reference_credits:null}/></td>
-        <td>{model.provider_pricing?<ModelPricing pricing={model.provider_pricing}/>: '—'}</td><td>{apiMode?modelMultiplierLabel(model):'—'}</td>
-        <td title={model.description}>{model.description||'—'}</td><td>{model.defaultEffort||'—'}</td><td>{model.efforts?.map(e=>e.value||'默认').join('、')||'—'}</td><td>{model.service_tiers?.map(t=>t.name).join('、')||'—'}</td>
-      </tr>)}</DataTable></section>
-      <p className="codex-account-description">最近读取：{details.checked_at?new Date(details.checked_at).toLocaleString():'未提供'} · 仅显示所选系统用户的账号、模型和相关配置。</p>
+      <p className="codex-account-description">最近读取：{details.checked_at?new Date(details.checked_at).toLocaleString():'未提供'}</p>
     </div>}
     <div className="codex-account-detail-sections"><CodexAccountConfigFiles environmentId={environment.id} readOnly={readOnly} onDirtyChange={changed}/></div>
     {!readOnly&&!native&&<footer className="codex-account-footer"><span className="codex-account-description">删除前会检查所有用户的占用标签页。</span><button type="button" className="agent-management-button agent-management-button-danger" aria-label="删除账号 Provider" onClick={()=>setDeleting(true)}><Trash2 size={14}/>删除 Provider</button></footer>}
