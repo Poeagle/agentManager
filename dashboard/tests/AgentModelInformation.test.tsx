@@ -20,9 +20,11 @@ it('shows the vendor, release, context, and separated official token rates in on
  render(<QueryClientProvider client={client}><AgentModelInformation/></QueryClientProvider>);
  const table=await screen.findByRole('table',{name:'模型资料'});await within(table).findByText('deepseek-flash');const row=within(table).getByRole('row',{name:/DeepSeek/});
  expect(row).toHaveTextContent('deepseek-flash');expect(row).not.toHaveTextContent('deepseek-v4.1-flash');expect(row).toHaveTextContent('2026-10-17');expect(row).toHaveTextContent('1,000,000');
- expect(row).toHaveTextContent('高峰 CNY 2.00 · 空闲 CNY 1.00');
- expect(row).toHaveTextContent('高峰 CNY 8.00 · 空闲 CNY 4.00');
- expect(row).toHaveTextContent('高峰 CNY 0.04 · 空闲 CNY 0.02');
+ expect(within(row).getByText('¥2')).toBeInTheDocument();
+ expect(within(row).getByText('¥4')).toBeInTheDocument();
+ expect(within(row).getByText('¥0.04')).toBeInTheDocument();
+ expect(within(row).getAllByText('高峰')).toHaveLength(3);
+ expect(within(row).getAllByText('空闲')).toHaveLength(3);
  client.clear();
 });
 
@@ -39,12 +41,9 @@ it('shows every official context pricing band for GPT models in the catalog tabl
  const table=await screen.findByRole('table',{name:'模型资料'});
  await within(table).findByText('gpt-6.2-sol');
  const row=within(table).getByRole('row',{name:/gpt-6\.2-sol/});
- expect(row).toHaveTextContent('≤ 272K 输入 Token USD 2.00');
- expect(row).toHaveTextContent('> 272K 输入 Token USD 4.00');
- expect(row).toHaveTextContent('≤ 272K 输入 Token USD 10.00');
- expect(row).toHaveTextContent('> 272K 输入 Token USD 15.00');
- expect(row).toHaveTextContent('≤ 272K 输入 Token USD 0.10');
- expect(row).toHaveTextContent('> 272K 输入 Token USD 0.20');
+ expect(within(row).getAllByText('输入 ≤272K')).toHaveLength(3);
+ expect(within(row).getAllByText('输入 >272K')).toHaveLength(3);
+ for(const price of ['$2','$4','$10','$15','$0.1','$0.2'])expect(within(row).getByText(price)).toBeInTheDocument();
  client.clear();
 });
 
@@ -53,7 +52,24 @@ it('keeps missing official prices explicit instead of displaying a fabricated va
  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
  render(<QueryClientProvider client={client}><AgentModelInformation/></QueryClientProvider>);
  const table=await screen.findByRole('table',{name:'模型资料'});await within(table).findByText('private-model');const row=within(table).getByRole('row',{name:/private-model/});
- expect(row).toHaveTextContent('未提供');
+ expect(within(row).getAllByLabelText('未提供')).toHaveLength(5);
+ client.clear();
+});
+
+it('condenses English token thresholds without rounding the rate',async()=>{
+ vi.mocked(api.agentManagement.modelCatalog).mockResolvedValue({models:[{
+  vendor:'Anthropic',model:'claude-haiku-5-5',providers:[],
+  api_pricing:{currency:'USD',source:'official',bands:[
+   {label:'for prompts up to 100,000 tokens',rates:{input:0.125}},
+   {label:'for prompts over 100,000 tokens',rates:{input:0.25}},
+  ]},
+ }]});
+ const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+ render(<QueryClientProvider client={client}><AgentModelInformation/></QueryClientProvider>);
+ const row=await screen.findByRole('row',{name:/claude-haiku-5-5/});
+ expect(within(row).getByText('输入 ≤100K')).toBeInTheDocument();
+ expect(within(row).getByText('输入 >100K')).toBeInTheDocument();
+ expect(within(row).getByText('$0.125')).toBeInTheDocument();
  client.clear();
 });
 
@@ -69,7 +85,7 @@ it('shows bundled catalog models that have no configured provider',async()=>{
  const row=await within(table).findByRole('row',{name:/gemini-4-neon/});
  expect(row).toHaveTextContent('2026-11-18');
  expect(row).toHaveTextContent('1,048,576');
- expect(row).toHaveTextContent('USD 3.00');
+ expect(row).toHaveTextContent('$3');
  expect(screen.getByTitle('官方模型资料')).toBeInTheDocument();
  client.clear();
 });
@@ -86,6 +102,6 @@ it('shows verified Claude context and release metadata from the official catalog
  const row=await within(table).findByRole('row',{name:/claude-sonnet-5-5/});
  expect(row).toHaveTextContent('2026-09-28');
  expect(row).toHaveTextContent('1,000,000');
- expect(row).toHaveTextContent('USD 2.00');
+ expect(row).toHaveTextContent('$2');
  client.clear();
 });

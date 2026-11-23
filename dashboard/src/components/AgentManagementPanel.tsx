@@ -1541,12 +1541,12 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
     setFileDirty(false);
     setDialog({...dialog,accountDetails:!dialog.accountDetails});
   };
-  return <div className="agent-management-page">
-    <div className="agent-management-tabs" role="tablist" aria-label="Agent 配置页面">
+  const settingsTabs=<div className="agent-management-tabs" role="tablist" aria-label="Agent 配置页面">
       <button type="button" role="tab" aria-selected={settingsPage==='providers'} onClick={()=>setSettingsPage('providers')}>Provider</button>
       <button type="button" role="tab" aria-selected={settingsPage==='models'} onClick={()=>setSettingsPage('models')}>模型资料</button>
-    </div>
-    {settingsPage==='models'&&<AgentModelInformation active/>}
+    </div>;
+  return <div className="agent-management-page">
+    <AgentModelInformation tabs={settingsTabs} active={settingsPage==='models'}/>
     {settingsPage==='providers'&&<>
     <div className="agent-provider-toolbar">
       <span aria-live="polite">{table.rows.length} 个 Provider</span>

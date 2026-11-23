@@ -33,7 +33,7 @@ test('shows Agent-specific settings for Codex and Claude', async ({ page }) => {
   await expect(page.getByRole('button', { name: '编辑 xindu · Codex' })).toBeVisible();
   await page.getByRole('button', { name: '展开Provider xindu 的模型' }).click();
   const modelTable = page.getByRole('table', { name: 'Provider 模型' });
-  await expect(modelTable.getByText('deepseek-v4.1-flash')).toBeVisible();
+  await expect(modelTable.getByRole('code').filter({hasText:'deepseek-v4.1-flash'})).toBeVisible();
   await page.getByRole('button', { name: '编辑 xindu · Codex' }).click();
   await page.getByRole('button', {name:'配置文件 (1)'}).click();
   await expect(page.getByText('/Users/ymchen/.codex-xindu/config.toml')).toBeVisible();
@@ -42,10 +42,27 @@ test('shows Agent-specific settings for Codex and Claude', async ({ page }) => {
   await page.getByRole('tab', { name: '模型资料' }).click();
   const catalog = page.getByRole('table', { name: '模型资料' });
   const gptRow = catalog.getByRole('row', { name: /gpt-6\.2-sol/ });
-  await expect(gptRow).toContainText('≤ 272K 输入 Token USD 2.00');
-  await expect(gptRow).toContainText('> 272K 输入 Token USD 4.00');
-  await expect(gptRow).toContainText('> 272K 输入 Token USD 15.00');
-  await expect(gptRow).toContainText('> 272K 输入 Token USD 0.20');
+  const inputRates = gptRow.getByRole('cell').nth(4).locator('.agent-model-price-line');
+  await expect(inputRates).toHaveText(['$2输入 ≤272K', '$4输入 >272K']);
+  for (const rate of ['$15', '$0.2']) await expect(gptRow.getByText(rate, {exact: true})).toBeVisible();
+  const tabs = page.getByRole('tablist', { name: 'Agent 配置页面' });
+  const navigation = page.locator('.agent-management-navigation');
+  await expect(navigation.getByText('1 个模型')).toBeVisible();
+  const refreshButton = navigation.getByRole('button', {name: '更新资料'});
+  await expect(refreshButton).toBeVisible();
+  const fitsWidth = () => catalog.evaluate(table => {
+    const wrapper = table.parentElement!;
+    return table.getBoundingClientRect().width <= wrapper.clientWidth + 1 && wrapper.scrollWidth <= wrapper.clientWidth + 1;
+  });
+  const desktop = page.viewportSize()!;
+  for (const width of [desktop.width, 768, 390]) {
+    await page.setViewportSize({width, height: desktop.height});
+    await expect.poll(fitsWidth).toBe(true);
+    const tabBox = await tabs.boundingBox(), refreshBox = await refreshButton.boundingBox();
+    expect(Math.abs(tabBox!.y + tabBox!.height / 2 - refreshBox!.y - refreshBox!.height / 2)).toBeLessThan(2);
+    await expect(gptRow.getByText('$0.2', {exact: true})).toBeVisible();
+  }
+  await page.setViewportSize(desktop);
   await page.getByRole('tab', { name: 'Provider' }).click();
   await page.getByRole('button', { name: '编辑 Anthropic · Claude' }).click();
   await expect(page.getByRole('textbox',{name:'Claude Provider 名称'})).toHaveValue('Anthropic');
