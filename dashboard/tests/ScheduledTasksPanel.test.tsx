@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScheduledTasksPanel } from '../src/components/ScheduledTasksPanel';
-import { api, type ScheduledTask, type Session } from '../src/lib/api';
+import { ApiError, api, type ScheduledTask, type Session } from '../src/lib/api';
 
 vi.mock('../src/lib/api', async () => {
   const actual = await vi.importActual<typeof import('../src/lib/api')>('../src/lib/api');
@@ -121,6 +121,37 @@ describe('ScheduledTasksPanel', () => {
     expect(screen.getByText(/每天 09:30/)).toBeInTheDocument();
     await user.click(screen.getByTitle('立即执行'));
     await waitFor(() => expect(api.scheduledTasks.run).toHaveBeenCalledWith('schedule-1'));
+  });
+
+  it('keeps a busy skip in the run history without showing a warning for manual execution', async () => {
+    const reason = '目标标签页正在执行或等待交互，跳过本次发送';
+    vi.mocked(api.scheduledTasks.run).mockRejectedValueOnce(new ApiError(reason, 409));
+    vi.mocked(api.scheduledTasks.runs).mockResolvedValue({ runs: [{
+      id: 'busy-skip', task_id: task.id, trigger: 'manual', scheduled_for: task.next_run_at!, status: 'skipped',
+      session_id: null, error: reason, started_at: '2026-10-13T01:30:00Z', completed_at: '2026-10-13T01:30:01Z',
+    }] });
+    const user = userEvent.setup();
+    renderPanel();
+    await screen.findByText(task.name);
+    const run = screen.getByTitle('立即执行');
+    await user.click(run);
+    await waitFor(() => expect(api.scheduledTasks.list).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: `查看任务 ${task.name}` }));
+    const table = await screen.findByRole('table', { name: '定时任务执行记录' });
+    expect(await within(table).findByText('已跳过')).toBeVisible();
+    expect(within(table).getByText(reason)).toBeVisible();
+  });
+
+  it('still shows a send failure for a manual run that could not read history', async () => {
+    const reason = '无法读取原会话历史，简要压缩未执行';
+    vi.mocked(api.scheduledTasks.run).mockRejectedValueOnce(new ApiError(reason, 409));
+    const user = userEvent.setup();
+    renderPanel();
+    await screen.findByText(task.name);
+    await user.click(screen.getByTitle('立即执行'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(reason);
   });
 
   it('creates a new server-side session schedule with the entered prompt', async () => {

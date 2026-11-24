@@ -17,6 +17,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import {
+  ApiError,
   api,
   type ScheduleKind,
   type ScheduledNewMode,
@@ -39,6 +40,13 @@ const DAYS = [
   { value: 6, label: '六' },
   { value: 0, label: '日' },
 ];
+
+// The manual-run endpoint returns these skips as 409 with the same message saved in run history.
+const BUSY_SKIP_MESSAGES = new Set([
+  '目标标签页正在执行或等待交互，跳过本次发送',
+  '目标标签页正在接收另一个定时任务，跳过本次发送',
+  '目标标签页已有未完成的工作或正在忙碌，跳过本次发送',
+]);
 
 type StopConditionType = 'absolute_time' | 'success_count' | 'quota_floor' | 'failure_count' | 'target_unavailable';
 
@@ -394,6 +402,7 @@ export function ScheduledTasksPanel({
     try {
       await api.scheduledTasks.run(task.id);
     } catch (error) {
+      if (error instanceof ApiError && error.status === 409 && BUSY_SKIP_MESSAGES.has(error.message)) return;
       setFormError(error instanceof Error ? error.message : '执行失败');
     } finally {
       setRunningId(null);
