@@ -125,6 +125,28 @@ it('persists validated versions, preserves the previous tariff on bad documents 
  expect(estimateDeepseekCost(model,second,tokens)).toBeCloseTo(2.82,10);
 });
 
+it('keeps OpenAI Fast API rates distinct from Standard and omits unsupported Fast estimates',async()=>{
+ const pricing=`### Standard pricing data
+| gpt-5.6-luna | $0.20 | $1.20 | $0.02 |
+| gpt-6-sol | $2 | $10 | $0.20 |
+| gpt-5.5 (<272K context length) | $5 | $30 | $0.50 | - | - | $10 | $45 | $1 |
+
+### Fast pricing data
+| gpt-5.6-luna | $0.40 | $2.40 | $0.04 |
+| gpt-5.5 (<272K context length) | $12.50 | $75 | $1.25 |
+
+Long context: >272K input tokens.`;
+ const at=epoch('2026-11-24T01:00:00Z'),stamp=new Date(at).toISOString();
+ await refreshModelPricing(async url=>String(url)===pricingSources.openai?new Response(pricing):new Response(null,{status:404}),undefined,at);
+ initModelPricing();
+ expect(estimatePublicApiCost('openai','gpt-5.6-luna',stamp,tokens,undefined,'fast')?.amount).toBeCloseTo(0.46);
+ expect(estimatePublicApiCost('openai','gpt-5.6-luna',stamp,tokens)?.amount).toBeCloseTo(0.23);
+ expect(estimatePublicApiCost('openai','gpt-6-sol',stamp,tokens,undefined,'priority')).toBeNull();
+ const short={...tokens,input_tokens:272000,cached_input_tokens:0};
+ expect(estimatePublicApiCost('openai','gpt-5.5',stamp,short,undefined,'priority')).not.toBeNull();
+ expect(estimatePublicApiCost('openai','gpt-5.5',stamp,{...short,input_tokens:272001},undefined,'priority')).toBeNull();
+});
+
 it('parses full holiday ranges without treating compensatory workdays as holidays',()=>{
  const notice='<title>国务院办公厅关于2027年部分节假日安排的通知</title><b>一、</b>元旦：1月1日（周五）至3日（周日）放假。二、春节：2月5日至2月13日放假。三、清明节：4月3日至5日放假。四、劳动节：5月1日至5日放假。五、端午节：6月9日放假。六、中秋节：9月15日放假。七、国庆节：10月1日至7日放假，10月9日上班。';
  expect(parseHolidayNotice(2027,notice)).toEqual([['01-01','01-03'],['02-05','02-13'],['04-03','04-05'],['05-01','05-05'],['06-09','06-09'],['09-15','09-15'],['10-01','10-07']]);

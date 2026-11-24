@@ -434,6 +434,34 @@ Long context: >272K input tokens.`;
  expect(model).toMatchObject({usd_coverage:{covered:2,total:2},usd_breakdown:{input:0.1,cache:0.075,output:0.04,reasoning:0.0085}});
 });
 
+it('prices mixed Standard and Fast Luna requests at their respective OpenAI context rates',async()=>{
+ vi.useFakeTimers();vi.setSystemTime(new Date('2026-11-24T12:00:00Z'));
+ initModelPricing();
+ const pricing=`### Standard pricing data
+| gpt-6-luna | $0.10 | $0.50 | $0.01 | $0.125 | $0.25 | $0.20 | $0.75 | $0.02 |
+
+### Fast pricing data
+| gpt-6-luna | $0.20 | $1.00 | $0.02 | $0.25 | $0.50 | $0.40 | $1.50 | $0.04 |
+
+Long context: >272K input tokens.`;
+ await refreshModelPricing(async url=>String(url)===pricingSources.openai?new Response(pricing):new Response('',{status:404}));
+ const short={input_tokens:200000,cached_input_tokens:190000,output_tokens:1000,reasoning_output_tokens:100,total_tokens:201000};
+ const long={input_tokens:300000,cached_input_tokens:280000,output_tokens:2000,reasoning_output_tokens:500,total_tokens:302000};
+ const requests=[{tier:'default',tokens:short},{tier:'fast',tokens:long},{tier:'priority',tokens:short}];
+ const events=requests.map((request,index)=>({
+  key:String(index+1).repeat(64),day:'2026-11-24',hour:'2026-11-24T11:00:00+00:00',
+  at:`2026-11-24T11:0${index}:00.000Z`,cwd:'/project',model:'gpt-6-luna',provider:null,...request,
+ }));
+ respond(requests.map(request=>({day:'2026-11-24',cwd:'/project',model:'gpt-6-luna',requests:1,...request})),{events});
+ await collectAccountUsage('native');
+ const row=cachedAccountUsage('native').rows[0],model=row.models[0];
+ expect(row.estimated_usd).toBeCloseTo(0.0324,10);
+ expect(model.usd_coverage).toEqual({covered:3,total:3});
+ expect(model.tokens).toMatchObject({input_tokens:700000,output_tokens:4000});
+ for(const [field,value] of Object.entries({input:0.011,cache:0.0169,output:0.0045,reasoning:0.0009}))
+  expect(model.usd_breakdown?.[field as keyof NonNullable<typeof model.usd_breakdown>]).toBeCloseTo(value,10);
+});
+
 it('keeps itemized Codex account costs aligned with short and long context requests',async()=>{
  vi.useFakeTimers();vi.setSystemTime(new Date('2026-11-22T23:00:00Z'));
  initModelPricing();

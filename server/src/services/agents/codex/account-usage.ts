@@ -17,7 +17,7 @@ import {USAGE_EVENT_LIMIT,USAGE_SCAN} from './usage-scanner.js';
 import {resolveTargetUsage} from './usage-target.js';
 import {tokenFields} from '../../conversation-usage.js';
 import {creditRateDate,usdReferenceRateDate,estimateUsageCredits,estimateUsageBreakdown,estimateUsageUsd,estimateUsageUsdBreakdown} from './usage-credits.js';
-import {estimatePublicApiCost,pricingSnapshot,publicApiModel,type PublicApiCatalog} from '../model-pricing.js';
+import {apiTariffAt,estimatePublicApiCost,pricingSnapshot,publicApiModel,type PricingBand,type PublicApiCatalog} from '../model-pricing.js';
 import {createHash} from 'node:crypto';
 import {deepseekCatalogModel,deepseekDay,deepseekOrigin,estimateDeepseekBreakdown} from '../deepseek-pricing.js';
 import {codexApiEstimate,codexApiPricing} from './statistics-cost.js';
@@ -297,53 +297,58 @@ function officialApiCatalog(model:string|null):OfficialApiCatalog|null{
  if(id.startsWith('glm-'))return 'glm';
  return null;
 }
-function officialApiCost(catalog:OfficialApiCatalog,model:string|null,at:string,tokens:Record<string,number|null>){
+function officialApiCost(catalog:OfficialApiCatalog,model:string|null,at:string,tokens:Record<string,number|null>,tier:string|null){
  if(catalog==='deepseek'){
   const breakdown=estimateDeepseekBreakdown(model,Date.parse(at),tokens);
   return breakdown?{amount:breakdown.input+breakdown.cache+breakdown.output,breakdown}:null;
  }
- return estimatePublicApiCost(catalog,model,at,tokens);
+ return estimatePublicApiCost(catalog,model,at,tokens,undefined,tier);
 }
-function officialApiBands(catalog:OfficialApiCatalog,model:string){
+function officialApiBands(catalog:OfficialApiCatalog,model:string,tier:string|null,at:number):PricingBand[]|undefined{
  if(catalog==='deepseek'){
   const peak=deepseekCatalogModel(model)?.api_pricing?.peak;
   // Aliases are canonicalized by the pricing helper itself. They do not need
   // to exist as a duplicate key in the persisted tariff table.
   return peak?[{rates:peak,min_input_tokens:undefined}]:undefined;
  }
+ if(catalog==='openai')return apiTariffAt(catalog,model,at,tier)?.bands;
  return publicApiModel(catalog,model)?.api_pricing.bands;
 }
 function officialApiEstimates(id:string,timezone:string,rows:Array<Record<string,any>>,directoryFor:(path:string)=>{cwd:string}){
- const estimates=new Map<string,OfficialApiEstimate>(),tieredModels=new Set<string>(),rateAt=new Date().toISOString();
+ const estimates=new Map<string,OfficialApiEstimate>(),tieredModels=new Map<string,Set<string|null>>();
+ const now=Date.now(),rateAt=new Date(now).toISOString();
  const key=(day:string,cwd:string,model:string|null)=>JSON.stringify([day,cwd,model]);
  const blank=()=>({amount:0,coverage:{covered:0,total:0},breakdown:{input:0,cache:0,output:0,reasoning:0 as number|null}});
  for(const row of rows){
   const estimateKey=key(row.day,row.cwd,row.model),estimate=estimates.get(estimateKey)??blank();
   estimate.coverage.total+=row.requests;
-  const catalog=officialApiCatalog(row.model),bands=row.model&&catalog?officialApiBands(catalog,row.model):undefined;
-  if(bands?.length===1){
+  const catalog=officialApiCatalog(row.model),bands=row.model&&catalog?officialApiBands(catalog,row.model,row.tier,now):undefined;
+  if(bands?.length===1&&bands[0].max_input_tokens==null){
    // A single-band tariff is safe for the already grouped counters.
-   const cost=catalog?officialApiCost(catalog,row.model,row.at??rateAt,row):null;
+   const cost=catalog?officialApiCost(catalog,row.model,row.at??rateAt,row,row.tier):null;
    if(cost)addOfficialApiEstimate(estimate,cost,row.requests);
    else estimate.breakdown.reasoning=null;
-  }else if(catalog==='deepseek'&&row.model)tieredModels.add(row.model);
-  else if(catalog&&bands?.length&&bands.every(band=>band.min_input_tokens!=null))tieredModels.add(row.model!);
-  else estimate.breakdown.reasoning=null;
+  }else if(row.model&&(catalog==='deepseek'||bands?.length&&(bands[0].max_input_tokens!=null||bands.every(band=>band.min_input_tokens!=null)))){
+   // Another speed for the same model can have a flat tariff already counted above.
+   const tiers=tieredModels.get(row.model)??new Set<string|null>();
+   tiers.add(row.tier);tieredModels.set(row.model,tiers);
+  }else estimate.breakdown.reasoning=null;
   estimates.set(estimateKey,estimate);
  }
  let detailsIncomplete=false;
  if(tieredModels.size){
-  const models=[...tieredModels],placeholders=models.map(()=>'?').join(',');
-  const query=getDb().prepare(`SELECT day,cwd,model,tokens FROM codex_usage_dedup_events WHERE account=? AND model IN (${placeholders}) LIMIT ?`);
+  const models=[...tieredModels.keys()],placeholders=models.map(()=>'?').join(',');
+  const query=getDb().prepare(`SELECT day,cwd,model,tier,tokens FROM codex_usage_dedup_events WHERE account=? AND model IN (${placeholders}) LIMIT ?`);
   let scanned=0;
-  for(const event of query.iterate(id,...models,USAGE_EVENT_LIMIT+1) as Iterable<{day:string;cwd:string;model:string;tokens:string}>){
+  for(const event of query.iterate(id,...models,USAGE_EVENT_LIMIT+1) as Iterable<{day:string;cwd:string;model:string;tier:string|null;tokens:string}>){
    if(++scanned>USAGE_EVENT_LIMIT){detailsIncomplete=true;break;}
+   if(!tieredModels.get(event.model)?.has(event.tier))continue;
    const tokens=JSON.parse(event.tokens) as Record<string,number|null>&{_timezone?:string};
    if((tokens._timezone??'UTC')!==timezone)continue;
    const cwd=directoryFor(event.cwd).cwd;
    const catalog=officialApiCatalog(event.model);
    const estimate=estimates.get(key(event.day,cwd,event.model));
-   const cost=catalog?officialApiCost(catalog,event.model,rateAt,tokens):null;
+   const cost=catalog?officialApiCost(catalog,event.model,rateAt,tokens,event.tier):null;
    if(estimate&&cost)addOfficialApiEstimate(estimate,cost,1);
    else if(estimate)estimate.breakdown.reasoning=null;
   }

@@ -3,9 +3,9 @@ import {parseModelCapabilities,type ModelCapabilities} from './model-capabilitie
 import type {AgentModelMetadata} from './types.js';
 
 export type TokenRates={input:number;cached:number|null;output:number;cache_write_5m?:number;cache_write_1h?:number};
-export type PricingBand={label?:string;min_input_tokens?:number;rates:TokenRates};
+export type PricingBand={label?:string;min_input_tokens?:number;max_input_tokens?:number;rates:TokenRates};
 export type ModelPricing={currency:string;source:string;reference_only?:boolean;provider_multiplier?:number;bands?:PricingBand[];peak?:TokenRates;off_peak?:TokenRates;timezone?:string;peak_hours?:number[][]};
-export type Tariff=ModelCapabilities&{bands:PricingBand[];release_date?:string;version?:string};
+export type Tariff=ModelCapabilities&{bands:PricingBand[];fast_bands?:PricingBand[];release_date?:string;version?:string};
 export type PricingData={models:Record<string,Tariff>;peak_hours?:number[][];speeds?:Record<string,Record<string,{subscription:number;credits:number;after?:{at:number;credits:number}}>>};
 type Snapshot={from:number;checked:number;data:PricingData};
 export type PublicApiCatalog='openai'|'claude'|'xai'|'gemini'|'kimi'|'glm';
@@ -97,11 +97,14 @@ export function publicApiModel(catalog:TokenCatalog,model:string){
  return tariff?{release_date:tariff.release_date??(catalog==='claude'&&id==='claude-sonnet-5-5'?sonnet55.release_date:undefined),context_window:tariff.context_window,input_modalities:modalities,api_pricing:{currency:'USD',source:pricingSources[catalog],bands:tariff.bands} satisfies ModelPricing}:undefined;
 }
 
-export function apiTariffAt(catalog:TokenCatalog,model:string,at:number){
+export function apiTariffAt(catalog:TokenCatalog,model:string,at:number,serviceTier?:string|null){
  const snapshot=pricingSnapshot(catalog,at);
  const models=snapshot?.data.models;
  const id=apiModelId(catalog,model);
  const tariff=models&&Object.hasOwn(models,id)?models[id]:undefined;
+ if(catalog==='openai'&&(serviceTier==='fast'||serviceTier==='priority')){
+  return tariff?.fast_bands?{...tariff,bands:tariff.fast_bands}:undefined;
+ }
  if(catalog!=='openai'||!snapshot||!tariff||tariff.bands.length!==2||!tariff.bands.every(band=>band.min_input_tokens===undefined))return tariff;
 
  // Older OpenAI snapshots stored both prices but omitted the context boundary.
@@ -117,12 +120,12 @@ export function apiTariffAt(catalog:TokenCatalog,model:string,at:number){
  return {...tariff,bands:[{...standard,min_input_tokens:0},{...long,min_input_tokens:boundary}]};
 }
 
-export function estimatePublicApiCost(catalog:TokenCatalog,model:string|null,at:string|null,tokens:Record<string,number|null>|null,cacheWrites?:readonly [number,number]){
- const tariff=at&&model?apiTariffAt(catalog,model,Date.parse(at)):undefined;
+export function estimatePublicApiCost(catalog:TokenCatalog,model:string|null,at:string|null,tokens:Record<string,number|null>|null,cacheWrites?:readonly [number,number],serviceTier?:string|null){
+ const tariff=at&&model?apiTariffAt(catalog,model,Date.parse(at),serviceTier):undefined;
  if(!tariff||!tokens||tokens.input_tokens==null)return null;
  const band=tariff.bands.length===1?tariff.bands[0]:tariff.bands.every(band=>band.min_input_tokens!=null)
   ?tariff.bands.filter(band=>tokens.input_tokens!>=band.min_input_tokens!).at(-1):undefined;
- if(!band)return null;
+ if(!band||band.max_input_tokens!=null&&tokens.input_tokens>band.max_input_tokens)return null;
  const rate=band.rates;
  const [write5,write60]=cacheWrites??[0,0];
  if(![write5,write60].every(value=>Number.isSafeInteger(value)&&value>=0)||write5&&rate.cache_write_5m==null||write60&&rate.cache_write_1h==null)return null;
@@ -181,18 +184,29 @@ function parseCodex(text:string):PricingData{
  return {models,speeds};
 }
 
-function parseOpenAI(text:string):PricingData{
+function parseOpenAiTable(text:string,heading:string,threshold:string|undefined):PricingData['models']{
  const models:PricingData['models']={};
- const standard=text.split('### Standard pricing data')[1]??'';
- const threshold=/Long context:\s*>\s*(\d+)K input tokens/i.exec(text)?.[1];
- for(const [id,input,output,cached,,,longInput,longOutput,longCache] of rows(standard.split(/\n### (?!Standard)/)[0])){
+ const section=text.split(heading)[1]?.split(/\n### /)[0]??'';
+ for(const [id,input,output,cached,,,longInput,longOutput,longCache] of rows(section)){
   const match=/^(gpt-[a-z\d.-]+)(?: \(<(\d+)K context length\))?$/.exec(id);
   const model=match?.[1];
   if(!model||models[model])continue;
   const rate=rates(decimals(input??''),decimals(cached??''),decimals(output??''));
   const long=rates(decimals(longInput??''),decimals(longCache??''),decimals(longOutput??''));
   const boundary=threshold?Number(threshold)*1000+1:undefined;
-  if(rate)models[model]={bands:long?[{label:threshold?`≤ ${threshold}K 输入 Token`:'短上下文',rates:rate,min_input_tokens:boundary===undefined?undefined:0},{label:threshold?`> ${threshold}K 输入 Token`:'长上下文',rates:long,min_input_tokens:boundary}]:[{rates:rate}]};
+  const limit=match?.[2];
+  if(rate)models[model]={bands:long?[{label:threshold?`≤ ${threshold}K 输入 Token`:'短上下文',rates:rate,min_input_tokens:boundary===undefined?undefined:0},{label:threshold?`> ${threshold}K 输入 Token`:'长上下文',rates:long,min_input_tokens:boundary}]:[{rates:rate,...limit?{max_input_tokens:Number(limit)*1000}:{}}]};
+ }
+ return models;
+}
+
+function parseOpenAI(text:string):PricingData{
+ const threshold=/Long context:\s*>\s*(\d+)K input tokens/i.exec(text)?.[1];
+ const models=parseOpenAiTable(text,'### Standard pricing data',threshold);
+ const fastHeading=text.includes('### Fast pricing data')?'### Fast pricing data':'### Priority pricing data';
+ const fast=parseOpenAiTable(text,fastHeading,threshold);
+ for(const [model,tariff] of Object.entries(fast)){
+  if(Object.hasOwn(models,model))models[model].fast_bands=tariff.bands;
  }
  return {models};
 }
