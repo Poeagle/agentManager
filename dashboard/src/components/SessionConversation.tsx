@@ -295,6 +295,10 @@ const Bubble = memo(function Bubble({
         : parseConversationInput(visibleText)
       : { text: message.text, attachments: [] };
   const brief = message.role === 'user' ? parseBriefContext(rawParsed.text) : null;
+  const briefCard = brief && (
+    <ConversationBriefContext context={brief.context} messageId={message.id} active={active}
+      projectId={projectId} projectPath={projectPath} onNavigate={onNavigate} />
+  );
   const currentInput = brief ? {text: brief.input, attachments: shiftInputOffsets(rawParsed.attachments, -brief.prefixLength)} : rawParsed;
   const parsed = message.role === 'user' && !message.batch?.length
     ? splitQuotedInput(currentInput.text,currentInput.attachments) : {...currentInput,quote:undefined};
@@ -428,7 +432,8 @@ const Bubble = memo(function Bubble({
   if (message.role === 'user' && message.input_source) {
     const scheduled = message.input_source.kind === 'scheduled';
     const sourceLabel = scheduled ? '定时任务' : '平台消息';
-    return (
+    return <>
+      {briefCard}
       <article className="session-chat-sourced" data-chat-message-id={message.id}>
         <ConversationDialogCard
           active={active}
@@ -451,7 +456,7 @@ const Bubble = memo(function Bubble({
           <div className="session-chat-sourced-content">{quoteCard}<ConversationMessageAttachments text={parsed.text} items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>{metadata}</div>
         </ConversationDialogCard>
       </article>
-    );
+    </>;
   }
   if (automatic)
     return (
@@ -560,7 +565,7 @@ const Bubble = memo(function Bubble({
       </article>
     );
   return <>
-    {brief&&<ConversationBriefContext context={brief.context} messageId={message.id} active={active} projectId={projectId} projectPath={projectPath} onNavigate={onNavigate}/>}
+    {briefCard}
     <article
       className={`session-chat-message ${message.role}`}
       data-phase={message.phase}
