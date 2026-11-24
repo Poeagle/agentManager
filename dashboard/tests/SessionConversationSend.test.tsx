@@ -7,6 +7,7 @@ import { api, ApiError, type ConversationPage, type ConversationStatistics, type
 import { SessionConversation } from '../src/components/SessionConversation';
 import * as metadata from '../src/components/ConversationStatisticsLabel';
 import {parseBriefContext} from '../src/lib/conversation-brief-context';
+import {parseConversationQuote} from '../src/lib/conversation-quote';
 
 vi.mock('../src/lib/permissions', () => ({ usePermissions: () => ({ data: {}, isPending: false }), hasPermission: () => true }));
 vi.mock('../src/lib/use-conversation-compaction', () => ({ useConversationCompaction: () => ({ state: null, running: false, start: vi.fn(), usage: vi.fn(), observe: vi.fn(), disconnected: vi.fn() }) }));
@@ -47,6 +48,72 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it.each(['claude','codex'] as const)('quotes an existing %s reply, restores the draft, and links to its source',async agent=>{
+    const target:Session=agent==='claude'?{...session,cli_type:agent,codex_session_id:null,claude_session_id:'native'}:session;
+    const timestamp='2026-11-23T04:02:00Z';
+    const original={id:'review-answer',role:'assistant',phase:'final',text:'先检查窄屏布局。',timestamp} as const;
+    const own={id:'review-request',role:'user',text:'请检查界面。',timestamp} as const;
+    const existing=await api.agent.conversation(session.id);
+    vi.mocked(api.agent.conversation).mockResolvedValue({...existing,messages:[own,original]});
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);
+    const view=await mount(target);
+    const originalNode=(await screen.findByText(original.text)).closest('article')!;
+    const ownNode=screen.getByText(own.text).closest('article')!;
+    input('这部分展开说一下。');
+    fireEvent.click(within(ownNode).getByRole('button',{name:'引用这条消息'}));
+    expect(screen.getByRole('group',{name:'待发送引用'})).toHaveTextContent(own.text);
+    fireEvent.click(screen.getByRole('button',{name:'移除引用'}));
+    expect(screen.queryByRole('group',{name:'待发送引用'})).not.toBeInTheDocument();
+    fireEvent.click(within(originalNode).getByRole('button',{name:'引用这条消息'}));
+    expect(screen.getByRole('group',{name:'待发送引用'})).toHaveTextContent(original.text);
+    expect(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveTextContent('这部分展开说一下。');
+    view.unmount();
+
+    await mount(target);
+    expect(screen.getByRole('group',{name:'待发送引用'})).toHaveTextContent(original.text);
+    fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+    await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
+    const sent=submit.mock.calls[0][1];
+    expect(sent).toContain(original.text);
+    expect(sent).toContain('这部分展开说一下。');
+    expect(screen.queryByRole('group',{name:'待发送引用'})).not.toBeInTheDocument();
+    const quote=await screen.findByRole('button',{name:/跳到引用原消息/});
+    fireEvent.click(quote);
+    await waitFor(()=>expect(document.querySelector('[data-chat-message-id="review-answer"]')).toHaveAttribute('data-notification-focus','true'));
+  });
+  it('keeps the original quote on rejection and preserves each batch part when staged or recalled',async()=>{
+    const source={id:'source',role:'user',text:'请核对文件。',timestamp:'2026-11-23T04:02:00Z'} as const;
+    const existing=await api.agent.conversation(session.id);
+    vi.mocked(api.agent.conversation).mockResolvedValue({...existing,messages:[source]});
+    const submit=vi.spyOn(api.agent,'sendInput')
+      .mockRejectedValueOnce(new ApiError('请重新提交',409,'rejected'))
+      .mockResolvedValue({status:'submitted'} as SendResult);
+    await mount();
+    fireEvent.click(await screen.findByRole('button',{name:'引用这条消息'}));
+    input('调整这个检查。');
+    fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('请重新提交');
+    expect(screen.getByRole('group',{name:'待发送引用'})).toHaveTextContent(source.text);
+    expect(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveTextContent('调整这个检查。');
+
+    fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
+    fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
+    const panel=screen.getByRole('complementary',{name:'批量待发内容'});
+    expect(panel).toHaveTextContent(source.text);
+    expect(panel).not.toHaveTextContent('agentmanager_quote');
+    fireEvent.click(within(panel).getByRole('button',{name:'撤回第 1 条消息'}));
+    expect(screen.getByRole('group',{name:'待发送引用'})).toHaveTextContent(source.text);
+    fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
+    input('执行下一项。');
+    fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
+    fireEvent.keyDown(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'}),{key:'Enter',ctrlKey:true});
+    await waitFor(()=>expect(submit).toHaveBeenCalledTimes(2));
+    const [, payload,, , segments]=submit.mock.calls[1];
+    expect(segments).toHaveLength(2);
+    const quotedPart=payload.slice(0,segments![0].length);
+    expect(parseConversationQuote(quotedPart)?.quote).toEqual({messageId:source.id,role:source.role,excerpt:source.text});
+    expect(payload.slice(segments![0].length)).toBe('\n\n执行下一项。');
+  });
   it('keeps the composer editable while preventing sends during a session transition',async()=>{
     const submit=vi.spyOn(api.agent,'sendInput');
     await mount(session,undefined,true);

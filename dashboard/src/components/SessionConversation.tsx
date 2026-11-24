@@ -34,6 +34,8 @@ import {mergeCacheTimeline,unassignedUsageDescription,unassignedUsageLabel,type 
 import { ConversationAutomaticContext } from "./ConversationAutomaticContext";
 import { ConversationBriefContext } from "./ConversationBriefContext";
 import { ConversationDialogCard } from "./ConversationDialogCard";
+import { ConversationQuote } from "./ConversationQuote";
+import { makeConversationQuote, parseConversationQuote, quotePrefix, shiftInputOffsets, splitQuotedInput, type ConversationQuote as QuoteData } from "../lib/conversation-quote";
 import { automaticConversationContext } from "../lib/conversation-context";
 import { parseBriefContext, prependBriefPayload } from "../lib/conversation-brief-context";
 import {
@@ -65,6 +67,7 @@ import {
   ChevronDown,
   CalendarClock,
   Clock3,
+  Quote,
 } from "lucide-react";
 import {
   api,
@@ -146,6 +149,7 @@ interface FailedDraft {
   clientId: string;
   fingerprint: string;
   text: string;
+  quote?: QuoteData;
   attachments: DraftAttachment[];
 }
 
@@ -249,6 +253,8 @@ const Bubble = memo(function Bubble({
   projectId,
   onOpenFile,
   onNavigate,
+  onQuote,
+  onQuoteJump,
   durationLabel,
   onRaw,
   active,
@@ -273,6 +279,8 @@ const Bubble = memo(function Bubble({
   projectId: string | null;
   onOpenFile?: (path: string) => void;
   onNavigate: () => void;
+  onQuote?: (quote: QuoteData) => void;
+  onQuoteJump: (messageId: string) => void;
 }) {
   const timeZone = useDisplayClock();
   const [copied, setCopied] = useState(false),
@@ -287,11 +295,24 @@ const Bubble = memo(function Bubble({
         : parseConversationInput(visibleText)
       : { text: message.text, attachments: [] };
   const brief = message.role === 'user' ? parseBriefContext(rawParsed.text) : null;
-  const parsed = brief ? {text: brief.input, attachments: rawParsed.attachments.map(item => ({...item,
-    ...(item.offset === undefined ? {} : {offset: Math.max(0, item.offset - brief.prefixLength)})}))} : rawParsed;
+  const currentInput = brief ? {text: brief.input, attachments: shiftInputOffsets(rawParsed.attachments, -brief.prefixLength)} : rawParsed;
+  const parsed = message.role === 'user' && !message.batch?.length
+    ? splitQuotedInput(currentInput.text,currentInput.attachments) : {...currentInput,quote:undefined};
   const displayBatch = message.batch?.map((part,index) => brief && index === 0 ? {...part,
-    text: part.text.slice(brief.prefixLength), attachments: part.attachments.map(item => ({...item,
-      ...(item.offset === undefined ? {} : {offset: Math.max(0, item.offset - brief.prefixLength)})}))} : part);
+    text: part.text.slice(brief.prefixLength), attachments: shiftInputOffsets(part.attachments, -brief.prefixLength)} : part);
+  const quoteButton = onQuote && !streaming && !message.streaming && !message.queued && !waitingInput &&
+    message.phase !== 'error' && !message.presentation && !message.input_source &&
+    (parsed.text.trim() || parsed.attachments.length || message.content_blocks?.some(block => block.type === 'text' && block.text.trim()))
+    ? <button type="button" className="session-chat-quote-action" aria-label="引用这条消息" title="引用" onClick={() => {
+        const source = displayBatch?.length ? displayBatch.map(part =>
+          part.text.slice(parseConversationQuote(part.text)?.prefixLength ?? 0) || part.attachments.map(item => item.name).join('、'),
+        ).join('\n\n') : parsed.text.trim() || parsed.attachments.map(item => item.name).join('、') ||
+          message.content_blocks?.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n');
+        const quote = source && makeConversationQuote(message.id, message.role, source);
+        if (quote) onQuote(quote);
+      }}><Quote size={13}/></button>
+    : null;
+  const quoteCard = parsed.quote && <ConversationQuote quote={parsed.quote} agentName={agentName} onJump={onQuoteJump}/>;
   async function copy() {
     const copyText =
       parsed.text +
@@ -370,6 +391,7 @@ const Bubble = memo(function Bubble({
           <span className="session-chat-progress-updating">Streaming</span>
         )}
         {message.role==='user'&&<InputDeliveryStatus message={message}/>}
+        {quoteButton}
         {!compact && message.role==='assistant' && (
           <button
             type="button"
@@ -426,7 +448,7 @@ const Bubble = memo(function Bubble({
             </>
           }
         >
-          <div className="session-chat-sourced-content"><ConversationMessageAttachments text={parsed.text} items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>{metadata}</div>
+          <div className="session-chat-sourced-content">{quoteCard}<ConversationMessageAttachments text={parsed.text} items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>{metadata}</div>
         </ConversationDialogCard>
       </article>
     );
@@ -566,7 +588,8 @@ const Bubble = memo(function Bubble({
         {message.role === "user" ? (
           <>
             <div className="session-chat-user-text">
-              {displayBatch?.length?<ConversationBatchCard sentAt={message.timestamp} parts={displayBatch} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>:<ConversationMessageAttachments
+              {quoteCard}
+              {displayBatch?.length?<ConversationBatchCard sentAt={message.timestamp} parts={displayBatch} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile} agentName={agentName} onQuoteJump={onQuoteJump}/>:<ConversationMessageAttachments
                 text={
                   parsed.attachments.length &&
                   !parsed.attachments.some((item) => item.offset !== undefined)
@@ -855,11 +878,16 @@ export function SessionConversation({
   }, [messages]);
   const draftRef = useRef(draft);
   draftRef.current = draft;
-  const changeDraft = useCallback((text: string) => {
+  const changeDraft = useCallback((text: string, extra?: Pick<ComposerState, 'draftQuote'>) => {
     draftVersion.current++;
     draftRef.current = text;
     setDraft(text);
-    persistComposer({draft:text});
+    persistComposer({draft:text,...extra});
+  }, []);
+  const setDraftQuote = useCallback((quote?: QuoteData) => {
+    if (!persistComposer({draftQuote:quote})) return;
+    draftVersion.current++;
+    readingRoot.current?.querySelector<HTMLElement>('.session-chat-editor')?.focus({preventScroll:true});
   }, []);
   useEffect(()=>{
     const pending=composerRef.current.value.pending;
@@ -871,10 +899,11 @@ export function SessionConversation({
     if(!canSend||sendGuard.blocking||attachments.uploading||attachments.failed||sendingRef.current)return;
     const text=draftRef.current,values=attachments.values().map((a,index)=>({...a,offset:attachmentPositions.current?.().get(attachments.items.filter(i=>i.status==='ready'&&i.path)[index]?.id)??text.length}));
     if(!text.trim()&&!values.length)return;
-    const entries=[...composerRef.current.value.entries,{id:conversationClientId(),createdAt:new Date(estimatedServerNow()).toISOString(),text,attachments:values}];
+    const quote=composerRef.current.value.draftQuote,prefix=quote?quotePrefix(quote):'';
+    const entries=[...composerRef.current.value.entries,{id:conversationClientId(),createdAt:new Date(estimatedServerNow()).toISOString(),text:prefix+text,attachments:shiftInputOffsets(values,prefix.length)}];
     const combined=combinedBatch(entries);
     if(entries.length>100||new TextEncoder().encode(combined.text).byteLength>64*1024||combined.attachments.length>8){setSendError('批量内容最多 100 条、64 KB、8 个附件，请先发送已有内容。');return;}
-    if(!persistComposer({entries,draft:'',draftAttachments:[]}))return;
+    if(!persistComposer({entries,draft:'',draftQuote:undefined,draftAttachments:[]}))return;
     draftVersion.current++;draftRef.current='';setDraft('');
     attachments.release(attachments.take(attachments.items.map(i=>i.id)));
     // The add button becomes disabled when the draft clears; keep keyboard
@@ -884,9 +913,12 @@ export function SessionConversation({
   function recallBatch(entry:BatchEntry){
     if(sendGuard.blocking||composerRef.current.value.pending?.entryIds.includes(entry.id)||sendingRef.current||attachments.uploading||attachments.failed)return;
     if(attachments.items.length+entry.attachments.length>8){setSendError('输入框最多支持 8 个附件，请先处理现有输入。');return;}
-    const current=draftRef.current,prefix=current?current+'\n\n':'',text=prefix+entry.text;
-    const restored=entry.attachments.map(a=>({...a,offset:prefix.length+(a.offset??entry.text.length)}));
-    if(!persistComposer({draft:text,draftAttachments:[...attachments.values(),...restored],entries:composerRef.current.value.entries.filter(e=>e.id!==entry.id)}))return;
+    const quote=parseConversationQuote(entry.text),draftQuote=composerRef.current.value.draftQuote;
+    if(quote&&draftQuote){setSendError('请先移除当前草稿的引用，再取回这条批量消息。');return;}
+    const current=draftRef.current,prefix=current?current+'\n\n':'',body=entry.text.slice(quote?.prefixLength??0);
+    const text=prefix+body;
+    const restored=entry.attachments.map(item=>({...item,offset:prefix.length+Math.max(0,(item.offset??entry.text.length)-(quote?.prefixLength??0))}));
+    if(!persistComposer({draft:text,draftQuote:quote?.quote??draftQuote,draftAttachments:[...attachments.values(),...restored],entries:composerRef.current.value.entries.filter(e=>e.id!==entry.id)}))return;
     draftVersion.current++;draftRef.current=text;setDraft(text);
     attachments.restore(restored.map(a=>({...a,id:conversationClientId(),size:0,status:'ready' as const})));
   }
@@ -1752,6 +1784,8 @@ export function SessionConversation({
   ) {
     const fromQuestion = questionReply !== undefined;
     const sendStorageKey=composerRef.current.key;
+    const quote = fromQuestion ? undefined : composerRef.current.value.draftQuote;
+    const prefix = quote ? quotePrefix(quote) : '';
     const draftText = questionReply ?? draftRef.current;
     const text = brief && !fromQuestion && !draftText.trim() && !attachments.hasDraft()
       ? '请阅读以上历史记录，等待我的下一条需求。' : draftText;
@@ -1801,14 +1835,15 @@ export function SessionConversation({
       setSendError(message);
       return;
     }
-    if (new TextEncoder().encode(text).byteLength > 64 * 1024) {
+    const input = prefix + text;
+    if (new TextEncoder().encode(input).byteLength > 64 * 1024) {
       if (fromQuestion) throw new Error("回答超过 64 KB，请缩短后发送");
       setSendError("消息超过 64 KB，请缩短后发送。");
       return;
     }
     const guardVersion=draftVersion.current,guardEntries=JSON.stringify(composerRef.current.value.entries.map(e=>e.id));
     let guardToken:string|undefined,sendNativeId=agentNativeId(session);
-    let sendPayload:SendGuardPayload={input:text,attachments:attached,...fromBatch?{batch:composerRef.current.value.entries.map(e=>({length:e.text.length,attachments:e.attachments.length}))}:{}};
+    let sendPayload:SendGuardPayload={input,attachments:shiftInputOffsets(attached,prefix.length),...fromBatch?{batch:composerRef.current.value.entries.map(e=>({length:e.text.length,attachments:e.attachments.length}))}:{}};
     const inputIdentity=JSON.stringify(sendPayload);
     const savedBrief=(!fromQuestion||fromBatch)?composerRef.current.value.briefContext:undefined;
     if(savedBrief){
@@ -1825,7 +1860,7 @@ export function SessionConversation({
     setSending(true);
     setSendError("");
     const sendText=sendPayload.input,sendAttachments=sendPayload.attachments??[];
-    const prefixLength=sendText.length-text.length;
+    const prefixLength=sendText.length-input.length;
     const sentBrief=parseBriefContext(sendText);
     if(sentBrief&&sendNativeId&&prefixLength>0&&!persistComposer({briefContext:{prefix:sendText.slice(0,prefixLength),nativeId:sendNativeId,inputIdentity}})){
       sendingRef.current=false;setSending(false);setSendError('简要历史保存失败，草稿已保留；请检查浏览器存储后从原会话重试。');return;
@@ -1896,7 +1931,7 @@ export function SessionConversation({
     if (!fromQuestion) {
       draftRef.current = "";
       setDraft("");
-      persistComposer({draft:""});
+      persistComposer({draft:"",draftQuote:undefined});
       attachments.take(attachedIds);
     }
     pinned.current = true;
@@ -1970,12 +2005,12 @@ export function SessionConversation({
         !draftRef.current &&
         !attachments.hasDraft()
       ) {
-        changeDraft(text);
+        changeDraft(text,{draftQuote:quote});
         attachments.restore(savedAttachments);
       } else
         setFailedDrafts((previous) => [
           ...previous,
-          { clientId, fingerprint, text, attachments: savedAttachments },
+          { clientId, fingerprint, text, quote, attachments: savedAttachments },
         ]);
       setSendError(
         failure instanceof ApiError &&
@@ -1989,9 +2024,9 @@ export function SessionConversation({
     }
   }
   function restoreFailedDraft(saved: FailedDraft) {
-    if (sendingRef.current || draftRef.current || attachments.hasDraft())
+    if (sendingRef.current || draftRef.current || composerRef.current.value.draftQuote || attachments.hasDraft())
       return;
-    changeDraft(saved.text);
+    changeDraft(saved.text,{draftQuote:saved.quote});
     attachments.restore(saved.attachments);
     submissionIdentity.current = {
       id: saved.clientId,
@@ -2246,13 +2281,23 @@ export function SessionConversation({
   const questionActive =
     !!pendingQuestion && minimizedQuestion !== pendingQuestion.id;
   const focusProgress=useRef({request:0,pages:0,done:false});
+  const quoteRequest=useRef(0);
+  const [quoteFocus,setQuoteFocus]=useState<{sessionId:string;target:ConversationFocus;previous?:ConversationFocus|null}|null>(null);
+  const focusNativeId=agentNativeId(session)??page?.native_id;
+  const focusedQuote=quoteFocus?.sessionId===session.id&&quoteFocus.previous===focusTarget&&quoteFocus.target.nativeId===focusNativeId
+    ? quoteFocus.target : null;
+  const messageFocus=focusedQuote??focusTarget;
+  const jumpToQuote=useCallback((messageId:string)=>{
+    if(!focusNativeId)return;
+    setQuoteFocus({sessionId:session.id,previous:focusTarget,target:{nativeId:focusNativeId,messageId,requestId:--quoteRequest.current}});
+  },[session.id,focusTarget,focusNativeId]);
   const [notificationFocusMissing,setNotificationFocusMissing]=useState(false);
   const focusVisible=useRef(onFocusTargetVisible);focusVisible.current=onFocusTargetVisible;
-  const focusNativeId=agentNativeId(session);
   const loadNotificationHistory=useRef(loadOlder);loadNotificationHistory.current=loadOlder;
   useConversationNotificationVisibility(readingRoot,session.id,agentNativeId(session),active,
     JSON.stringify([messages.map(m=>[m.id,m.phase]),requests.map(r=>r.id),pendingQuestion?.id,questionActive]));
   useEffect(()=>{
+    const focusTarget=messageFocus;
     if(!active||!focusTarget||focusTarget.nativeId!==focusNativeId||loading)return;
     if(focusProgress.current.request!==focusTarget.requestId){
       focusProgress.current={request:focusTarget.requestId,pages:0,done:false};setNotificationFocusMissing(false);
@@ -2269,12 +2314,17 @@ export function SessionConversation({
       ||!!source&&JSON.parse(node.dataset.questionIds||'[]').includes(source));
     if(node){
       pinned.current=false;setNotificationFocusMissing(false);
-      const frame=requestAnimationFrame(()=>{node.scrollIntoView({block:'center'});node.dataset.notificationFocus='true';progress.done=true;focusVisible.current?.();});
+      const frame=requestAnimationFrame(()=>{
+        if(focusedQuote)node.closest<HTMLDetailsElement>('details:not([open])')?.setAttribute('open','');
+        node.scrollIntoView({block:'center'});
+        node.dataset.notificationFocus='true';progress.done=true;
+        if(!focusedQuote)focusVisible.current?.();
+      });
       return()=>cancelAnimationFrame(frame);
     }
     if(!older&&hasMore&&focusTarget.messageId&&!focusTarget.sourceId?.startsWith('interaction:')&&progress.pages<20){progress.pages++;void loadNotificationHistory.current();}
     else if(!older&&!pending&&!requests.some(request=>request.id===focusTarget.messageId))setNotificationFocusMissing(true);
-  },[active,focusTarget,loading,older,hasMore,messages,requests,pendingQuestions,selectedQuestion,minimizedQuestion,focusNativeId]);
+  },[active,messageFocus,focusedQuote,loading,older,hasMore,messages,requests,pendingQuestions,selectedQuestion,minimizedQuestion,focusNativeId]);
   async function ignoreQuestions(ids: string[], ignored = true) {
     if (ignoringQuestions || !ids.length) return;
     setIgnoringQuestions(true);
@@ -2393,6 +2443,8 @@ export function SessionConversation({
         projectId={session.project_id}
         onOpenFile={onOpenFile}
         onNavigate={navigate}
+        onQuote={active&&canSend&&!ended&&!waiting&&!questionActive&&!sending&&!sendGuard.blocking?setDraftQuote:undefined}
+        onQuoteJump={jumpToQuote}
         onRaw={onRaw}
         allowRaw={sessionAgent(session).sessionHost !== "managed"}
       />
@@ -2439,7 +2491,7 @@ export function SessionConversation({
         event.preventDefault();event.stopPropagation();if(!event.repeat)submitWithShortcut();
       }}><div ref={chatLayout} className="session-chat-layout">
       <section ref={readingRoot} className="session-chat" aria-label="会话对话" data-session-id={session.id} data-presentation={presentation}>
-        {notificationFocusMissing&&<p className="session-pane-warning" role="status">通知对应的消息不在当前可读历史中，可继续加载更早的对话核对。</p>}
+        {notificationFocusMissing&&messageFocus&&<p className="session-pane-warning" role="status">{focusedQuote?'引用的原消息不在当前可读历史中。':'通知对应的消息不在当前可读历史中，可继续加载更早的对话核对。'}</p>}
         {(!notificationView||composerOptionsOpen)&&<ConversationPromptEnhancer
           sessionId={session.id}
           active={active}
@@ -2844,12 +2896,13 @@ export function SessionConversation({
             <div key={saved.clientId} className="session-chat-error">
               <p>
                 未发送内容已保留：{saved.text.slice(0, 120)}
+                {saved.quote && '（含引用）'}
                 {saved.attachments.length > 0 &&
                   `（${saved.attachments.length} 个附件）`}
               </p>
               <button
                 type="button"
-                disabled={sending || !!draft || attachments.items.length > 0}
+                disabled={sending || !!draft || !!composer.draftQuote || attachments.items.length > 0}
                 title="请先发送或清空当前草稿，再恢复未发送内容"
                 onClick={() => restoreFailedDraft(saved)}
               >
@@ -2929,6 +2982,7 @@ export function SessionConversation({
                 attachments.enqueueTransfer(event.dataTransfer);
             }}
           >
+            {composer.draftQuote&&<ConversationQuote quote={composer.draftQuote} agentName={agentName} onRemove={()=>setDraftQuote()}/>}
             <ConversationComposerEditor
               snapshotRef={attachmentPositions}
               value={draft}
@@ -3038,7 +3092,19 @@ export function SessionConversation({
         {composer.mode==='batch'&&(composer.entries.length>0||composer.pending)&&<aside className="session-chat-batch" aria-label="批量待发内容">
           <ConversationBatchResizeHandle layout={chatLayout} active={active} storageKey={`agentmanager-batch-width:${userId}`}/>
           <header className="session-batch-header"><span>批量待发</span><small>{composer.entries.length} 条</small></header>
-          <div className="session-chat-batch-content">{composer.entries.length?composer.entries.map((entry,index)=><article key={entry.id}><header><small>消息 {index+1}</small><time dateTime={entry.createdAt} title="加入待发区时间">{formatDisplayTimestamp(entry.createdAt)}</time><button type="button" className="session-batch-recall" aria-label={`撤回第 ${index+1} 条消息`} disabled={!canSend||sending||sendGuard.blocking||!!composer.pending?.entryIds.includes(entry.id)||attachments.uploading||attachments.failed} onClick={()=>recallBatch(entry)}>撤回</button><button type="button" className="session-batch-delete" aria-label={`删除第 ${index+1} 条消息`} disabled={!canSend||sending||sendGuard.blocking||!!composer.pending?.entryIds.includes(entry.id)} onClick={()=>deleteBatch(entry)}>删除</button></header><ConversationMessageAttachments text={entry.text} items={entry.attachments} projectId={session.project_id} projectPath={projectPath} onOpenFile={onOpenFile}/></article>):<div className="session-batch-empty"><span>暂未添加消息</span><p>在输入框编写内容，按 Enter 加入这里，整理完成后一起发送。</p></div>}</div>
+          <div className="session-chat-batch-content">
+            {composer.entries.length?composer.entries.map((entry,index)=>{
+              const {quote,text,attachments:items}=splitQuotedInput(entry.text,entry.attachments);
+              return <article key={entry.id}>
+                <header><small>消息 {index+1}</small><time dateTime={entry.createdAt} title="加入待发区时间">{formatDisplayTimestamp(entry.createdAt)}</time>
+                  <button type="button" className="session-batch-recall" aria-label={`撤回第 ${index+1} 条消息`} disabled={!canSend||sending||sendGuard.blocking||!!composer.pending?.entryIds.includes(entry.id)||attachments.uploading||attachments.failed} onClick={()=>recallBatch(entry)}>撤回</button>
+                  <button type="button" className="session-batch-delete" aria-label={`删除第 ${index+1} 条消息`} disabled={!canSend||sending||sendGuard.blocking||!!composer.pending?.entryIds.includes(entry.id)} onClick={()=>deleteBatch(entry)}>删除</button>
+                </header>
+                {quote&&<ConversationQuote quote={quote} agentName={agentName} onJump={jumpToQuote}/>}
+                <ConversationMessageAttachments text={text} items={items} projectId={session.project_id} projectPath={projectPath} onOpenFile={onOpenFile}/>
+              </article>;
+            }):<div className="session-batch-empty"><span>暂未添加消息</span><p>在输入框编写内容，按 Enter 加入这里，整理完成后一起发送。</p></div>}
+          </div>
           {composer.pending&&<p role="status">发送结果待确认。恢复连接后自动核对，请勿重复发送。</p>}
           <footer className="session-batch-footer"><button type="button" className="session-batch-send" aria-label="发送批量内容" aria-keyshortcuts="Control+Enter Meta+Enter" onKeyDown={event=>{if(active&&event.key==='Enter'&&(event.ctrlKey||event.metaKey)&&!event.nativeEvent.isComposing){event.preventDefault();if(!event.repeat)void sendBatch();}}} onClick={()=>void sendBatch()} disabled={!composer.entries.length||!!composer.pending||sending||resuming||sendGuard.blocking||!canSend||!page?.session_active||ended||waiting}>{sending||sendGuard.checking?<Loader2 size={15} className="animate-spin"/>:<ArrowUp size={15}/>}<span>{sendGuard.checking?'检查中…':sending?'正在发送…':'发送批量内容'}</span><kbd title="输入框为空时使用">Ctrl ↵</kbd></button></footer>
         </aside>}
