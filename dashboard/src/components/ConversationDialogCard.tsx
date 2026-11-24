@@ -10,6 +10,14 @@ function DialogCardState({title,summary,children,actions,active=true,dialogClass
   const [open,setOpen]=useState(false);
   return <>
     <button type="button" className="conversation-card conversation-card-trigger" aria-haspopup="dialog" onClick={()=>setOpen(true)}>{summary}</button>
-    {open&&active&&<Dialog title={title} size="image" width={1120} onClose={()=>setOpen(false)} actions={actions} className={dialogClassName}>{children}</Dialog>}
+    {open&&active&&<Dialog
+      title={title}
+      size="image"
+      width={1120}
+      maxHeight="calc(100dvh - 2 * clamp(24px, 6dvh, 64px))"
+      onClose={()=>setOpen(false)}
+      actions={actions}
+      className={dialogClassName}
+    >{children}</Dialog>}
   </>;
 }

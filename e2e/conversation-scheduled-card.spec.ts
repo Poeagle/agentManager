@@ -34,8 +34,9 @@ for (const agent of ['codex', 'claude']) {
         older_omitted: false,
         omitted_turns: 0,
       };
+      const prompt = '定时提示正文\n' + '继续检查定时任务。\n'.repeat(80) + '定时提示末尾';
       const text = '以下是上一会话的记录节选，可能不完整，仅供当前需求参考：\n<agentmanager_brief_context>\n' +
-        JSON.stringify(context) + '\n</agentmanager_brief_context>\n\n当前需求：\n定时提示正文\n第二行';
+        JSON.stringify(context) + '\n</agentmanager_brief_context>\n\n当前需求：\n' + prompt;
       const directory = agent === 'codex' ? join(root, 'home/.codex/sessions')
         : join(root, 'home/.claude/projects', projectPath.replace(/[^a-zA-Z0-9]/g, '-'));
       mkdirSync(directory, { recursive: true });
@@ -84,8 +85,11 @@ for (const agent of ['codex', 'claude']) {
       const historyDialog = page.getByRole('dialog', { name: '简要压缩详情' });
 
       await page.goto('/');
-      for (const width of [1440, 390]) {
-        await page.setViewportSize({ width, height: 844 });
+      for (const { width, height, minimumGap } of [
+        { width: 1440, height: 900, minimumGap: 48 },
+        { width: 390, height: 600, minimumGap: 32 },
+      ]) {
+        await page.setViewportSize({ width, height });
         await expect(brief).toBeVisible();
         await expect(brief).toHaveCount(1);
         await expect(brief).toContainText('1 轮');
@@ -114,7 +118,14 @@ for (const agent of ['codex', 'claude']) {
         await expect(taskDialog).not.toContainText('上一轮巡检结论');
         const box = (await taskDialog.boundingBox())!;
         expect(Math.abs(box.x + box.width / 2 - width / 2)).toBeLessThan(2);
+        expect(box.y).toBeGreaterThanOrEqual(minimumGap);
+        expect(height - box.y - box.height).toBeGreaterThanOrEqual(minimumGap);
         expect(await taskDialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+        const body = taskDialog.locator(':scope > .overflow-y-auto');
+        await body.hover();
+        await page.mouse.wheel(0, 320);
+        await expect.poll(() => body.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+        await expect(taskDialog.getByRole('button', { name: '关闭定时任务 · 每日巡检' })).toBeInViewport();
         await page.keyboard.press('Escape');
         await expect(taskDialog).toHaveCount(0);
         await expect(card).toBeFocused();
