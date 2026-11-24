@@ -576,6 +576,26 @@ describe('Claude Agent SDK runtime',()=>{
       }),
     ]);
   });
+
+  it('runs a queued scheduled follow-up after the current query completes without interruption', async () => {
+    let release!: (value: any) => void;
+    sdk.messages = [new Promise(done => { release = done; })];
+    const runtime = ensureClaudeRuntime(session, '/tmp');
+    expect(await runtime.submit('Start work', 'current')).toBe(true);
+    expect(await runtime.submit('Scheduled follow-up', 'scheduled', [], undefined, true)).toBe('queued');
+    expect(runtime.snapshot().messages.find(message => message.client_id === 'scheduled')).toMatchObject({queued:true});
+    expect(sdk.queries).toHaveLength(1);
+    expect(sdk.interrupts).toBe(0);
+
+    const result = {type:'result',subtype:'success',uuid:assistant,session_id:session};
+    sdk.messages = [result];
+    release([result]);
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2));
+    const next = await sdk.queries[1].prompt[Symbol.asyncIterator]().next();
+    expect(next.value).toMatchObject({session_id:session,message:{content:'Scheduled follow-up'}});
+    await vi.waitFor(() => expect(runtime.runtime().state).toBe('idle'));
+    expect(sdk.interrupts).toBe(0);
+  });
   it('removes only a matching queued Claude message',async()=>{
     let release!:(value:any)=>void;sdk.messages=[new Promise(done=>{release=done;})];
     const runtime=ensureClaudeRuntime(session,'/tmp'),internal:any=runtime;

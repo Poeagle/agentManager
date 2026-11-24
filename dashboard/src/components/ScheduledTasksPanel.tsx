@@ -23,6 +23,7 @@ import {
   type ScheduledNewMode,
   type ScheduledTask,
   type ScheduledTaskInput,
+  type ScheduledTaskRun,
   type ScheduledConditionGroup,
   type Session,
 } from '../lib/api';
@@ -47,6 +48,11 @@ const BUSY_SKIP_MESSAGES = new Set([
   '目标标签页正在接收另一个定时任务，跳过本次发送',
   '目标标签页已有未完成的工作或正在忙碌，跳过本次发送',
 ]);
+
+const RUN_STATUS_LABEL: Record<ScheduledTaskRun['status'], string> = {
+  running: '执行中', success: '已发送', queued: '已排队', unknown: '提交待确认',
+  failed: '失败', stopped: '已停止', skipped: '已跳过',
+};
 
 type StopConditionType = 'absolute_time' | 'success_count' | 'quota_floor' | 'failure_count' | 'target_unavailable';
 
@@ -469,7 +475,7 @@ export function ScheduledTasksPanel({
   const runTable = useTableModel(runsQuery.data?.runs ?? [], [
     { key: 'started', title: '执行时间', value: (run) => run.started_at, kind: 'date', format: (value) => formatDate(value == null ? null : String(value), selectedTask?.timezone ?? editor.timezone) },
     { key: 'trigger', title: '触发方式', value: (run) => run.trigger === 'manual' ? '手动执行' : '计划执行' },
-    { key: 'status', title: '执行状态', value: (run) => ({ running: '执行中', success: '已发送', failed: '失败', stopped: '已停止', skipped: '已跳过' })[run.status] },
+    { key: 'status', title: '执行状态', value: (run) => RUN_STATUS_LABEL[run.status] },
     { key: 'session', title: '目标标签页', value: (run) => run.session_id ? tabNames.get(run.session_id) || (sessionsQuery.data?.sessions ?? []).find((session) => session.id === run.session_id)?.task || '会话标签页' : null },
     { key: 'content', title: '执行情况', value: (run) => run.error || (run.status === 'success' ? '提示词已成功发送' : run.status === 'running' ? '正在发送提示词' : '未发送提示词') },
   ]);
@@ -717,9 +723,9 @@ export function ScheduledTasksPanel({
                       {runTable.rows.map((run) => <tr key={run.id}  >
                           <td className="font-mono tabular-nums">{formatDate(run.started_at, selectedTask.timezone, true)}</td>
                           <td >{run.trigger === 'manual' ? '手动执行' : '计划执行'}</td>
-                          <td  style={{ color: run.status === 'success' ? 'var(--success)' : run.status === 'failed' ? 'var(--error)' : 'var(--text-secondary)' }}>{({ running: '执行中', success: '已发送', failed: '失败', stopped: '已停止', skipped: '已跳过' } as const)[run.status]}</td>
+                          <td style={{ color: run.status === 'success' ? 'var(--success)' : run.status === 'failed' ? 'var(--error)' : 'var(--text-secondary)' }}>{RUN_STATUS_LABEL[run.status]}</td>
                           <td className="truncate">{run.session_id ? tabNames.get(run.session_id) || (sessionsQuery.data?.sessions ?? []).find((session) => session.id === run.session_id)?.task || '会话标签页' : '—'}</td>
-                          <td className="break-words leading-relaxed">{run.error || (run.status === 'success' ? '提示词已成功发送' : run.status === 'running' ? '正在发送提示词' : '未发送提示词')}</td>
+                          <td className="break-words leading-relaxed">{run.error || (run.status === 'queued' ? '提交时已加入后续消息队列' : run.status === 'success' ? '提示词已成功发送' : run.status === 'running' ? '正在发送提示词' : '未发送提示词')}</td>
                         </tr>)}
                     </DataTable>
               </div>

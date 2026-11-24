@@ -166,6 +166,32 @@ describe('scheduled task API', () => {
     expect(result.statusCode).toBe(409);expect(manager.writeToSession).not.toHaveBeenCalled();
     expect(getDb().prepare("SELECT count(*) n FROM conversation_input_sources WHERE session_id='unbound'").get()).toEqual({n:0});
   });
+
+  it.each(['codex','claude'])('queues scheduled follow-up in the existing busy %s conversation', async agent => {
+    const native = '019ff001-1111-7111-8111-111111111111';
+    const session = {id:'busy-schedule', project_id:'project-1', created_by_user_id:ownerId, status:'running', mode:'session', cli_type:agent, native_session_id:native};
+    getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,native_session_id,created_by_user_id) VALUES ('busy-schedule','project-1','Work','running','session',?,?,?)")
+      .run(agent,native,ownerId);
+    manager.getSession.mockReturnValue(session);
+    tracker.getTracker.mockReturnValue({state:{processState:'busy'},hasPendingExecute:false});
+    const submit=vi.spyOn(getAgent(agent).input,'submit').mockResolvedValue('queued');
+    const created=await app.inject({method:'POST',url:'/api/scheduled-tasks',headers:{cookie},payload:{
+      project_id:'project-1',name:'忙时巡检',prompt:'下一轮巡检',schedule_kind:'interval',schedule_value:'30',timezone:'UTC',
+      target_type:'existing',target_session_id:session.id,
+    }});
+    const id=created.json().task.id;
+    const response=await app.inject({method:'POST',url:`/api/scheduled-tasks/${id}/run`,headers:{cookie}});
+    expect(response.statusCode).toBe(200);
+    expect(response.json().run).toMatchObject({status:'queued', sessionId:session.id});
+    expect(submit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({nativeId:native}), '下一轮巡检', expect.any(String), undefined, {afterCurrentTurn:true});
+    expect(readHistory).not.toHaveBeenCalled();
+    expect(manager.newSessionConversation).not.toHaveBeenCalled();
+    expect(manager.writeToSession).not.toHaveBeenCalled();
+    expect(getDb().prepare('SELECT kind,label,client_id FROM conversation_input_sources WHERE session_id=?').get(session.id))
+      .toEqual({kind:'scheduled',label:'忙时巡检',client_id:submit.mock.calls[0][2]});
+    const runs=await app.inject({method:'GET',url:`/api/scheduled-tasks/${id}/runs`,headers:{cookie}});
+    expect(runs.json().runs).toMatchObject([{status:'queued',session_id:session.id}]);
+  });
   it('tracks scheduled input in a terminal tab already bound to an Agent',async()=>{
     const native='019ff001-1111-7111-8111-111111111111';
     getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES ('bound-terminal','project-1','Work','running','terminal','codex',?,?)").run(native,ownerId);

@@ -74,8 +74,11 @@ export const codexAdapter: AgentAdapter = {
     retry: { retryable:retryableConversationError,inspect: async (id) => inCodexThread(id,async()=>(await import('./retry.js')).inspectCodexRetry(id)), start: async (id, failed, client) => inCodexThread(id,async()=>(await import('./retry.js')).startRetryTurn(id, failed, client)) },
     input: {
         supportsClientIdentity: true,
+        supportsFollowUp: true,
+        hasQueuedFollowUp: async context => inCodexThread(requireNative(context),async()=>
+            (await import('./queue.js')).hasOwnedCodexQueuedInput(requireNative(context))),
         cancelQueued: async(context,clientId)=>inCodexThread(requireNative(context),async()=>(await import('./queue.js')).cancelCodexQueuedInput(requireNative(context),clientId)),
-        submit: async (context, text, clientId, attachments) => {
+        submit: async (context, text, clientId, attachments, options) => {
             assertSessionEnvironment(context.session,context.actorUserId);
             const stream = await import('./stream.js');
             const manager = await import('../../session-manager.js');
@@ -93,10 +96,11 @@ export const codexAdapter: AgentAdapter = {
                 }
                 assertSessionEnvironment(current, context.actorUserId);
             };
-            const submit = () => inCodexThread(threadId,
-                () => stream.submitStreamingCodexInput(threadId, text, clientId, attachments, confirmReconnect));
+            const submit = () => inCodexThread(threadId, () => options?.afterCurrentTurn
+                ? stream.submitStreamingCodexInput(threadId, text, clientId, attachments, confirmReconnect, true)
+                : stream.submitStreamingCodexInput(threadId, text, clientId, attachments, confirmReconnect));
             let result = process.env.AGENTMANAGER_CODEX_STREAM_SOCKET ? await submit() : false;
-            if (!result && session.id && await manager.ensureCodexConversationStreaming(session.id))
+            if (!result && !options?.afterCurrentTurn && session.id && await manager.ensureCodexConversationStreaming(session.id))
                 result = await submit();
             return result;
         },

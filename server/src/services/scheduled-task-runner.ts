@@ -3,7 +3,7 @@ import {readEngineModelsForEnvironment} from './agents/codex/controls.js';
 import {saveModelPreference} from './agents/model-preferences.js';
 import {getAgent,agentForSession} from './agents/index.js';
 import {taskAgent,targetSupportsQuota} from './agents/scheduling.js';
-import {captureScheduledBaseline,PlatformAiScheduleBusyError,scheduledObservationPrompt} from './platform-ai/scheduled-observation.js';
+import {captureScheduledBaseline,scheduledObservationPrompt} from './platform-ai/scheduled-observation.js';
 import {nanoid} from 'nanoid';
 import {randomUUID} from 'node:crypto';
 import {getDb} from '../db/index.js';
@@ -14,7 +14,8 @@ import {rememberConversationInput,rememberInputSource,bindInputSourceMessage,lin
 import {decorateConversationAttachments} from './conversation-attachments.js';
 import {readConversation} from './conversation-reader.js';
 import {prepareBriefSend} from '../shared/conversation-brief.js';
-import {sessionAgentContext} from './agents/session.js';
+import {readAgentRuntime,sessionAgentContext} from './agents/session.js';
+import {AgentSubmissionError} from './agents/submission.js';
 import {withTerminalInput} from './agents/terminal-input.js';
 import {nativeConversationId} from './session-identity.js';
 
@@ -72,7 +73,7 @@ export interface ScheduledTaskRow {
 
 export interface ScheduledRunResult {
   runId: string;
-  status: 'success' | 'failed' | 'stopped' | 'skipped';
+  status: 'success' | 'queued' | 'unknown' | 'failed' | 'stopped' | 'skipped';
   sessionId: string | null;
   error?: string;
 }
@@ -86,6 +87,17 @@ class TargetUnavailableError extends Error {}
 class ExecutionWindowClosedError extends Error {}
 class StartConditionsNotMetError extends Error {}
 class ScheduledTargetBusyError extends Error {}
+
+interface ScheduledDispatch { sessionId: string; queued?: boolean }
+
+async function needsScheduledFollowUp(session: sessionManager.Session): Promise<boolean> {
+  const tracker = getTracker(session.id);
+  if (tracker?.hasPendingExecute || tracker?.state.processState === 'busy' || tracker?.state.isPermission
+    || ['confirmation', 'choice'].includes(tracker?.state.promptType || '')) return true;
+  const runtime = await readAgentRuntime(session).catch(() => null);
+  if (runtime?.state === 'running' || runtime?.state === 'waiting_for_input') return true;
+  return await agentForSession(session).input.hasQueuedFollowUp?.(sessionAgentContext(session)).catch(() => false) ?? false;
+}
 
 interface ConditionDecision { allowed: boolean; reason?: string; pausedUntil?: string }
 
@@ -120,7 +132,7 @@ async function conditionContext(task: ScheduledTaskRow, now: number): Promise<Co
     for (const run of runs) {
       const timestamp = Date.parse(run.started_at.includes('T') ? run.started_at : `${run.started_at.replace(' ', 'T')}Z`);
       if (!Number.isFinite(timestamp) || localDateKey(timestamp, task.timezone) !== today) continue;
-      if (run.status === 'success') successesToday++;
+      if (run.status === 'success' || run.status === 'queued') successesToday++;
       if (run.status === 'failed') failuresToday++;
     }
   }
@@ -318,7 +330,7 @@ async function restoreExistingSession(task: ScheduledTaskRow, session: sessionMa
   if (!restored || !sessionManager.isSessionActive(session.id)) throw new Error('目标标签页恢复失败');
 }
 
-async function sendToExistingSession(task: ScheduledTaskRow, sessionId:string): Promise<string> {
+async function sendToExistingSession(task: ScheduledTaskRow, sessionId:string): Promise<ScheduledDispatch> {
   const session = sessionManager.getSession(sessionId);
   if (!session
     || session.created_by_user_id !== task.user_id
@@ -343,10 +355,8 @@ async function sendToExistingSession(task: ScheduledTaskRow, sessionId:string): 
   if(!canUseSessionEnvironment(current,task.user_id))throw Error('用户已无权使用目标标签页的 Agent 环境');
   let prompt=task.prompt;
   const nativeId=nativeConversationId(current);
-  if(nativeId){
-    const tracker=getTracker(session.id);
-    if(tracker?.hasPendingExecute||tracker?.state.processState==='busy'||tracker?.state.isPermission||
-      ['confirmation','choice'].includes(tracker?.state.promptType||''))throw new ScheduledTargetBusyError('目标标签页正在执行或等待交互，跳过本次发送');
+  let followUp = !!nativeId && await needsScheduledFollowUp(current);
+  if(nativeId && !followUp){
     const adapter=agentForSession(current);
     const binding={...current,cli_type:current.cli_type??null,codex_session_id:current.codex_session_id??null,claude_session_id:current.claude_session_id??null,project_path:sessionAgentContext(current).projectPath??null};
     const prepared=await prepareBriefSend(session.id,nativeId,{input:prompt},async({before,limit})=>{
@@ -354,20 +364,36 @@ async function sendToExistingSession(task: ScheduledTaskRow, sessionId:string): 
       return {...page,session_id:session.id,native_id:nativeId,messages:decorateConversationAttachments(session.id,linkConversationInputs(session.id,nativeId,page.messages))};
     },{allowEmpty:true});
     if(prepared.input!==prompt){
-      if(!adapter.descriptor.capabilities.newConversation)throw Error('此 Agent 不支持在新会话中发送简要历史');
       await assertStartConditions(task);
       assertExecutionWindow(task);
+      followUp = await needsScheduledFollowUp(current);
+    }
+    if (prepared.input !== prompt && !followUp) {
+      if(!adapter.descriptor.capabilities.newConversation)throw Error('此 Agent 不支持在新会话中发送简要历史');
       const fresh=await sessionManager.newSessionConversation(session.id,undefined,undefined,nativeId,undefined,{preserveHistory:true});
-      if(!fresh.ok)throw Error(fresh.error||'无法开启简要压缩后的会话');
-      const next=sessionManager.getSession(session.id), nextId=next&&nativeConversationId(next);
-      if(!next||!nextId||nextId===nativeId||next.created_by_user_id!==task.user_id||next.project_id!==task.project_id||
-        next.agent_environment_id!==current.agent_environment_id||agentForSession(next)!==adapter){
-        throw new TargetUnavailableError('目标标签页已变化，本次提示词未发送');
+      const next = sessionManager.getSession(session.id);
+      const nextId = next && nativeConversationId(next);
+      if (!fresh.ok) {
+        // The current turn can start between preparing the brief and acquiring
+        // the lifecycle lock. Queue on the original binding if it is now busy.
+        if (!next || nextId !== nativeId || !await needsScheduledFollowUp(next)) {
+          throw Error(fresh.error || '无法开启简要压缩后的会话');
+        }
+        followUp = true;
+      } else {
+        if (!next || !nextId || nextId===nativeId || next.created_by_user_id!==task.user_id || next.project_id!==task.project_id ||
+          next.agent_environment_id!==current.agent_environment_id || agentForSession(next)!==adapter) {
+          throw new TargetUnavailableError('目标标签页已变化，本次提示词未发送');
+        }
+        current = next;
+        prompt = prepared.input;
       }
-      current=next;
-      prompt=prepared.input;
     }
     assertExecutionWindow(task);
+  }
+  const input = agentForSession(current).input;
+  if (followUp && (!input.supportsFollowUp || !input.supportsClientIdentity)) {
+    throw new ScheduledTargetBusyError('目标 Agent 暂不支持排队发送，本次未发送');
   }
   const expected=current;
   const assertCurrentTarget=(clientId?:string)=>{
@@ -397,8 +423,17 @@ async function sendToExistingSession(task: ScheduledTaskRow, sessionId:string): 
     if(context.nativeId && adapter.input.supportsClientIdentity)await rememberConversationInput(session.id,binding,clientId,prompt).catch(()=>false);
     if(context.nativeId && adapter.input.supportsClientIdentity) {
       assertCurrentTarget(clientId);
-      const result=await adapter.input.submit(context,prompt,clientId);
-      if(result)return session.id;
+      const result = await (adapter.input.supportsFollowUp
+        ? adapter.input.submit(context,prompt,clientId,undefined,{afterCurrentTurn:true})
+        : adapter.input.submit(context,prompt,clientId)).catch(error=>{
+        if(error instanceof AgentSubmissionError && error.submission==='rejected')discardScheduledInput(session.id,clientId);
+        throw error;
+      });
+      if(result)return {sessionId:session.id,queued:result==='queued'};
+      if(followUp){
+        discardScheduledInput(session.id,clientId);
+        throw new ScheduledTargetBusyError('目标会话的队列当前不可用，本次未发送');
+      }
       if(adapter.descriptor.sessionHost==='managed'){
         discardScheduledInput(session.id,clientId);
         throw new TargetUnavailableError('目标 Agent 未接受提示词');
@@ -413,6 +448,10 @@ async function sendToExistingSession(task: ScheduledTaskRow, sessionId:string): 
   await withTerminalInput(session.id,async()=>{
     assertCurrentTarget(fallback?.clientId);
     if(fallback){
+      if (await needsScheduledFollowUp(current)) {
+        discardScheduledInput(session.id,fallback.clientId);
+        throw new ScheduledTargetBusyError('目标会话的队列当前不可用，本次未发送');
+      }
       getDb().prepare('DELETE FROM conversation_input_links WHERE session_id=? AND client_id=? AND message_id IS NULL').run(session.id,fallback.clientId);
       const linked=await rememberConversationInput(session.id,fallback.binding,fallback.clientId,prompt).catch(()=>false);
       if(!linked){discardScheduledInput(session.id,fallback.clientId);throw new TargetUnavailableError('无法关联定时消息的原生记录，提示词未发送');}
@@ -425,7 +464,7 @@ async function sendToExistingSession(task: ScheduledTaskRow, sessionId:string): 
     await new Promise(resolve=>setTimeout(resolve,50));
     if (!sessionManager.writeToSession(session.id, '\r')) throw new Error('提示词已粘贴，但提交结果未知');
   });
-  return session.id;
+  return {sessionId:session.id};
 }
 
 function discardScheduledInput(sessionId:string,clientId:string) {
@@ -436,12 +475,12 @@ function discardScheduledInput(sessionId:string,clientId:string) {
   })();
 }
 
-async function executeTask(task: ScheduledTaskRow): Promise<string> {
+async function executeTask(task: ScheduledTaskRow): Promise<ScheduledDispatch> {
   const project = getDb().prepare('SELECT path FROM projects WHERE id = ?').get(task.project_id) as { path: string } | undefined;
   if (!project?.path) throw new Error('项目不存在');
   const user = getDb().prepare('SELECT disabled FROM users WHERE id = ?').get(task.user_id) as { disabled: number } | undefined;
   if (!user || user.disabled) throw new Error('任务创建者不存在或已停用');
-  if(task.target_type==='new')return createScheduledSession(task,project.path);
+  if(task.target_type==='new')return {sessionId:await createScheduledSession(task,project.path)};
   if(!task.target_session_id)throw new TargetUnavailableError('未设置目标标签页');
   if(dispatchingSessions.has(task.target_session_id))throw new ScheduledTargetBusyError('目标标签页正在接收另一个定时任务，跳过本次发送');
   dispatchingSessions.add(task.target_session_id);
@@ -486,8 +525,9 @@ export async function runScheduledTask(
       })();
       return { runId, status: 'stopped', sessionId: null, error: reason };
     }
-    captureScheduledBaseline(taskId, runId, task.target_session_id, true);
-    const sessionId = await executeTask({...task, prompt: scheduledObservationPrompt(taskId, runId, task.prompt)});
+    captureScheduledBaseline(taskId, runId, task.target_session_id);
+    const {sessionId,queued} = await executeTask({...task, prompt: scheduledObservationPrompt(taskId, runId, task.prompt)});
+    const status = queued ? 'queued' : 'success';
     const successfulRuns = task.successful_runs + 1;
     const stopReason = task.max_successful_runs != null && successfulRuns >= task.max_successful_runs
       ? `已完成 ${successfulRuns} 次成功执行`
@@ -495,21 +535,30 @@ export async function runScheduledTask(
     getDb().transaction(() => {
       getDb().prepare(`
         UPDATE scheduled_task_runs
-        SET status = 'success', session_id = ?, completed_at = datetime('now')
+        SET status = ?, session_id = ?, completed_at = datetime('now')
         WHERE id = ?
-      `).run(sessionId, runId);
+      `).run(status, sessionId, runId);
       getDb().prepare(`
         UPDATE scheduled_tasks
-        SET last_run_at = ?, last_status = 'success', last_error = NULL,
+        SET last_run_at = ?, last_status = ?, last_error = NULL,
           successful_runs = ?, consecutive_failures = 0, updated_at = datetime('now')
         WHERE id = ?
-      `).run(new Date(Date.now()).toISOString(), successfulRuns, taskId);
+      `).run(new Date(Date.now()).toISOString(), status, successfulRuns, taskId);
       if (stopReason) stopTask(taskId, stopReason);
     })();
-    return { runId, status: 'success', sessionId };
+    return { runId, status, sessionId };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (error instanceof ExecutionWindowClosedError || error instanceof StartConditionsNotMetError || error instanceof PlatformAiScheduleBusyError || error instanceof ScheduledTargetBusyError) {
+    if (error instanceof AgentSubmissionError && error.submission === 'unknown') {
+      getDb().transaction(() => {
+        getDb().prepare("UPDATE scheduled_task_runs SET status='unknown', error=?, session_id=?, completed_at=datetime('now') WHERE id=?")
+          .run(message, task.target_session_id, runId);
+        getDb().prepare("UPDATE scheduled_tasks SET last_status='unknown', last_error=?, last_run_at=?, updated_at=datetime('now') WHERE id=?")
+          .run(message, new Date(Date.now()).toISOString(), taskId);
+      })();
+      return {runId,status:'unknown',sessionId:task.target_session_id,error:message};
+    }
+    if (error instanceof ExecutionWindowClosedError || error instanceof StartConditionsNotMetError || error instanceof ScheduledTargetBusyError) {
       getDb().prepare(`
         UPDATE scheduled_task_runs SET status = 'skipped', error = ?, completed_at = datetime('now') WHERE id = ?
       `).run(message, runId);

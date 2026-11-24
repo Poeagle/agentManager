@@ -1,5 +1,5 @@
 import {rememberCodexTitle} from './thread-title.js';
-import {submissionFailure} from '../submission.js';
+import {AgentSubmissionError,submissionFailure} from '../submission.js';
 import {rememberCodexSettings} from './settings-state.js';
 import {currentCodexEngine,rememberCodexThread} from './engine-context.js';
 import {readCodexBaseline,markOversizedBaseline} from './baseline.js';
@@ -172,8 +172,8 @@ export async function stopStreamingCodexTurn(threadId:string,turnId:string):Prom
  * menus, focus, and transport suspension. Embedded CLIs retain their PTY path. */
 type SubmissionResult=boolean|'queued';
 const acceptedInputs=new Map<string,{promise:Promise<SubmissionResult>;fingerprint:string}>();
-export function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[] = [], confirmReconnect?: () => void):Promise<SubmissionResult> {
-  const identity=clientId||randomUUID(),key=JSON.stringify([currentCodexEngine().socket,threadId,identity]),fingerprint=JSON.stringify([text,attachments]);
+export function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[] = [], confirmReconnect?: () => void, afterCurrentTurn = false):Promise<SubmissionResult> {
+  const identity=clientId||randomUUID(),key=JSON.stringify([currentCodexEngine().socket,threadId,identity]),fingerprint=JSON.stringify([text,attachments,afterCurrentTurn]);
   const existing=acceptedInputs.get(key);if(existing)return existing.fingerprint===fingerprint?existing.promise:Promise.reject(new CodexRpcError('Client input identity has different contents'));
   let dispatched=false;
   const attempt = (confirmTarget?: () => void) => withCodexConnection(async request => {
@@ -190,15 +190,23 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
     const queue=async()=>{
       const existing=await readCodexQueue(request,threadId);
       if(existing.data?.some((entry:any)=>entry.clientUserMessageId===identity))return 'queued' as const;
+      if(existing.data.length >= 100)throw new AgentSubmissionError('目标会话队列已满，本次消息未发送','rejected');
       confirmTarget?.();
       ownCodexQueuedInput(threadId,identity);
       dispatched=true;
       try{await request('thread/queue/add',{threadId,clientUserMessageId:identity,input});}
-      catch(error){if(error instanceof CodexRpcError)ownCodexQueuedInput(threadId,identity,true);throw error;}
+      catch(error){
+        if(error instanceof CodexRpcError){
+          ownCodexQueuedInput(threadId,identity,true);
+          throw new AgentSubmissionError('原生队列拒绝了消息，本次未发送','rejected');
+        }
+        throw error;
+      }
       ownCodexQueuedInput(threadId,identity);
       const started=await startOwnedCodexQueue(request,threadId).catch(()=>null);
       return started===identity?true:'queued' as const;
     };
+    if(afterCurrentTurn)return queue();
     const submit=async()=>{await dispatch('turn/start',{threadId,clientUserMessageId:identity,input});return true;};
     try {
       if(current.thread?.status?.type==='active'){
@@ -229,7 +237,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
       throw error;
     }
   });
-  const operation = attempt().catch(async (error) => {
+  const operation = attempt(afterCurrentTurn ? confirmReconnect : undefined).catch(async (error) => {
     // A new account/thread can lose its first socket before any input goes out.
     // Keep the same native target and identity. A lost receipt stays unknown.
     if (dispatched || !(error instanceof CodexConnectionLost)) throw error;

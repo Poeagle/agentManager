@@ -688,6 +688,10 @@ export interface AgentInputPort {
   supportsClientIdentity?: boolean;
   /** A client identity can be attached before the native transcript exists. */
   supportsInitialClientIdentity?: boolean;
+  /** This adapter can submit a follow-up without interrupting or steering the active turn. */
+  supportsFollowUp?: boolean;
+  /** Whether the current conversation has pending follow-ups that must finish before rotation. */
+  hasQueuedFollowUp?(context: AgentContext): Promise<boolean>;
   /** When supported, map a platform client ID to the durable native message ID. */
   messageId?(clientId: string): string | undefined;
   cancelQueued?(context: AgentContext, clientId: string): Promise<void>;
@@ -696,6 +700,7 @@ export interface AgentInputPort {
     text: string,
     clientId?: string,
     attachments?: ConversationAttachment[],
+    options?: {afterCurrentTurn?: boolean},
   ): Promise<boolean | "queued">;
   afterTerminalSubmit(context: AgentContext): Promise<void>;
 }

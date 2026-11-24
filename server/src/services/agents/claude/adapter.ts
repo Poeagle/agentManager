@@ -123,6 +123,9 @@ export const claudeAdapter: AgentDefinition = {
   input: {
     supportsClientIdentity: true,
     supportsInitialClientIdentity: true,
+    supportsFollowUp: true,
+    hasQueuedFollowUp: async context => !!(await import("./sdk-runtime.js"))
+      .claudeRuntime(requireNative(context))?.hasQueuedFollowUp(),
     messageId: clientId => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId) ? conversationMessageId('', 'user', clientId) : undefined,
     cancelQueued: async (context, clientId) => {
       const runtime = (await import("./sdk-runtime.js")).claudeRuntime(
@@ -131,7 +134,11 @@ export const claudeAdapter: AgentDefinition = {
       if (!runtime) throw Error("Claude managed runtime is not connected");
       await runtime.cancelQueued(clientId);
     },
-    submit: async (context, text, clientId, attachments) => {
+    submit: async (context, text, clientId, attachments, options) => {
+      if (options?.afterCurrentTurn) {
+        const runtime = (await import("./sdk-runtime.js")).claudeRuntime(requireNative(context));
+        return runtime?.submit(text, clientId, attachments, undefined, true) ?? false;
+      }
       let provider = (
         await import("./providers.js")
       ).claudeRuntimeProvider(context.session, context.environmentAccess);

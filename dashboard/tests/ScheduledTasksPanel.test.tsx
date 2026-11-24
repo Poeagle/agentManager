@@ -294,6 +294,9 @@ describe('ScheduledTasksPanel', () => {
     vi.mocked(api.scheduledTasks.runs).mockResolvedValue({ runs: [{
       id: 'skip', task_id: task.id, trigger: 'scheduled', scheduled_for: task.next_run_at!, status: 'skipped',
       session_id: session.id, error: '标签页仍忙，跳过本次', started_at: '2026-10-13T01:30:00Z', completed_at: '2026-10-13T01:30:01Z',
+    }, {
+      id: 'queued', task_id: task.id, trigger: 'scheduled', scheduled_for: task.next_run_at!, status: 'queued',
+      session_id: session.id, error: null, started_at: '2026-10-14T01:30:00Z', completed_at: '2026-10-14T01:30:01Z',
     }] });
     const user = userEvent.setup();
     renderPanel([{ id: session.id, label: '巡检' }]);
@@ -305,6 +308,8 @@ describe('ScheduledTasksPanel', () => {
     expect(within(table).getByRole('columnheader', { name: '执行时间' })).toBeVisible();
     expect(await within(table).findByText('已跳过')).toBeVisible();
     expect(within(table).getByText('标签页仍忙，跳过本次')).toBeVisible();
+    expect(within(table).getByText('已排队')).toBeVisible();
+    expect(within(table).getByText('提交时已加入后续消息队列')).toBeVisible();
     expect(screen.getByLabelText('提示词').compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

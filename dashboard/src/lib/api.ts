@@ -1031,7 +1031,7 @@ export interface ScheduledTask extends Omit<ScheduledTaskInput, 'enabled'> {
   stopped_at: string | null;
   stop_reason: string | null;
   last_run_at: string | null;
-  last_status: 'success' | 'failed' | 'stopped' | null;
+  last_status: 'success' | 'queued' | 'unknown' | 'failed' | 'stopped' | 'skipped' | null;
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -1042,7 +1042,7 @@ export interface ScheduledTaskRun {
   task_id: string;
   trigger: 'scheduled' | 'manual';
   scheduled_for: string;
-  status: 'running' | 'success' | 'failed' | 'stopped' | 'skipped';
+  status: 'running' | 'success' | 'queued' | 'unknown' | 'failed' | 'stopped' | 'skipped';
   session_id: string | null;
   error: string | null;
   started_at: string;

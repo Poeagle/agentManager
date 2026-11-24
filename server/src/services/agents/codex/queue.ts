@@ -32,6 +32,11 @@ export async function cancelCodexQueuedInput(threadId:string,clientId:string):Pr
 
 const owned=new Map<string,Set<string>>(),draining=new Map<string,Promise<string|null>>();
 const ownershipKey=(thread:string)=>JSON.stringify([currentCodexEngine().socket,thread]);
+export function hasOwnedCodexQueuedInput(thread:string):boolean {
+ if(owned.get(ownershipKey(thread))?.size)return true;
+ try{return !!getDb().prepare('SELECT 1 FROM agent_queued_inputs WHERE agent_id=? AND scope_key=? AND native_id=? LIMIT 1')
+   .get('codex',currentCodexEngine().socket,thread);}catch{return false;}
+}
 /** Store only native identities, never prompts. Native queue remains the source
  * of truth and atomically claims an item when starting it. */
 export function ownCodexQueuedInput(thread:string,client:string,remove=false){

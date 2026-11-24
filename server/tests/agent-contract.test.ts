@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.33.1');
+    expect(contract.version).toBe('3.34.0');
     for (const path of ['/api/sessions','/api/sessions/:id']) {
       expect(contract.endpoints.find(endpoint=>endpoint.method==='GET'&&endpoint.path===path)?.description).toContain('record_deletion');
     }
@@ -95,5 +95,6 @@ describe('Agent API contract', () => {
     expect(scheduledCreate?.request).toHaveProperty('daily_stop_conditions');
     expect(scheduledCreate?.request?.condition_unmet_policy.default).toBe('skip');
     expect(contract.endpoints.find(e=>e.path==='/api/scheduled-tasks/:id/run')?.description).toContain('brief context');
+    expect(contract.endpoints.find(e=>e.path==='/api/scheduled-tasks/:id/run')?.response?.run).toContain('success or queued');
   });
 });

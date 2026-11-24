@@ -388,7 +388,8 @@ export const scheduledTaskRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Params: { id: string } }>('/scheduled-tasks/:id/run', async (req, reply) => {
     if (!taskForUser(req.params.id, req.user!.id)) return reply.status(404).send({ error: '定时任务不存在' });
     const run = await runScheduledTask(req.params.id, 'manual');
-    if (run.status !== 'success') return reply.status(409).send({ error: run.error, run });
+    if (run.status === 'unknown') return reply.status(503).send({ error: run.error, run });
+    if (run.status !== 'success' && run.status !== 'queued') return reply.status(409).send({ error: run.error, run });
     return { ok: true, run };
   });
 };

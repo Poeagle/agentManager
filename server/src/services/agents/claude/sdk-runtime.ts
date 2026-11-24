@@ -8,6 +8,7 @@ import {
 import { readFile } from "fs/promises";
 import { extname } from "path";
 import { randomUUID } from "crypto";
+import { AgentSubmissionError } from "../submission.js";
 import { conversationMessageId } from "../../conversation-reader.js";
 import {
   formatConversationInput,
@@ -350,6 +351,7 @@ class ClaudeRuntime {
     clientId?: string,
     attachments: ConversationAttachment[] = [],
     userId?: string,
+    afterCurrentTurn = false,
   ): Promise<boolean | "queued"> {
     const uuid = clientId &&
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId)
@@ -364,7 +366,7 @@ class ClaudeRuntime {
       clientGenerated: !userId && !uuid,
       nativeUuid: userId ?? uuid ?? resolvedUserId,
     };
-    if (this.busy && this.input && this.active) {
+    if (!afterCurrentTurn && this.busy && this.input && this.active) {
       // Claude can continue the same streaming query after interrupt(); the
       // next user message starts the continuation turn in that same session.
       let accepted = false;
@@ -410,6 +412,9 @@ class ClaudeRuntime {
       return true;
     }
     if (this.busy || this.running) {
+      if (afterCurrentTurn && this.pending.length >= 100) {
+        throw new AgentSubmissionError('目标会话队列已满，本次消息未发送', 'rejected');
+      }
       this.pending.push(pending);
       this.upsert({
         id: conversationMessageId("", "user", pending.userId),
@@ -438,6 +443,10 @@ class ClaudeRuntime {
     this.publish();
     this.start(pending);
     return true;
+  }
+
+  hasQueuedFollowUp(): boolean {
+    return this.pending.length > 0;
   }
 
   async cancelQueued(clientId: string) {

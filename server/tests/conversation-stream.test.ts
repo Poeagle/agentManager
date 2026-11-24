@@ -107,6 +107,16 @@ describe('native Codex conversation streaming',()=>{
     expect(requestParams.find(p=>p.method==='turn/steer')?.params).toMatchObject({expectedTurnId:'turn',clientUserMessageId:'steer-client',input:[{text:'insert now'}]});
     expect(requests).not.toContain('thread/queue/add');expect(requests).not.toContain('turn/start');
   });
+  it('enqueues a scheduled follow-up once without steering or interrupting the active turn', async () => {
+    active = true;
+    const send = () => submitStreamingCodexInput('thread','run after this turn','scheduled-client',[],undefined,true);
+    expect(await Promise.all([send(),send()])).toEqual(['queued','queued']);
+    expect(queueEntries).toMatchObject([{clientUserMessageId:'scheduled-client',input:[{type:'text',text:'run after this turn'}]}]);
+    expect(requests.filter(method=>method==='thread/queue/add')).toHaveLength(1);
+    expect(requests).not.toContain('turn/steer');
+    expect(requests).not.toContain('turn/interrupt');
+    expect(requests).not.toContain('turn/start');
+  });
   it('uses the existing live turn receipt to insert without reading any history',async()=>{
     stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(frames.some(frame=>frame.type==='snapshot')).toBe(true));
     send('turn/started',{threadId:'thread',turn:{id:'running-now',status:'inProgress'}});await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:true,turn_id:'running-now'}));
