@@ -1,4 +1,5 @@
 import {afterEach,expect,it,vi} from 'vitest';
+import {webcrypto} from 'node:crypto';
 import {api,type ConversationPage} from '../src/lib/api';
 import {parseBriefContext,prepareBriefSend} from '../src/lib/conversation-brief-context';
 
@@ -7,6 +8,31 @@ const page = (messages: ConversationPage['messages'], extra: Partial<Conversatio
 }) as ConversationPage;
 const message = (id:string, role:'user'|'assistant', text:string, phase?:'commentary'|'final') => ({id,role,text,phase,timestamp:null});
 afterEach(()=>vi.restoreAllMocks());
+
+it('deduplicates an identical scheduled prompt across consecutive brief rotations after truncation', async () => {
+  vi.stubGlobal('crypto', webcrypto);
+  try {
+    const prompt = '前'.repeat(5000) + '完整参数' + '后'.repeat(5000);
+    const task = {kind:'scheduled',label:'UI审查'};
+    const read = vi.spyOn(api.agent,'conversation').mockResolvedValueOnce(page([
+      {...message('u1','user',prompt),input_source:task},
+      message('a1','assistant','第一次结论','final'),
+    ]));
+    const first = await prepareBriefSend('session','native',{input:prompt},new AbortController().signal);
+    expect(parseBriefContext(first.input)!.context.turns[0].input_truncated).toBe(true);
+    read.mockResolvedValueOnce(page([
+      {...message('u2','user',first.input),input_source:task},
+      message('a2','assistant','第二次结论','final'),
+    ]));
+    const second = await prepareBriefSend('session','native',{input:'继续'},new AbortController().signal);
+    expect(parseBriefContext(second.input)!.context.turns).toMatchObject([
+      {conclusion:'第一次结论',input_truncated:true},
+      {input:'',input_ref:1,conclusion:'第二次结论'},
+    ]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 it('collects every available input and conclusion, one visible progress item, and attachment references',async()=>{
   const read=vi.spyOn(api.agent,'conversation').mockResolvedValueOnce(page([
