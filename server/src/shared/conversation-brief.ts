@@ -37,6 +37,7 @@ const START = '以下是上一会话的记录节选，可能不完整，仅供�
 const END = '\n</agentmanager_brief_context>\n\n当前需求：\n';
 const MAX_CONTEXT_BYTES = 32 * 1024;
 const MAX_INPUT_BYTES = 64 * 1024;
+const MAX_HISTORY_ATTEMPTS = 3;
 const MAX_PAGES = 12;
 const MAX_TURNS = 1000;
 const MAX_EMPTY_PAGES = 12;
@@ -213,6 +214,14 @@ function makePrefix(turns: CollectedTurn[], inheritedTruncation: boolean, olderO
 
 /** Read existing paginated history only. Never start an Agent turn to summarize. */
 export async function prepareBriefSend(sessionId: string, nativeId: string, payload: BriefPayload, readPage: BriefHistoryReader, options?: {allowEmpty?: boolean}): Promise<BriefPayload> {
+  for (let attempt = 0; attempt < MAX_HISTORY_ATTEMPTS; attempt++) {
+    const prepared = await prepareBriefFromHistory(sessionId, nativeId, payload, readPage, options?.allowEmpty);
+    if (prepared !== null) return prepared;
+  }
+  throw Error('会话历史持续变化，暂时无法完成简要压缩，消息尚未发送。');
+}
+
+async function prepareBriefFromHistory(sessionId: string, nativeId: string, payload: BriefPayload, readPage: BriefHistoryReader, allowEmpty?: boolean): Promise<BriefPayload | null> {
   let before: string | undefined, generation: string | null | undefined, olderOmitted = false, collectedTruncation = false;
   const pages: CollectedMessage[][] = [], cursors = new Set<string>();
   // Compare original text before clipping. Persist the fingerprint of excerpts
@@ -237,8 +246,8 @@ export async function prepareBriefSend(sessionId: string, nativeId: string, payl
     const page = await readPage({limit: '80', ...(before ? {before} : {})});
     if (!page.available || page.native_id !== nativeId || page.session_id !== sessionId)
       throw Error('无法读取原会话历史，简要压缩未执行，草稿已保留。');
-    if (generation !== undefined && (page.reset || page.generation !== generation))
-      throw Error('会话历史已变化，请重新发送后再试。');
+    // The earlier pages belong to a stale snapshot. Discard them before restarting from the latest page.
+    if (generation !== undefined && (page.reset || page.generation !== generation)) return null;
     generation = page.generation;
     if (!page.messages.length) {
       if (!page.has_more) break;
@@ -281,7 +290,7 @@ export async function prepareBriefSend(sessionId: string, nativeId: string, payl
   }
   const history = await historyTurns(pages.reverse().flat(), promptKey, freshKey);
   if (!history.turns.length) {
-    if (options?.allowEmpty && !olderOmitted) return payload;
+    if (allowEmpty && !olderOmitted) return payload;
     throw Error('没有可用的对话记录，简要压缩未执行。');
   }
   const prefix = makePrefix(history.turns, history.truncated || collectedTruncation, olderOmitted || history.olderOmitted, payload.input);

@@ -416,6 +416,27 @@ describe('public conversation pages',()=>{
     expect(paired).toMatchObject({input:text,conclusion:'paired answer'});
     expect(brief?.context.turns.filter(turn=>turn.input===text)).toHaveLength(1);
   });
+  it('restarts brief preparation when the native history is rewritten between HTTP pages',async()=>{
+    const history=(version:string)=>Array.from({length:41},(_,i)=>user(`${version} request ${i}`)+final(`${version} reply ${i}`)).join('');
+    writeFileSync(file,history('old'));
+    const cursors:Array<string|undefined>=[];
+    const result=await prepareBriefSend('chat',id,{input:'new draft'},async query=>{
+      cursors.push(query.before);
+      if(cursors.length===2)writeFileSync(file,history('updated'));
+      const response=await app.inject({url:`/api/sessions/chat/conversation?${new URLSearchParams(query)}`,headers:{cookie}});
+      expect(response.statusCode).toBe(200);
+      const page=response.json();
+      if(cursors.length===2)expect(page.reset).toBe(true);
+      return page;
+    });
+    expect(cursors).toEqual([undefined,expect.any(String),undefined,expect.any(String)]);
+    const brief=parseBriefContext(result.input);
+    expect(brief?.context.turns).toHaveLength(41);
+    expect(brief?.context.turns[0]).toEqual({input:'updated request 0',conclusion:'updated reply 0'});
+    expect(brief?.context.turns.at(-1)).toEqual({input:'updated request 40',conclusion:'updated reply 40'});
+    expect(result.input).not.toContain('old request');
+    expect(brief?.input).toBe('new draft');
+  });
   it('prepares brief context across empty history pages containing oversized tool results',async()=>{
     const toolOutput=line('response_item',{type:'function_call_output',output:'x'.repeat(3*1024*1024)});
     const recent=Array.from({length:40},(_,i)=>user(`recent question ${i}`)+final(`recent answer ${i}`)).join('');

@@ -3,7 +3,7 @@ import {sessionAgent} from '../src/lib/agents';
 import { act, fireEvent, render, screen, waitFor,within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api, ApiError, type ConversationPage, type ConversationStatistics, type Session } from '../src/lib/api';
+import { api, ApiError, type ConversationPage, type ConversationStatistics, type SendGuardCheck, type Session } from '../src/lib/api';
 import { SessionConversation } from '../src/components/SessionConversation';
 import * as metadata from '../src/components/ConversationStatisticsLabel';
 import {parseBriefContext} from '../src/lib/conversation-brief-context';
@@ -291,6 +291,49 @@ describe('conversation send transaction', () => {
     expect(brief.input).toBe('one\n\ntwo');expect(submit.mock.calls[0][4]).toEqual([{length:brief.prefixLength+3,attachments:0},{length:3,attachments:0}]);
     fireEvent.click(await screen.findByRole('button',{name:/批量消息/}));
     const batch=screen.getByRole('dialog',{name:'批量消息 · 2 条'});expect(within(batch).getByLabelText('第 1 条消息')).toHaveTextContent('one');expect(within(batch).getByLabelText('第 1 条消息')).not.toHaveTextContent('上一轮');
+  });
+  it.each([
+    ['codex',false],['codex',true],['claude',false],['claude',true],
+  ] as const)('handles an automatic %s brief send when history changes (persistent: %s)',async(agent,persistent)=>{
+    const guard:SendGuardCheck={
+      needs_confirmation:false,required_action:'brief',enabled:true,native_id:'native',can_new:true,can_compact:true,
+      token:null,switch_account:false,target_account:null,account_remaining_percent:null,matched:true,
+      context_tokens:null,context_window:null,context_percent:null,idle_minutes:null,last_completed_at:null,observed_at:null,checked_at:'',
+    };
+    vi.mocked(api.agent.checkSend).mockResolvedValueOnce(guard)
+      .mockResolvedValueOnce({...guard,native_id:'fresh',required_action:null,token:'after'});
+    const initial=await api.agent.conversation(session.id);
+    const cursors:Array<string|undefined>=[];
+    vi.mocked(api.agent.conversation).mockImplementation(async(_id,query)=>{
+      if(query?.limit!=='80')return initial;
+      cursors.push(query.before);
+      const latest={...initial,session_id:session.id};
+      if(query.before)return {...latest,reset:true};
+      if(persistent||cursors.length===1)return {...latest,has_more:true,messages:[{id:'stale',role:'user',text:'失效的历史',timestamp:null}]};
+      return {...latest,messages:[{id:'updated',role:'user',text:'恢复后的历史',timestamp:null}]};
+    });
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);
+    const newSession=vi.fn().mockResolvedValue('fresh');
+    const target:Session=agent==='claude'?{...session,cli_type:agent,codex_session_id:null,claude_session_id:'native'}:session;
+    await mount(target,newSession);
+    const editor=input('自动发送的原草稿');
+    fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+    if(persistent){
+      expect(await screen.findByRole('alert')).toHaveTextContent('会话历史持续变化');
+      expect(cursors).toEqual([undefined,'stale',undefined,'stale',undefined,'stale']);
+      expect(editor).toHaveTextContent('自动发送的原草稿');
+      expect(loadComposer(composerKey('local',session.id)).draft).toBe('自动发送的原草稿');
+      expect(newSession).not.toHaveBeenCalled();
+      expect(submit).not.toHaveBeenCalled();
+    }else{
+      await waitFor(()=>expect(submit).toHaveBeenCalledOnce());
+      expect(cursors).toEqual([undefined,'stale',undefined]);
+      expect(newSession).toHaveBeenCalledExactlyOnceWith(undefined,'native');
+      const brief=parseBriefContext(submit.mock.calls[0][1]);
+      expect(brief?.context.turns).toEqual([{input:'恢复后的历史'}]);
+      expect(brief?.input).toBe('自动发送的原草稿');
+      expect(screen.queryByText('会话历史已变化',{exact:false})).not.toBeInTheDocument();
+    }
   });
   it('retains brief history with a rejected draft across reload and attaches it on retry',async()=>{
     const guard={needs_confirmation:true,matched:true,enabled:true,token:'before',native_id:'native',context_tokens:800,context_window:1000,context_percent:80,idle_minutes:40,last_completed_at:null,observed_at:null,checked_at:'',can_compact:true,can_new:true};

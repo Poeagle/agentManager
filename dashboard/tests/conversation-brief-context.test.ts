@@ -282,11 +282,32 @@ it('bounds reads when history keeps returning empty pages',async()=>{
   expect(read).toHaveBeenCalledTimes(13);
 });
 
-it('rejects a replaced or changing history before starting a new conversation',async()=>{
-  const read=vi.spyOn(api.agent,'conversation').mockResolvedValueOnce(page([message('u','user','history')],{native_id:'other'}));
+it('rejects a replaced native conversation without retrying its history',async()=>{
+  const read=vi.spyOn(api.agent,'conversation').mockResolvedValue(page([message('u','user','history')],{native_id:'other'}));
   await expect(prepareBriefSend('session','native',{input:'draft'},new AbortController().signal)).rejects.toThrow('无法读取原会话历史');
-  read.mockResolvedValueOnce(page([message('u2','user','new')],{has_more:true})).mockResolvedValueOnce(page([message('u1','user','old')],{generation:'replaced'}));
-  await expect(prepareBriefSend('session','native',{input:'draft'},new AbortController().signal)).rejects.toThrow('历史已变化');
+  expect(read).toHaveBeenCalledOnce();
+});
+
+it.each([{reset:true},{generation:'two'}])('restarts from the latest page after a history change (%o)',async(change)=>{
+  const read=vi.spyOn(api.agent,'conversation')
+    .mockResolvedValueOnce(page([message('stale','user','stale history')],{has_more:true}))
+    .mockResolvedValueOnce(page([message('invalid','user','invalid page')],change))
+    .mockResolvedValueOnce(page([message('recent','user','updated request')],{generation:'two',has_more:true}))
+    .mockResolvedValueOnce(page([message('older','user','older request')],{generation:'two'}));
+  const result=await prepareBriefSend('session','native',{input:'draft'},new AbortController().signal);
+  const brief=parseBriefContext(result.input);
+  expect(read.mock.calls.map(([,query])=>query?.before)).toEqual([undefined,'stale',undefined,'recent']);
+  expect(brief?.context.turns).toEqual([{input:'older request'},{input:'updated request'}]);
+  expect(brief?.input).toBe('draft');
+});
+
+it('bounds retries while the history keeps changing',async()=>{
+  const read=vi.spyOn(api.agent,'conversation').mockImplementation(async(_id,query)=>query?.before
+    ? page([],{reset:true})
+    : page([message('recent','user','recent request')],{has_more:true}));
+  await expect(prepareBriefSend('session','native',{input:'draft'},new AbortController().signal))
+    .rejects.toThrow('会话历史持续变化');
+  expect(read.mock.calls.map(([,query])=>query?.before)).toEqual([undefined,'recent',undefined,'recent',undefined,'recent']);
 });
 
 it('rejects unavailable history and an oversized current draft',async()=>{
