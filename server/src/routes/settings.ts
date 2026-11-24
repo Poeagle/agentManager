@@ -14,6 +14,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** Default values for all settings */
 const DEEPSEEK_HARNESS_URL = 'deepseek_harness_url';
+const DEEPSEEK_HARNESS_MODEL = 'deepseek_harness_model';
 
 function normalizeHarnessUrl(value: unknown): string {
   if (typeof value !== 'string' || value.length > 2048) throw Error();
@@ -26,6 +27,7 @@ function normalizeHarnessUrl(value: unknown): string {
 
 const DEFAULTS: Record<string, string> = {
   [DEEPSEEK_HARNESS_URL]: '',
+  [DEEPSEEK_HARNESS_MODEL]: '',
   ...MEMORY_REAPER_DEFAULTS,
   [SEND_GUARD_KEY]:JSON.stringify(DEFAULT_SEND_GUARD),
   session_claude_command: 'claude --dangerously-skip-permissions',
@@ -89,6 +91,22 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ error: '请输入 DeepSeek Harness 的 HTTP(S) 根地址，地址不能包含账号、密码或登录参数。' });
       }
     }
+    if (Object.hasOwn(settings, DEEPSEEK_HARNESS_MODEL) && settings[DEEPSEEK_HARNESS_MODEL] !== '') {
+      try {
+        const value = settings[DEEPSEEK_HARNESS_MODEL];
+        if (typeof value !== 'string' || value.length > 4096) throw Error();
+        const { url, provider, model } = JSON.parse(value);
+        if (!url || url !== (settings[DEEPSEEK_HARNESS_URL] ?? getSetting(DEEPSEEK_HARNESS_URL))
+          || typeof provider !== 'string' || !/^[\w.:-]{1,128}$/u.test(provider)
+          || typeof model !== 'string' || !/^[^\s\u0000-\u001f\u007f]{1,256}$/u.test(model)) throw Error();
+        settings[DEEPSEEK_HARNESS_MODEL] = JSON.stringify({ url, provider, model });
+      } catch {
+        return reply.code(400).send({ error: '请选择当前 Harness 实例中的 Provider 和模型。' });
+      }
+    } else if (Object.hasOwn(settings, DEEPSEEK_HARNESS_URL)
+      && settings[DEEPSEEK_HARNESS_URL] !== getSetting(DEEPSEEK_HARNESS_URL)) {
+      settings[DEEPSEEK_HARNESS_MODEL] = '';
+    }
     const cleanupError = memoryCleanupSettingError(settings);
     if (cleanupError) return reply.status(400).send({ error: cleanupError });
     if(Object.prototype.hasOwnProperty.call(settings,'app_font_family')&&
@@ -100,11 +118,13 @@ export const settingsRoutes: FastifyPluginAsync = async (app) => {
     const upsert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
 
     const allowed = new Set(Object.keys(DEFAULTS));
-    for (const [key, value] of Object.entries(settings)) {
-      if (!allowed.has(key)) continue;
-      const stringValue = String(value);
-      upsert.run(key, COMMAND_TYPES[key] ? withAllPermissions(stringValue, COMMAND_TYPES[key]) : stringValue);
-    }
+    db.transaction(() => {
+      for (const [key, value] of Object.entries(settings)) {
+        if (!allowed.has(key)) continue;
+        const stringValue = String(value);
+        upsert.run(key, COMMAND_TYPES[key] ? withAllPermissions(stringValue, COMMAND_TYPES[key]) : stringValue);
+      }
+    })();
 
     // Return current state
     const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];

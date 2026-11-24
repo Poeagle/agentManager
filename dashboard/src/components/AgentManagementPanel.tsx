@@ -1,5 +1,6 @@
 import { DeepSeekHarnessSettings } from './DeepSeekHarnessSettings';
-import { useHarnessUrl } from '../lib/deepseek-harness';
+import { HarnessModels, HarnessProviderEditor, useHarnessDefaultModel, useHarnessProviders } from './DeepSeekHarnessProviders';
+import { HARNESS_URL_SETTING, harnessModelSelection, type HarnessProvider } from '../lib/deepseek-harness';
 import {ProviderDeleteDialog} from './ProviderDeleteDialog';
 import {AgentModelInformation} from './AgentModelInformation';
 import {ProviderModelsExpansion} from './ProviderModelsExpansion';
@@ -1322,9 +1323,11 @@ interface ProviderRow {
   balanceId?: string;
   provider?: AgentProviderState;
   environment?: CodexEnvironment;
+  harnessProvider?: HarnessProvider;
 }
 
 function rowStatus(row: ProviderRow, provider = row.provider) {
+  if (row.harnessProvider) return row.harnessProvider.models.some(model => model.available) ? '模型可选' : '无可选模型';
   if (!row.state) return '已配置';
   if (!(provider?.enabled ?? row.environment?.enabled)) return '已停用';
   if (provider) return statusLabel[provider.status];
@@ -1359,7 +1362,7 @@ function CodexQuotaSummary({id}:{id:string}) {
   </span>;
 }
 
-function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, onChanged}: {
+function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, onChanged, modelExpansion}: {
   row: ProviderRow;
   readOnly: boolean;
   expanded:boolean;
@@ -1367,6 +1370,7 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
   onOpen: () => void;
   onError: (message: string) => void;
   onChanged:(state:AgentManagementState)=>void;
+  modelExpansion?: React.ReactNode;
 }) {
   const client = useQueryClient();
   const provider = row.provider;
@@ -1412,7 +1416,7 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
   const codexEnvironmentCatalog=agentId==='codex'&&(row.authMode==='account'||row.environment?.kind==='account');
   const quotaId=agentId==='codex'&&row.authMode==='account'?(row.environment?.id??'native'):undefined;
   return <Fragment><tr>
-    <td>{row.state && <TableExpandButton expanded={expanded} label={`Provider ${row.name} 的模型`} onClick={onToggle}/>}</td>
+    <td>{(row.state || row.harnessProvider) && <TableExpandButton expanded={expanded} label={`Provider ${row.name} 的模型`} onClick={onToggle}/>}</td>
     <td><strong title={provider?.name ?? row.name}>{provider?.name ?? row.name}</strong></td>
     <td><span className="agent-provider-agent"><AgentIcon id={agentId}/>{agent.label}</span></td>
     <td>{row.auth}</td>
@@ -1425,14 +1429,14 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
       : !readOnly && enabled && row.balanceId ? <BalanceSummary id={row.balanceId}/> : '—'}</td>
     <td className="agent-provider-actions"><TableActions>
       {provider&&!codexEnvironmentCatalog&&<TableActionButton onClick={()=>detect.mutate()} disabled={readOnly||detect.isPending||save.isPending} aria-label={`探测 ${provider.name} 模型`}><RefreshCw size={12} className={detect.isPending?'animate-spin':undefined}/>探测模型</TableActionButton>}
-      <TableActionButton onClick={onOpen} disabled={save.isPending||detect.isPending} aria-label={`${readOnly ? '查看' : '编辑'} ${provider?.name ?? row.name}${row.state?.agent.label ? ` · ${row.state.agent.label}` : ''}`}>
-        {readOnly ? '查看' : <><Pencil size={12}/>编辑</>}
+      <TableActionButton onClick={onOpen} disabled={save.isPending||detect.isPending} aria-label={`${readOnly || row.harnessProvider?.editable === false ? '查看' : '编辑'} ${provider?.name ?? row.name}${row.state?.agent.label ? ` · ${row.state.agent.label}` : ''}`}>
+        {readOnly || row.harnessProvider?.editable === false ? '查看' : <><Pencil size={12}/>编辑</>}
       </TableActionButton>
     </TableActions></td>
   </tr>
   {expanded&&<TableDetailRow columnCount={providerColumns.length+2}>
-    {codexEnvironmentCatalog?<CodexAccountModelExpansion id={row.environment?.id??'native'} enabled={!!enabled}/>
-      :provider?<ProviderModelsExpansion agentId={agentId} provider={provider} detected={detected} readOnly={readOnly} onChanged={onChanged}/>:null}
+    {modelExpansion ?? (codexEnvironmentCatalog?<CodexAccountModelExpansion id={row.environment?.id??'native'} enabled={!!enabled}/>
+      :provider?<ProviderModelsExpansion agentId={agentId} provider={provider} detected={detected} readOnly={readOnly} onChanged={onChanged}/>:null)}
   </TableDetailRow>}</Fragment>;
 }
 
@@ -1441,8 +1445,12 @@ type ProviderDialog = {type:'add'; agentId:string; kind:'api'|'account'} |
 
 export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
   const client = useQueryClient();
-  const harnessUrl = useHarnessUrl();
+  const { data: settingsData } = useQuery({ queryKey: ['settings'], queryFn: api.settings.get, staleTime: 30_000 });
+  const harnessUrl = settingsData?.settings?.[HARNESS_URL_SETTING] ?? '';
+  const harnessModel = harnessModelSelection(settingsData?.settings);
   const [settingsPage,setSettingsPage] = useState<'providers'|'models'>('providers');
+  const harness = useHarnessProviders(harnessUrl, settingsPage === 'providers');
+  const setHarnessModel = useHarnessDefaultModel(harnessUrl);
   const [expandedProviders,setExpandedProviders] = useState<Set<string>>(()=>new Set());
   const [dialog, setDialog] = useState<ProviderDialog | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -1514,6 +1522,10 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
   if (harnessUrl) rows.push({
     key: harnessAgent.id, state: null, name: harnessAgent.label, connection: harnessUrl, auth: '网页',
   });
+  for (const provider of harness.query.data?.providers ?? []) {
+    rows.push({ key: `harness:${provider.id}`, state: null, name: provider.name, connection: provider.baseUrl,
+      auth: provider.baseUrl ? 'API' : 'Harness', harnessProvider: provider });
+  }
   const table = useTableModel(rows, providerColumns);
   const creatable = allStates.filter(state=>state.providerManagement?.create);
   const confirmDiscard = () => !dirty && !fileDirty || window.confirm('有未保存的修改，确定丢弃吗？');
@@ -1532,6 +1544,7 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
   },[dirty,fileDirty]);
   const refresh = () => {
     void catalog.refetch();
+    if (harnessUrl) void harness.query.refetch();
     if (!readOnly && agents.some(item=>item.agent.id==='codex')) void accounts.refetch();
     states.forEach(query=>{ if (query.data) void query.refetch(); });
     void client.invalidateQueries({queryKey:['agent-provider']});
@@ -1544,7 +1557,8 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
   const editProvider = editRow?.state?.providers.find(provider=>provider.id===editRow.provider?.id);
   const editEnvironment = editRow?.environment;
   const editNativeApi = editProvider?.id==='native' && editRow?.authMode==='api';
-  const title = editRow ? `${readOnly ? '查看' : '编辑'} Provider · ${editRow.name}` : dialog?.type === 'add' && dialog.agentId === harnessAgent.id ? 'DeepSeek Harness 接入' : '新增 Provider';
+  const title = editRow ? `${readOnly || editRow.harnessProvider?.editable === false ? '查看' : '编辑'} Provider · ${editRow.name}`
+    : dialog?.type === 'add' && dialog.agentId === harnessAgent.id && !harnessUrl ? 'DeepSeek Harness 接入' : '新增 Provider';
   const toggleDetails = () => {
     if (dialog?.type !== 'edit' || busy || !confirmDiscard()) return;
     setDirty(false);
@@ -1569,11 +1583,23 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
   </>;
   return <div className="agent-management-page">
     <AgentModelInformation navigation={navigation} active={showModels}/>
+    {harness.frame}
     {!showModels&&<>
     {accounts.isError && !readOnly && <div className="agent-management-error-box" role="alert">
       <CircleAlert size={14}/>读取 Codex 账号 Provider 失败
       <TableActionButton onClick={()=>void accounts.refetch()}>重试</TableActionButton>
     </div>}
+    {harnessUrl && harness.query.isFetching && <p role="status" className="text-xs">正在读取 Harness Provider…</p>}
+    {harness.query.isError && <div className="agent-management-error-box" role="alert">
+      <CircleAlert size={14}/>{harness.query.error.message}
+      <a href={harnessUrl} target="_blank" rel="noreferrer">打开 Harness</a>
+      <TableActionButton onClick={() => void harness.query.refetch()}>重试</TableActionButton>
+    </div>}
+    {harnessModel && <div className="agent-provider-toolbar">
+      <span>Harness 新标签页默认模型 · {harnessModel.provider} / {harnessModel.model}</span>
+      {!readOnly && <TableActionButton onClick={() => setHarnessModel.mutate(null)} disabled={setHarnessModel.isPending}>清除 Harness 默认模型</TableActionButton>}
+    </div>}
+    {setHarnessModel.isError && <div className="agent-management-error-box" role="alert">{setHarnessModel.error.message}</div>}
     {rowError&&<div className="agent-management-error-box" role="alert"><CircleAlert size={14}/>{rowError}</div>}
     <DataTable label="Agent Provider" model={table} actions actionsWidth={168} expandable minWidth={900} className="agent-provider-table"
       loading={catalog.isPending} error={catalog.isError ? catalog.error.message : undefined} onRetry={refresh}
@@ -1581,6 +1607,7 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
       {table.rows.map(row=><ProviderTableRow key={row.key} row={row} readOnly={readOnly} expanded={expandedProviders.has(row.key)}
         onToggle={()=>setExpandedProviders(current=>{const next=new Set(current);if(next.has(row.key))next.delete(row.key);else next.add(row.key);return next;})}
         onChanged={state=>client.setQueryData(['agent-management',state.agent.id],{state})} onError={setRowError}
+        modelExpansion={row.harnessProvider && <HarnessModels provider={row.harnessProvider} selection={harnessModel} readOnly={readOnly} setDefault={setHarnessModel}/>}
         onOpen={()=>setDialog({type:'edit',row,accountDetails:readOnly||row.authMode==='account'||row.environment?.kind==='account'})}/>)}
     </DataTable>
     {dialog && <Dialog appearance="manager" className="agent-provider-dialog" title={title} size="image" width={1160}
@@ -1598,7 +1625,16 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
             if (confirmDiscard()) { setDirty(false); setDialog({...dialog,kind:event.target.value as 'api'|'account'}); }
           }}><option value="api">API Key</option><option value="account">Codex 登录账号</option></select></label>}
         </div>
-        {dialog.agentId===harnessAgent.id ? <DeepSeekHarnessSettings url={harnessUrl} onSaved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
+        {dialog.agentId===harnessAgent.id ? (!harnessUrl
+          ? <DeepSeekHarnessSettings url={harnessUrl} onSaved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
+          : !harness.query.data && harness.query.isFetching ? <p role="status">正在连接 Harness…</p>
+          : harness.query.data?.canCreate ? <HarnessProviderEditor key={harnessUrl} connection={harness} selection={harnessModel}
+              onSaved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
+          : <div className="agent-management-error-box" role="alert">
+              {harness.query.error?.message ?? '当前 Harness 未提供可写的自定义 Provider 配置。'}
+              <a href={harnessUrl} target="_blank" rel="noreferrer">打开 Harness</a>
+              <TableActionButton onClick={() => void harness.query.refetch()}>重试</TableActionButton>
+            </div>)
           : dialog.agentId==='claude' ? <ClaudeProviderEditor readOnly={readOnly} inDialog onSaved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
           : dialog.kind==='account' ? <CodexAccountProviderEditor inDialog onSaved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
           : <AddCodexProvider key={dialog.agentId} agentId={dialog.agentId} readOnly={readOnly} onClose={finish} onEditingChange={setDirty} onBusyChange={setBusy}/>}
@@ -1612,7 +1648,11 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
           : editProvider && <ProviderEditor key={editRow.key} agentId={editRow.state.agent.id} provider={editProvider}
             defaults={editRow.state.defaults ?? []} nativeApi={editNativeApi} apiMode={editRow.authMode==='api'} accountMode={editRow.authMode==='account'} readOnly={readOnly}
             onDirtyChange={setDirty} onFileDirtyChange={setFileDirty} onBusyChange={setBusy} onRemoved={finish}/>}
-      </> : <DeepSeekHarnessSettings url={harnessUrl} readOnly={readOnly} onSaved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>)}
+      </> : editRow.harnessProvider ? (editRow.harnessProvider.editable && !readOnly
+        ? <HarnessProviderEditor key={editRow.key} provider={editRow.harnessProvider} connection={harness}
+            selection={harnessModel} onSaved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
+        : <HarnessModels provider={editRow.harnessProvider} selection={harnessModel} readOnly setDefault={setHarnessModel}/>)
+        : <DeepSeekHarnessSettings url={harnessUrl} readOnly={readOnly} onSaved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>)}
       </div>
     </Dialog>}
     </>}

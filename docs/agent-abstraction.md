@@ -17,6 +17,8 @@ flowchart TB
   Ports --> Remote[后续 Agent：SDK、ACP、HTTP 或 WebSocket]
 ```
 
+DeepSeek Harness 网页标签通过浏览器桥接连接独立的 Harness 实例。Agent Manager 的 Provider 表格复用上游与模型的展示形式，Harness 插件负责读写其原生 Provider、凭据和模型选择，Agent Manager 保存与当前实例绑定的默认 Provider 和模型标识。此能力由网页标签使用，运行在 Harness 的对话由其自身管理。[DeepSeek Harness 网页标签](deepseek-harness-web.md)
+
 ## 功能边界
 
 | 接口 | 责任 | 接入要求 |

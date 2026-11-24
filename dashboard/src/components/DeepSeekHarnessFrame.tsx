@@ -1,23 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
-import { HARNESS_BRIDGE } from '../lib/deepseek-harness';
+import { HARNESS_BRIDGE, type HarnessModelSelection } from '../lib/deepseek-harness';
 import { conversationClientId } from '../lib/conversation-timeline';
 
 type Connection = { phase: 'connecting' | 'ready' | 'failed'; message?: string };
 
-export function DeepSeekHarnessFrame({ url, path }: { url: string; path: string }) {
+export function DeepSeekHarnessFrame({ url, path, model }: { url: string; path: string; model?: HarnessModelSelection }) {
   const [attempt, setAttempt] = useState(0);
   const target = new URL(url);
   if (target.origin === window.location.origin) {
     return <p role="alert" className="p-3 text-sm">Harness 需要独立的浏览器来源，请在 Agent 设置中修改地址。</p>;
   }
-  return <HarnessConnection key={attempt} url={target.href} origin={target.origin} path={path}
+  return <HarnessConnection key={attempt} url={target.href} origin={target.origin} path={path} model={model}
     onRetry={() => setAttempt(value => value + 1)} />;
 }
 
-function HarnessConnection({ url, origin, path, onRetry }: {
-  url: string; origin: string; path: string; onRetry: () => void;
+function HarnessConnection({ url, origin, path, model, onRetry }: {
+  url: string; origin: string; path: string; model?: HarnessModelSelection; onRetry: () => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
+  const [initialModel] = useState(model);
   const [status, setStatus] = useState<Connection>({ phase: 'connecting' });
 
   useEffect(() => {
@@ -38,13 +39,19 @@ function HarnessConnection({ url, origin, path, onRetry }: {
       if (data.type === 'ready' && !requested) {
         requested = true;
         window.clearInterval(ping);
-        send('open', { path });
+        if (initialModel && data.modelSelection !== true) {
+          finish({ phase: 'failed', message: '当前 Harness 插件不支持 Agent Manager 的默认模型，请更新插件后重试。' });
+          return;
+        }
+        send('open', { path, model: initialModel });
       } else if (data.type === 'opened' && requested) {
         finish({ phase: 'ready' });
       } else if (data.type === 'failed' && requested) {
         finish({ phase: 'failed', message: data.error === 'invalid-path'
           ? 'Harness 无法读取项目目录，请检查两端的目录映射和文件权限。'
-          : 'Harness 工作区打开失败，请检查 Harness 实例的会话和访问权限。' });
+          : data.error === 'model'
+            ? 'Harness 无法应用所选模型，请在 Agent 配置检查 Provider 和默认模型。'
+            : 'Harness 工作区打开失败，请检查 Harness 实例的会话和访问权限。' });
       }
     };
     window.addEventListener('message', receive);
@@ -59,7 +66,7 @@ function HarnessConnection({ url, origin, path, onRetry }: {
       window.clearInterval(ping);
       window.clearTimeout(timeout);
     };
-  }, [origin, path]);
+  }, [origin, path, initialModel]);
 
   return <div className="h-full min-h-0 flex flex-col">
     {status.phase !== 'ready' && <div className="flex flex-1 flex-wrap content-center items-center justify-center gap-3 p-3 text-sm">

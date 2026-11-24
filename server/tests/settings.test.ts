@@ -79,6 +79,24 @@ describe('memory cleanup settings API', () => {
     expect((await write('')).json().settings.deepseek_harness_url).toBe('');
   });
 
+  it('stores only the Harness model identity for the current instance and clears it when the address changes', async () => {
+    const url = 'https://harness.example.net/';
+    const model = { url, provider: 'gateway', model: 'deepseek/v4-flash' };
+    const write = (settings: Record<string, unknown>, headers = adminHeaders) => app.inject({
+      method: 'PUT', url: '/api/settings', headers, payload: { settings },
+    });
+    expect((await write({ deepseek_harness_url: url })).statusCode).toBe(200);
+    const saved = await write({ deepseek_harness_model: JSON.stringify({ ...model, apiKey: 'discard-this' }) });
+    expect(saved.statusCode).toBe(200);
+    expect(JSON.parse(saved.json().settings.deepseek_harness_model)).toEqual(model);
+    const member = createUser({ username: 'member', password: 'password2' });
+    expect((await write({ deepseek_harness_model: '' }, { cookie: `agentmanager_session=${createSession(member.id)}` })).statusCode).toBe(403);
+    expect((await write({ deepseek_harness_model: JSON.stringify({ ...model, model: 'invalid model' }) })).statusCode).toBe(400);
+    const switched = await write({ deepseek_harness_url: 'https://another-harness.example.net/' });
+    expect(switched.json().settings.deepseek_harness_model).toBe('');
+    expect((await write({ deepseek_harness_model: JSON.stringify(model) })).statusCode).toBe(400);
+  });
+
   it('persists custom font names and can restore the default without accepting CSS syntax',async()=>{
     for(const family of ['霞鹜文楷','Microsoft YaHei','']){
       const update=await app.inject({method:'PUT',url:'/api/settings',headers:adminHeaders,payload:{settings:{app_font_family:family}}});expect(update.statusCode).toBe(200);expect((await app.inject({url:'/api/settings',headers:adminHeaders})).json().settings.app_font_family).toBe(family);

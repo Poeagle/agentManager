@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { once } from 'node:events';
-import { mkdir, realpath } from 'node:fs/promises';
+import { mkdir, readFile, realpath } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
@@ -63,6 +63,32 @@ async function configure(page: Page, url: string) {
   await page.getByRole('button', { name: '关闭平台管理' }).click();
 }
 
+async function showProviderSettings(page: Page) {
+  await page.getByTitle('My account').click();
+  await page.getByRole('button', { name: 'Agent 配置', exact: true }).click();
+}
+
+async function addHarnessProvider(page: Page, id: string, address: string, models: string) {
+  await page.getByRole('button', { name: '新增 Provider' }).click();
+  await page.getByRole('combobox', { name: 'Agent', exact: true }).selectOption('deepseek-harness');
+  const editor = page.getByRole('dialog', { name: '新增 Provider' });
+  await editor.getByLabel('Provider ID').fill(id);
+  await editor.getByLabel('API 基础地址').fill(address);
+  await editor.getByLabel('API Key').fill('test-only-key');
+  await editor.getByLabel('模型 ID（每行一个）').fill(models);
+  await editor.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(editor).toHaveCount(0);
+  await expect(page.getByRole('table', { name: 'Agent Provider', exact: true }).getByRole('cell', { name: id, exact: true })).toBeVisible();
+}
+
+async function chooseHarnessModel(page: Page, provider: string, model: string) {
+  const table = page.getByRole('table', { name: 'Agent Provider', exact: true });
+  await table.getByRole('button', { name: `Provider ${provider} 的模型` }).click();
+  await page.getByRole('table', { name: `Provider ${provider} 的模型`, exact: true })
+    .getByRole('row').filter({ hasText: model }).getByRole('button', { name: '设为新标签页默认' }).click();
+  await expect(page.getByText(`Harness 新标签页默认模型 · ${provider} / ${model}`, { exact: true })).toBeVisible();
+}
+
 async function openHarness(page: Page, name: string, throughPlus = false) {
   if (throughPlus) {
     await page.getByRole('button', { name, exact: true }).click();
@@ -107,7 +133,7 @@ test('configures Harness and restores its workspace, custom tab name and order',
       res.writeHead(204).end();
       return;
     }
-    res.setHeader('Content-Type', 'text/html');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(`<!doctype html><output aria-label="Project path"></output>
       <script>
       addEventListener('message', event => {
@@ -188,10 +214,128 @@ test('configures Harness and restores its workspace, custom tab name and order',
   }
 });
 
+test('manages multiple upstreams and applies the selected model to newly opened project tabs', async ({ page }) => {
+  await prepareProjects(page);
+  const plugin = await readFile(new URL('../integrations/deepseek-harness/client.js', import.meta.url), 'utf8');
+  const server = createServer((req, res) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(`<!doctype html><output aria-label="Harness current model"></output>
+      <button type="button">完成会话</button>
+      <script>
+      window.__OCTOALLY_HARNESS_PARENT_ORIGINS__ = [${JSON.stringify(new URL(req.headers.referer || 'http://127.0.0.1:' + (process.env.E2E_UI_PORT || '43111')).origin)}];
+      const ok = value => ({ok:true, value});
+      const load = () => JSON.parse(localStorage.getItem('configuration') || '{"providers":{},"revision":0}');
+      const sessions = {};
+      let active;
+      document.querySelector('button').onclick = () => {
+        sessions[active].blank = false;
+        sessionStorage.setItem(active, JSON.stringify(sessions[active]));
+      };
+      const remote = {
+        settings: {
+          describe: async () => {
+            const {providers, revision} = load();
+            return ok({ writable: true, namespaces:[{ns:'llm-pi-ai', revision, user:{providers}, value:{providers}}] });
+          },
+          mutate: async (_ns, ops, revision) => {
+            const current = load();
+            if (revision !== current.revision) return {ok:false, error:{code:'settings/conflict'}};
+            for (const {path:[_providers,id,key], value} of ops) (current.providers[id] ??= {})[key] = value;
+            current.revision++;
+            localStorage.setItem('configuration', JSON.stringify(current));
+            return ok();
+          },
+        },
+        credentials: { set: async (ref, value) => {
+          if (value !== 'test-only-key' || !ref.startsWith('OCTOALLY_')) return {ok:false};
+          return ok();
+        }, unset: async () => ok() },
+        llm: {listConfigurableProviders: async () => ok([])},
+        session: {
+          modelCatalog: async () => ok({groups:Object.entries(load().providers).map(([id, row]) => ({
+            id, name:row.displayName, models:row.models,
+          }))}),
+          selectModel: async ({sessionId,provider,model}) => {
+            if (!load().providers[provider]?.models.some(entry => entry.id === model)) return {ok:false};
+            sessions[sessionId].label = provider + ' / ' + model;
+            sessionStorage.setItem(sessionId, JSON.stringify(sessions[sessionId]));
+            return ok();
+          },
+        },
+      };
+      const workspace = {workspaceId:'workspace',sessionIds:[]};
+      const navigation = {
+        connectWorkspace: async () => {
+          const id = workspace.sessionIds[0];
+          sessions[id] ??= {blank:true, retainedBy:{mainView:1}};
+          return id;
+        },
+        openWorkspace: async id => navigation.openSession(await navigation.connectWorkspace(id)),
+        openSession: id => {
+          active = id;
+          document.querySelector('output').textContent = sessions[id].label || 'Harness 默认';
+        },
+      };
+      const services = {
+        workspaces:{create: async ({path}) => {
+          workspace.workspaceId = path;
+          workspace.sessionIds = ['session:' + path];
+          const [id] = workspace.sessionIds;
+          const saved = sessionStorage.getItem(id);
+          if (saved) sessions[id] = JSON.parse(saved);
+          return workspace;
+        },list:{getSnapshot:() => ({phase:'ready',items:[workspace],archivedSessionIds:[]}),subscribe:() => () => {}}},
+        sessions:{list:{getSnapshot:() => ({phase:'ready',byId:sessions}),subscribe:() => () => {}}},
+        uiWorkspace:navigation, remote,
+      };
+      window.__ModuleLoader__ = {load: ({factory}) => factory().apply({
+        get: key => services[key], effect: action => action(),
+      })};
+      </script><script>${plugin}</script>`);
+  }).listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+    await configure(page, url);
+    await showProviderSettings(page);
+    for (const upstream of ['upstream-a', 'upstream-b']) {
+      await addHarnessProvider(page, upstream, `https://${upstream}.example.test/v1`, 'shared-model\nsecond-model');
+    }
+    await chooseHarnessModel(page, 'upstream-b', 'shared-model');
+    await page.getByRole('button', { name: '编辑 upstream-b', exact: true }).click();
+    const editor = page.getByRole('dialog', { name: '编辑 Provider · upstream-b' });
+    await expect(editor.getByLabel('API Key')).toHaveValue('');
+    await editor.getByLabel('模型 ID（每行一个）').fill('second-model');
+    await expect(editor.getByRole('button', { name: '保存', exact: true })).toBeDisabled();
+    await editor.getByLabel('模型 ID（每行一个）').fill('shared-model\nthird-model');
+    await editor.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(editor).toHaveCount(0);
+    await expect(page.getByRole('cell', { name: 'third-model' })).toBeVisible();
+    expect(JSON.stringify(await (await page.request.get('/api/settings')).json())).not.toContain('test-only-key');
+    await page.getByRole('button', { name: '关闭平台管理' }).click();
+    await openHarness(page, projects[0]);
+    await expect(visibleHarness(page).getByLabel('Harness current model')).toHaveText('upstream-b / shared-model');
+    await visibleHarness(page).getByRole('button', { name: '完成会话' }).click();
+
+    await showProviderSettings(page);
+    await chooseHarnessModel(page, 'upstream-a', 'shared-model');
+    await page.getByRole('button', { name: '关闭平台管理' }).click();
+    await expect(visibleHarness(page).getByLabel('Harness current model')).toHaveText('upstream-b / shared-model');
+    await page.reload();
+    await expect(visibleHarness(page).getByLabel('Harness current model')).toHaveText('upstream-b / shared-model');
+    await page.getByRole('navigation', { name: '项目标签' }).getByRole('button', { name: 'Projects', exact: true }).click();
+    await openHarness(page, projects[1]);
+    await expect(visibleHarness(page).getByLabel('Harness current model')).toHaveText('upstream-a / shared-model');
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await page.request.put('/api/settings', { data: { settings: { deepseek_harness_url: '' } } });
+  }
+});
+
 test('opens both projects through the real Harness Web bridge', async ({ page }) => {
   test.setTimeout(80_000);
   test.skip(!realHarness, 'Requires a separately started, isolated DSH 0.2.2-rc.5 instance with the OctoAlly bridge.');
-  const { readFile } = await import('node:fs/promises');
   const log = await readFile(realHarness!, 'utf8');
   const launch = log.match(/https?:\/\/[^\s]+[?&]token=[A-Za-z0-9_-]+/)?.[0];
   if (!launch) throw new Error('The isolated Harness did not publish a startup URL.');
@@ -202,9 +346,19 @@ test('opens both projects through the real Harness Web bridge', async ({ page })
   const root = url.origin + '/';
   await prepareProjects(page);
   await configure(page, root);
+  const modelId = process.env.E2E_DEEPSEEK_HARNESS_MODEL;
+  const fixtureModel = 'octoally-smoke-model';
+  if (!modelId) {
+    const provider = `gateway-${Date.now()}`;
+    await showProviderSettings(page);
+    await addHarnessProvider(page, provider, 'http://127.0.0.1:1/v1', fixtureModel);
+    await chooseHarnessModel(page, provider, fixtureModel);
+    await page.getByRole('button', { name: '关闭平台管理' }).click();
+  }
   await openHarness(page, projects[0], true);
   const frame = visibleHarness(page);
   await expect(frame.getByRole('button', { name: /Choose workspace|选择工作区/ }).filter({ hasText: projects[0] })).toBeVisible();
+  if (!modelId) await expect(frame.getByRole('button', { name: /^(Select model|选择模型)/ })).toContainText(fixtureModel);
 
   const tabs = page.getByRole('navigation', { name: '项目标签' });
   await tabs.getByRole('button', { name: 'Projects', exact: true }).click();
@@ -215,7 +369,6 @@ test('opens both projects through the real Harness Web bridge', async ({ page })
   await page.reload();
   await expect(visibleHarness(page).getByRole('button', { name: /Choose workspace|选择工作区/ }).filter({ hasText: projects[0] })).toBeVisible();
 
-  const modelId = process.env.E2E_DEEPSEEK_HARNESS_MODEL;
   if (modelId) {
     const restoredFrame = visibleHarness(page);
     const notice = restoredFrame.getByRole('dialog', { name: /Preview Notice|预览/ });

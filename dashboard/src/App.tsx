@@ -1,4 +1,4 @@
-import { HARNESS_URL_SETTING } from './lib/deepseek-harness';
+import { HARNESS_URL_SETTING, harnessModelSelection } from './lib/deepseek-harness';
 import {agentSupports} from './lib/agents';
 import { lazy, Suspense, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -692,6 +692,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                       focusSessionId={isActive ? focusSessionId : null}
                       onFocusSessionHandled={handleFocusSessionHandled}
                       configuredHarnessUrl={appSettings?.settings?.[HARNESS_URL_SETTING]}
+                      configuredHarnessModel={harnessModelSelection(appSettings?.settings)}
                       focusHarness={isActive && focusHarnessProjectId === tab.projectId}
                       onFocusHarnessHandled={clearHarnessFocus}
                     />

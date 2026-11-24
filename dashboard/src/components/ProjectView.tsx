@@ -10,6 +10,7 @@ import { FileExplorer, type FileRefreshRequest } from './FileExplorer';
 import { droppedFiles, isFileDrag, type FileUploadRequest } from '../lib/file-upload';
 import { GitPanel } from './GitPanel';
 import { DeepSeekHarnessFrame } from './DeepSeekHarnessFrame';
+import type { HarnessModelSelection } from '../lib/deepseek-harness';
 import { ProjectSessionCreateDialog } from './ProjectSessionCreateDialog';
 import { projectOpenModes } from './project-open-modes';
 import { api, type Session } from '../lib/api';
@@ -43,6 +44,7 @@ interface ProjectViewProps {
   focusSessionId?: string | null;
   onFocusSessionHandled?: () => void;
   configuredHarnessUrl?: string;
+  configuredHarnessModel?: HarnessModelSelection;
   focusHarness?: boolean;
   onFocusHarnessHandled?: () => void;
   conversationTarget?:{sessionId:string;focus:ConversationFocus}|null;
@@ -157,7 +159,7 @@ const sidebarButtons = [
 // handlers), so the shallow compare holds.
 export const ProjectView = memo(ProjectViewImpl);
 
-function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled, configuredHarnessUrl = '', focusHarness, onFocusHarnessHandled, conversationTarget,notificationUnread }: ProjectViewProps) {
+function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled, configuredHarnessUrl = '', configuredHarnessModel, focusHarness, onFocusHarnessHandled, conversationTarget,notificationUnread }: ProjectViewProps) {
   const queryClient = useQueryClient();
   const sessionResume = useSessionResume(projectId);
   const [terminalConnectionVersions, setTerminalConnectionVersions] = useState<Record<string, number>>({});
@@ -1754,7 +1756,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
 
           {harnessOpen && <div className="absolute inset-0" hidden={activeMode !== 'harness'}>
             {harnessUrl && project
-              ? <DeepSeekHarnessFrame key={harnessUrl + project.path} url={harnessUrl} path={project.path} />
+              ? <DeepSeekHarnessFrame key={harnessUrl + project.path} url={harnessUrl} path={project.path} model={configuredHarnessModel} />
               : <p role="status" className="p-3 text-sm">DeepSeek Harness 接入或项目访问当前不可用。</p>}
           </div>}
 
