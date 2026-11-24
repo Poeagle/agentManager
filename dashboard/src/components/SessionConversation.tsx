@@ -403,12 +403,34 @@ const Bubble = memo(function Bubble({
         active={active}
       />
     );
-  if (message.role === 'user' && message.input_source)
-    return <article className="session-chat-sourced" data-chat-message-id={message.id}>
-      <ConversationDialogCard active={active} title={`${message.input_source.kind === 'scheduled' ? '定时任务' : '平台消息'} · ${message.input_source.label}`} summary={<><CalendarClock size={14}/><span>{message.input_source.kind === 'scheduled' ? '定时任务' : '平台消息'}</span><strong>{message.input_source.label}</strong>{message.queued&&<span>已排队</span>}<span className="conversation-question-expand">查看详情</span></>}>
-        <div className="session-chat-sourced-content"><ConversationMessageAttachments text={parsed.text} items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>{metadata}</div>
-      </ConversationDialogCard>
-    </article>;
+  if (message.role === 'user' && message.input_source) {
+    const scheduled = message.input_source.kind === 'scheduled';
+    const sourceLabel = scheduled ? '定时任务' : '平台消息';
+    return (
+      <article className="session-chat-sourced" data-chat-message-id={message.id}>
+        <ConversationDialogCard
+          active={active}
+          title={`${sourceLabel} · ${message.input_source.label}`}
+          summary={
+            <>
+              <CalendarClock size={14} />
+              <span>{sourceLabel}</span>
+              <strong>{message.input_source.label}</strong>
+              {scheduled && message.timestamp && Number.isFinite(Date.parse(message.timestamp)) && (
+                <time dateTime={message.timestamp} title="发送时间">
+                  {formatConversationTimestamp(message.timestamp)}
+                </time>
+              )}
+              {message.queued && <span>已排队</span>}
+              <span className="conversation-question-expand">查看详情</span>
+            </>
+          }
+        >
+          <div className="session-chat-sourced-content"><ConversationMessageAttachments text={parsed.text} items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>{metadata}</div>
+        </ConversationDialogCard>
+      </article>
+    );
+  }
   if (automatic)
     return (
       <ConversationAutomaticContext

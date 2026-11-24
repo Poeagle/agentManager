@@ -57,6 +57,20 @@ function readConversationDom(agentLabel:string){
     finalText:screen.getByText('The project is ready.').textContent,
   };
 }
+it.each(['claude','codex'] as const)('shows the recorded send time on a live %s scheduled task card',async agent=>{
+  const timestamp='2026-11-23T16:18:45Z';
+  const source={kind:'scheduled',label:'UI审查'} as const;
+  await renderSnapshot({
+    ...session,cli_type:agent,claude_session_id:agent==='claude'?'native':null,codex_session_id:agent==='codex'?'native':null,
+  },[
+    {id:'scheduled-with-time',role:'user',text:'执行界面审查',timestamp,input_source:source},
+    {id:'scheduled-without-time',role:'user',text:'执行历史界面审查',timestamp:null,input_source:{...source,label:'旧版UI审查'}},
+  ]);
+  const card=await screen.findByRole('button',{name:/定时任务\s*UI审查/});
+  expect(card.querySelector('time')).toHaveAttribute('datetime',timestamp);
+  expect(card.querySelector('time')).toBeVisible();
+  expect(screen.getByRole('button',{name:/定时任务\s*旧版UI审查/}).querySelector('time')).toBeNull();
+});
 it.each(['claude','codex'] as const)('leaves live Progress when %s publishes a settled Final',async agent=>{
   const descriptor=sessionAgent({cli_type:agent});
   const bound={...session,cli_type:agent,agent: {...descriptor,capabilities:{...descriptor.capabilities,stopTurn:true}},

@@ -302,6 +302,7 @@
 .session-chat-sourced {margin:12px 0;min-width:0;}
 .session-chat-sourced .conversation-card-trigger > svg {flex-shrink:0;color:var(--accent);}
 .session-chat-sourced .conversation-card-trigger strong {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-primary);font-weight:500;}
+.session-chat-sourced .conversation-card-trigger time {flex-shrink:0;white-space:nowrap;font-size:11px;color:var(--text-secondary);}
 .session-chat-sourced-content {white-space:pre-wrap;overflow-wrap:anywhere;}
 .session-chat-question-summary summary>svg {flex-shrink:0;color:var(--accent);}
 .conversation-question-state {flex-shrink:0;color:var(--text-muted);font-size:11px;}
