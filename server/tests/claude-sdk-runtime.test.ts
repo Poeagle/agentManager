@@ -583,6 +583,10 @@ describe('Claude Agent SDK runtime',()=>{
     const runtime = ensureClaudeRuntime(session, '/tmp');
     expect(await runtime.submit('Start work', 'current')).toBe(true);
     expect(await runtime.submit('Scheduled follow-up', 'scheduled', [], undefined, true)).toBe('queued');
+    await expect(runtime.submit('Second follow-up', 'duplicate', [], undefined, true))
+      .rejects.toMatchObject({submission:'rejected',message:'目标标签页已有排队消息，跳过本次发送'});
+    expect(runtime.snapshot().messages.filter(message => message.queued).map(message => message.client_id))
+      .toEqual(['scheduled']);
     expect(runtime.snapshot().messages.find(message => message.client_id === 'scheduled')).toMatchObject({queued:true});
     expect(sdk.queries).toHaveLength(1);
     expect(sdk.interrupts).toBe(0);
@@ -595,6 +599,8 @@ describe('Claude Agent SDK runtime',()=>{
     expect(next.value).toMatchObject({session_id:session,message:{content:'Scheduled follow-up'}});
     await vi.waitFor(() => expect(runtime.runtime().state).toBe('idle'));
     expect(sdk.interrupts).toBe(0);
+    expect(await runtime.submit('Next scheduled follow-up', 'next', [], undefined, true)).toBe(true);
+    await vi.waitFor(() => expect(runtime.runtime().state).toBe('idle'));
   });
   it('removes only a matching queued Claude message',async()=>{
     let release!:(value:any)=>void;sdk.messages=[new Promise(done=>{release=done;})];

@@ -1,5 +1,5 @@
 import {rememberCodexTitle} from './thread-title.js';
-import {AgentSubmissionError,submissionFailure} from '../submission.js';
+import {AgentQueueOccupiedError,AgentSubmissionError,submissionFailure} from '../submission.js';
 import {rememberCodexSettings} from './settings-state.js';
 import {currentCodexEngine,rememberCodexThread} from './engine-context.js';
 import {readCodexBaseline,markOversizedBaseline} from './baseline.js';
@@ -190,6 +190,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
     const queue=async()=>{
       const existing=await readCodexQueue(request,threadId);
       if(existing.data?.some((entry:any)=>entry.clientUserMessageId===identity))return 'queued' as const;
+      if(afterCurrentTurn && existing.data.length > 0)throw new AgentQueueOccupiedError();
       if(existing.data.length >= 100)throw new AgentSubmissionError('目标会话队列已满，本次消息未发送','rejected');
       confirmTarget?.();
       ownCodexQueuedInput(threadId,identity);

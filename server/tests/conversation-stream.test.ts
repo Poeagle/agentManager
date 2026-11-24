@@ -117,6 +117,18 @@ describe('native Codex conversation streaming',()=>{
     expect(requests).not.toContain('turn/interrupt');
     expect(requests).not.toContain('turn/start');
   });
+  it('skips a scheduled follow-up while the native queue is occupied and accepts one after it clears', async () => {
+    active = true;
+    queueEntries = [{id:'existing',clientUserMessageId:'other-client',input:[{type:'text',text:'Already waiting'}]}];
+    const submit = () => submitStreamingCodexInput('thread','Run the scheduled check','next-schedule',[],undefined,true);
+    await expect(submit()).rejects.toMatchObject({submission:'rejected',message:'目标标签页已有排队消息，跳过本次发送'});
+    expect(queueEntries).toHaveLength(1);
+    expect(queueEntries[0].clientUserMessageId).toBe('other-client');
+    expect(requests).not.toContain('thread/queue/add');
+    queueEntries = [];
+    await expect(submit()).resolves.toBe('queued');
+    expect(queueEntries).toMatchObject([{clientUserMessageId:'next-schedule'}]);
+  });
   it('uses the existing live turn receipt to insert without reading any history',async()=>{
     stop=observeCodexConversation('thread',frame=>frames.push(frame));await vi.waitFor(()=>expect(frames.some(frame=>frame.type==='snapshot')).toBe(true));
     send('turn/started',{threadId:'thread',turn:{id:'running-now',status:'inProgress'}});await vi.waitFor(()=>expect(frames.at(-1)).toMatchObject({busy:true,turn_id:'running-now'}));

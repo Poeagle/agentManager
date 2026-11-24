@@ -15,7 +15,7 @@ import {decorateConversationAttachments} from './conversation-attachments.js';
 import {readConversation} from './conversation-reader.js';
 import {prepareBriefSend} from '../shared/conversation-brief.js';
 import {readAgentRuntime,sessionAgentContext} from './agents/session.js';
-import {AgentSubmissionError} from './agents/submission.js';
+import {AgentQueueOccupiedError,AgentSubmissionError} from './agents/submission.js';
 import {withTerminalInput} from './agents/terminal-input.js';
 import {nativeConversationId} from './session-identity.js';
 
@@ -558,7 +558,8 @@ export async function runScheduledTask(
       })();
       return {runId,status:'unknown',sessionId:task.target_session_id,error:message};
     }
-    if (error instanceof ExecutionWindowClosedError || error instanceof StartConditionsNotMetError || error instanceof ScheduledTargetBusyError) {
+    if (error instanceof ExecutionWindowClosedError || error instanceof StartConditionsNotMetError
+      || error instanceof ScheduledTargetBusyError || error instanceof AgentQueueOccupiedError) {
       getDb().prepare(`
         UPDATE scheduled_task_runs SET status = 'skipped', error = ?, completed_at = datetime('now') WHERE id = ?
       `).run(message, runId);

@@ -47,6 +47,7 @@ const BUSY_SKIP_MESSAGES = new Set([
   '目标标签页正在执行或等待交互，跳过本次发送',
   '目标标签页正在接收另一个定时任务，跳过本次发送',
   '目标标签页已有未完成的工作或正在忙碌，跳过本次发送',
+  '目标标签页已有排队消息，跳过本次发送',
 ]);
 
 const RUN_STATUS_LABEL: Record<ScheduledTaskRun['status'], string> = {

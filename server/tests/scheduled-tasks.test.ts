@@ -32,6 +32,7 @@ import { getDb } from '../src/db/index.js';
 import { scheduledTaskRoutes } from '../src/routes/scheduled-tasks.js';
 import { tickScheduledTasks } from '../src/services/scheduled-task-runner.js';
 import {getAgent} from '../src/services/agents/index.js';
+import {AgentQueueOccupiedError} from '../src/services/agents/submission.js';
 import { createTestDatabase } from './helpers/database.js';
 import {parseBriefContext} from '../src/shared/conversation-brief.js';
 import {rememberInputSource} from '../src/services/conversation-input-links.js';
@@ -191,6 +192,26 @@ describe('scheduled task API', () => {
       .toEqual({kind:'scheduled',label:'忙时巡检',client_id:submit.mock.calls[0][2]});
     const runs=await app.inject({method:'GET',url:`/api/scheduled-tasks/${id}/runs`,headers:{cookie}});
     expect(runs.json().runs).toMatchObject([{status:'queued',session_id:session.id}]);
+
+    submit.mockRejectedValue(new AgentQueueOccupiedError());
+    const skipped = await app.inject({method:'POST',url:`/api/scheduled-tasks/${id}/run`,headers:{cookie}});
+    expect(skipped.statusCode).toBe(409);
+    expect(skipped.json().run).toMatchObject({status:'skipped',error:'目标标签页已有排队消息，跳过本次发送'});
+    const now = Date.now();
+    getDb().prepare('UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ?').run(new Date(now).toISOString(), id);
+    await tickScheduledTasks(now);
+    const storedRuns = () => getDb().prepare('SELECT trigger,status FROM scheduled_task_runs WHERE task_id=? ORDER BY rowid').all(id);
+    await vi.waitFor(() => expect(storedRuns()).toEqual([
+      {trigger:'manual',status:'queued'},
+      {trigger:'manual',status:'skipped'},
+      {trigger:'scheduled',status:'skipped'},
+    ]));
+    expect(getDb().prepare('SELECT client_id FROM conversation_input_sources WHERE session_id=?').all(session.id))
+      .toEqual([{client_id:submit.mock.calls[0][2]}]);
+    expect(getDb().prepare('SELECT successful_runs, consecutive_failures FROM scheduled_tasks WHERE id=?').get(id))
+      .toEqual({successful_runs:1,consecutive_failures:0});
+    expect(readHistory).not.toHaveBeenCalled();
+    expect(manager.writeToSession).not.toHaveBeenCalled();
   });
   it('tracks scheduled input in a terminal tab already bound to an Agent',async()=>{
     const native='019ff001-1111-7111-8111-111111111111';

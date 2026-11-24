@@ -3,6 +3,11 @@
 export class AgentSubmissionError extends Error {
   constructor(message:string,readonly submission:'rejected'|'unknown'){super(message);}
 }
+export class AgentQueueOccupiedError extends AgentSubmissionError {
+  constructor() {
+    super('目标标签页已有排队消息，跳过本次发送', 'rejected');
+  }
+}
 export function submissionFailure(error:unknown,dispatched:boolean):Error {
  if(error instanceof Error&&['rejected','unknown'].includes((error as Error&{submission?:string}).submission||''))return error;
  return new AgentSubmissionError(dispatched?'暂未确认消息是否提交，请等待接收状态恢复后再操作':'消息尚未发送：原生连接准备失败，请重试',dispatched?'unknown':'rejected');

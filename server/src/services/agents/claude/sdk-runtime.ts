@@ -8,7 +8,7 @@ import {
 import { readFile } from "fs/promises";
 import { extname } from "path";
 import { randomUUID } from "crypto";
-import { AgentSubmissionError } from "../submission.js";
+import { AgentQueueOccupiedError } from "../submission.js";
 import { conversationMessageId } from "../../conversation-reader.js";
 import {
   formatConversationInput,
@@ -353,6 +353,7 @@ class ClaudeRuntime {
     userId?: string,
     afterCurrentTurn = false,
   ): Promise<boolean | "queued"> {
+    if (afterCurrentTurn && this.hasQueuedFollowUp()) throw new AgentQueueOccupiedError();
     const uuid = clientId &&
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId)
       ? clientId
@@ -412,9 +413,6 @@ class ClaudeRuntime {
       return true;
     }
     if (this.busy || this.running) {
-      if (afterCurrentTurn && this.pending.length >= 100) {
-        throw new AgentSubmissionError('目标会话队列已满，本次消息未发送', 'rejected');
-      }
       this.pending.push(pending);
       this.upsert({
         id: conversationMessageId("", "user", pending.userId),

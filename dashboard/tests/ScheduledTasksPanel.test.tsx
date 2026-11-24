@@ -123,8 +123,10 @@ describe('ScheduledTasksPanel', () => {
     await waitFor(() => expect(api.scheduledTasks.run).toHaveBeenCalledWith('schedule-1'));
   });
 
-  it('keeps a busy skip in the run history without showing a warning for manual execution', async () => {
-    const reason = '目标标签页正在执行或等待交互，跳过本次发送';
+  it.each([
+    '目标标签页正在执行或等待交互，跳过本次发送',
+    '目标标签页已有排队消息，跳过本次发送',
+  ])('keeps a manual skip in run history without showing a warning (%s)', async (reason) => {
     vi.mocked(api.scheduledTasks.run).mockRejectedValueOnce(new ApiError(reason, 409));
     vi.mocked(api.scheduledTasks.runs).mockResolvedValue({ runs: [{
       id: 'busy-skip', task_id: task.id, trigger: 'manual', scheduled_for: task.next_run_at!, status: 'skipped',

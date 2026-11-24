@@ -112,7 +112,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.34.0',
+    version:'3.35.0',
     updatedAt:'2026-11-23',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -543,8 +543,9 @@ export function getAgentApiContract() {
         category: 'Scheduled tasks',
         method: 'POST',
         path: '/api/scheduled-tasks/:id/run',
-        description: 'Run an owned scheduled task and return its dispatch result. An idle Agent conversation with history receives brief context in a fresh conversation in the same tab; its previous conversation stays in project history. A busy Agent with queue support receives a follow-up in the same native conversation after its current turn. Configured execution conditions still apply.',
+        description: 'Run an owned scheduled task and return its dispatch result. An idle Agent conversation with history receives brief context in a fresh conversation in the same tab; its previous conversation stays in project history. A busy Agent with an empty follow-up queue receives a follow-up in the same native conversation after its current turn. An occupied queue skips the run. Configured execution conditions still apply.',
         response: { run: '{runId, status, sessionId, error?}. HTTP 200 for success or queued, 409 for rejected, skipped or stopped, 503 for unknown acceptance.' },
+        errors: { '409': 'Example for an occupied queue: run.status is skipped and run.error is 目标标签页已有排队消息，跳过本次发送.' },
       },
       {
         category: 'Scheduled tasks', method: 'GET', path: '/api/scheduled-tasks/codex-models?project_id=:projectId&environment_id=:environmentId',

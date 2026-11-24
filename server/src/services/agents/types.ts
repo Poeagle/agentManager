@@ -695,6 +695,7 @@ export interface AgentInputPort {
   /** When supported, map a platform client ID to the durable native message ID. */
   messageId?(clientId: string): string | undefined;
   cancelQueued?(context: AgentContext, clientId: string): Promise<void>;
+  /** afterCurrentTurn uses an empty follow-up queue or rejects with AgentQueueOccupiedError. */
   submit(
     context: AgentContext,
     text: string,
