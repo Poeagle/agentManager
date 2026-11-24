@@ -13,6 +13,7 @@ afterEach(async()=>{
  await stopAccountStatus();
  fixture.cleanup();
  vi.restoreAllMocks();
+ vi.unstubAllEnvs();
  vi.useRealTimers();
 });
 it('keeps all cache reads inert, and sanitizes a shared quota/reset snapshot after one background collection',async()=>{
@@ -38,19 +39,39 @@ it('records bounded weekly samples without persisting unrelated account fields',
  await collectAccountStatus('native');vi.advanceTimersByTime(300000);await collectAccountStatus('native');
  const samples=getDb().prepare('SELECT * FROM codex_quota_samples').all();expect(samples).toHaveLength(2);expect(JSON.stringify(samples)).not.toContain('never-cache');
 });
-it('exposes observed usage on the matching project and model after both collectors finish',async()=>{
- const {initAccountUsage,cachedAccountUsage}=await import('../src/services/agents/codex/account-usage.js');initAccountUsage();
+it('allocates the observed quota by each model’s displayed USD amount after both collectors finish',async()=>{
+ const {initAccountUsage,cachedAccountUsage,cachedGroupUsage}=await import('../src/services/agents/codex/account-usage.js');initAccountUsage();
+ const {initModelPricing,pricingSources,refreshModelPricing}=await import('../src/services/agents/model-pricing.js');
+ vi.stubEnv('TZ','UTC');
  vi.useFakeTimers();vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+ initModelPricing();
+ const prices=`### Standard pricing data
+| gpt-6.1-sol | $2 | $10 | $0.10 |
+| gpt-6-luna | $0.10 | $0.50 | $0.01 |
+
+### Fast pricing data
+| gpt-6-luna | $0.20 | $1.00 | $0.02 |`;
+ await refreshModelPricing(async url=>String(url)===pricingSources.openai?new Response(prices):new Response(null,{status:404}));
  let used=10;read.mockImplementation(async(method:string)=>method==='account/read'?{account:{type:'chatgpt',email:'fixture@example.invalid'}}:{rateLimits:{secondary:{usedPercent:used,windowDurationMins:10080,resetsAt:Date.parse('2026-01-08T00:00:00Z')/1000}}});
  await collectAccountStatus('native');vi.advanceTimersByTime(300000);used=12;await collectAccountStatus('native');
  const db=getDb(),tokens=JSON.stringify({input_tokens:100,cached_input_tokens:0,output_tokens:0,reasoning_output_tokens:0,total_tokens:100,requests:1});
  db.prepare('INSERT INTO codex_usage_events VALUES(?,?,?,?,?,?,?)').run('native','aggregate','2026-01-01','/project','gpt-6.1-sol',null,tokens);
  db.prepare('INSERT INTO codex_usage_dedup_events(account,event_key,day,cwd,model,tier,tokens,hour,at) VALUES(?,?,?,?,?,?,?,?,?)').run('native','event','2026-01-01','/project','gpt-6.1-sol',null,tokens,'2026-01-01T00:00:00+00:00','2026-01-01T00:02:00+00:00');
+ db.prepare('INSERT INTO codex_usage_events VALUES(?,?,?,?,?,?,?)').run('native','aggregate-fast','2026-01-01','/project','gpt-6-luna','priority',tokens);
+ db.prepare('INSERT INTO codex_usage_dedup_events(account,event_key,day,cwd,model,tier,tokens,hour,at) VALUES(?,?,?,?,?,?,?,?,?)').run('native','event-fast','2026-01-01','/project','gpt-6-luna','priority',tokens,'2026-01-01T00:00:00+00:00','2026-01-01T00:03:00+00:00');
  db.prepare('INSERT INTO codex_usage_status VALUES(?,?,?,?)').run('native','2026-01-01T00:06:00.000Z',null,0);
  db.prepare('INSERT INTO codex_usage_scan_boundary VALUES(?,?)').run('native','2026-01-01T00:06:00.000Z');
  db.prepare('INSERT INTO codex_usage_snapshots VALUES(?,1)').run('native');db.prepare('INSERT INTO codex_usage_dedup_status(account,ready) VALUES(?,1)').run('native');
- const accountUsage=cachedAccountUsage('native');expect(accountUsage.rows[0].models[0].actual_quota).toBeCloseTo(2);expect(accountUsage.quota_hours).toEqual([{hour:'2026-01-01T00:00:00+00:00',quota:2}]);
- db.prepare('UPDATE codex_usage_status SET partial=1,error=? WHERE account=?').run('部分记录不可读取或缺少统计字段','native');const partial=cachedAccountUsage('native');expect(partial.partial).toBe(true);expect(partial.rows[0].models[0].actual_quota).toBeCloseTo(2);
+ const accountUsage=cachedAccountUsage('native');
+ expect(accountUsage.quota_hours).toEqual([{hour:'2026-01-01T00:00:00+00:00',quota:2}]);
+ for(const usage of [accountUsage,cachedGroupUsage(['native'],'hour',true)]){
+  const models=usage.rows[0].models;
+  expect(models.find(model=>model.model==='gpt-6.1-sol')?.actual_quota).toBeCloseTo(20/11,10);
+  expect(models.find(model=>model.model==='gpt-6-luna')?.actual_quota).toBeCloseTo(2/11,10);
+ }
+ db.prepare('UPDATE codex_usage_status SET partial=1,error=? WHERE account=?').run('部分记录不可读取或缺少统计字段','native');
+ const partial=cachedAccountUsage('native');expect(partial.partial).toBe(true);
+ expect(partial.rows[0].models.find(model=>model.model==='gpt-6.1-sol')?.actual_quota).toBeCloseTo(20/11,10);
 });
 
 it('uses the most constrained live window and chooses an enabled, distinct account without fetching quota',async()=>{

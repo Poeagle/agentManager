@@ -166,6 +166,25 @@ it.each([
  expect(within(row).getAllByRole('cell')).toHaveLength(11);expect(within(row).getAllByRole('cell')[9].textContent).toBe(expected);
  expect(screen.queryByRole('columnheader',{name:'耗用额度',exact:true})).toBeNull();expect(screen.queryByRole('columnheader',{name:'预估积分',exact:true})).toBeNull();
 });
+it('partitions quota by displayed dollars and shows one common price per point despite rounding',async()=>{
+ const models=[
+  {model:'first',estimated_usd:1,estimated_credits:90,tokens:{total_tokens:10}},
+  {model:'second',estimated_usd:1,estimated_credits:10,tokens:{total_tokens:10}},
+  {model:'third',estimated_usd:1,estimated_credits:0,tokens:{total_tokens:10}},
+ ];
+ vi.mocked(fetchJSON).mockImplementation(async <T,>(path:string)=>(path.endsWith('insights')?{usage:{
+  initialized:true,partial:false,timezone:'UTC',quota_hours:[{hour:'2026-11-16T01:00:00Z',quota:0.0004}],
+  rows:[{date:'2026-11-16',cwd:'/allocation',tokens:{},models}],
+ }}:{account:{},resets:null}) as T);
+ render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><CodexAccountInsights id="allocation" name="Allocation" onClose={()=>{}}/></QueryClientProvider>);
+ await screen.findByText('/allocation');
+ fireEvent.click(screen.getByRole('button',{name:'展开 allocation 模型'}));
+ const amount=(label:string)=>within(screen.getByText(label,{exact:true}).closest('tr')!).getAllByRole('cell')[9].textContent;
+ expect(amount('/allocation')).toBe('3.00 | 0.0004 (7,500)');
+ expect(amount('first')).toBe('1.00 | 0.0002 (7,500)');
+ expect(amount('second')).toBe('1.00 | 0.0001 (7,500)');
+ expect(amount('third')).toBe('1.00 | 0.0001 (7,500)');
+});
 it('computes the ratio from aggregate amounts and preserves partial pricing coverage',async()=>{
  const metric=(model:string,quota:number,covered:number)=>({model,tokens:{input_tokens:10,output_tokens:0,total_tokens:10},estimated_usd:1000,actual_quota:quota,usd_coverage:{covered,total:2}});
  vi.mocked(fetchJSON).mockImplementation(async <T,>(path:string)=>(path.endsWith('insights')?{usage:{initialized:true,partial:true,timezone:'UTC',rows:[{date:'2026-11-16',cwd:'/aggregate',tokens:{},models:[metric('partial',20,1),metric('complete',10,2)]}]}}:{account:{},resets:null}) as T);

@@ -2,7 +2,7 @@ import {usageDateRange,usageRangeLabel,type UsageDateRange} from './usage-date-r
 import type {ConversationCostEstimate} from '../lib/api';
 type Breakdown=NonNullable<ConversationCostEstimate['breakdown']>;
 export type ApiCost={amount:number|null;coverage:{covered:number;total:number};breakdown?:Breakdown};
-export type Metrics={tokens:Record<string,number|null>;estimated_credits?:number|null;estimated_usd?:number|null;usd_coverage?:{covered:number;total:number}|null;usd_breakdown?:Breakdown;actual_quota?:number|null;credit_coverage?:{covered:number;total:number}|null;cost_breakdown?:Breakdown;api_cost?:ApiCost};
+export type Metrics={tokens:Record<string,number|null>;estimated_credits?:number|null;estimated_usd?:number|null;usd_coverage?:{covered:number;total:number}|null;usd_breakdown?:Breakdown;actual_quota?:number|null;usd_per_quota_point?:number;credit_coverage?:{covered:number;total:number}|null;cost_breakdown?:Breakdown;api_cost?:ApiCost};
 export type ModelUsage=Metrics&{model:string|null};
 export type UsageRow=Metrics&{date:string;hour?:string|null;cwd:string;project_name?:string;models?:ModelUsage[]};
 export type Dimension='hour'|'day'|'week'|'month'|'total'|'project'|'model';
@@ -25,6 +25,9 @@ export function aggregateMetrics(rows:Metrics[]):Metrics{
  const known=rows.filter(r=>r.estimated_credits!=null);
  const cost_breakdown=aggregateBreakdown(known,r=>r.cost_breakdown);
  const usdRows=rows.filter(r=>r.estimated_usd!=null);
+ const positiveUsdRows=usdRows.filter(r=>r.estimated_usd!>0);
+ const rate=positiveUsdRows[0]?.usd_per_quota_point;
+ const commonRate=rate!==undefined&&positiveUsdRows.every(r=>r.usd_per_quota_point===rate);
  const usd_breakdown=aggregateBreakdown(usdRows,r=>r.usd_breakdown);
  const api_cost=rows.reduce<ApiCost|undefined>((cost,row)=>{
   if(!row.api_cost)return cost;
@@ -36,7 +39,7 @@ export function aggregateMetrics(rows:Metrics[]):Metrics{
   return cost;
  },undefined);
  if(api_cost)api_cost.breakdown=aggregateBreakdown(rows.filter(r=>r.api_cost?.amount!=null),r=>r.api_cost?.breakdown);
- return {tokens,actual_quota:rows.some(r=>r.actual_quota!=null)?rows.reduce((n,r)=>n+(r.actual_quota??0),0):null,estimated_credits:known.length?known.reduce((n,r)=>n+r.estimated_credits!,0):null,credit_coverage:{covered:rows.reduce((n,r)=>n+(r.credit_coverage?.covered??(r.estimated_credits!=null?1:0)),0),total:rows.reduce((n,r)=>n+(r.credit_coverage?.total??1),0)},estimated_usd:usdRows.length?usdRows.reduce((n,r)=>n+r.estimated_usd!,0):null,usd_coverage:{covered:rows.reduce((n,r)=>n+(r.usd_coverage?.covered??(r.estimated_usd!=null?1:0)),0),total:rows.reduce((n,r)=>n+(r.usd_coverage?.total??1),0)},...usd_breakdown?{usd_breakdown}:{},...cost_breakdown?{cost_breakdown}:{},...api_cost?{api_cost}:{}};
+ return {tokens,actual_quota:rows.some(r=>r.actual_quota!=null)?rows.reduce((n,r)=>n+(r.actual_quota??0),0):null,...commonRate?{usd_per_quota_point:rate}:{},estimated_credits:known.length?known.reduce((n,r)=>n+r.estimated_credits!,0):null,credit_coverage:{covered:rows.reduce((n,r)=>n+(r.credit_coverage?.covered??(r.estimated_credits!=null?1:0)),0),total:rows.reduce((n,r)=>n+(r.credit_coverage?.total??1),0)},estimated_usd:usdRows.length?usdRows.reduce((n,r)=>n+r.estimated_usd!,0):null,usd_coverage:{covered:rows.reduce((n,r)=>n+(r.usd_coverage?.covered??(r.estimated_usd!=null?1:0)),0),total:rows.reduce((n,r)=>n+(r.usd_coverage?.total??1),0)},...usd_breakdown?{usd_breakdown}:{},...cost_breakdown?{cost_breakdown}:{},...api_cost?{api_cost}:{}};
 }
 /** Keep counters and denominators consistent with the records visible in the UI. */
 export function estimatableUsageRows(rows:UsageRow[]):UsageRow[]{

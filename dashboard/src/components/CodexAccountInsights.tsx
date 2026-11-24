@@ -18,14 +18,14 @@ const quotaNumber=(n:number|null)=>n===null?'':n.toLocaleString(undefined,{maxim
 const time=(value:number|null)=>value===null?'未提供':new Date(value*1000).toLocaleString();
 const sum=(rows:Metrics[],field:string):number|null=>!rows.length||rows.some(r=>r.tokens[field]==null)?null:rows.reduce((s,r)=>s+r.tokens[field]!,0);
 const estimatedMoney=(rows:Metrics[])=>{const known=rows.filter(r=>r.estimated_usd!=null);return known.length?known.reduce((s,r)=>s+r.estimated_usd!,0):null;};
-const partialMoney=(rows:Metrics[])=>rows.some(r=>r.estimated_usd==null||r.usd_coverage&&r.usd_coverage.covered<r.usd_coverage.total);
+const partialMoney=(row:Metrics)=>row.estimated_usd==null||row.usd_coverage&&row.usd_coverage.covered<row.usd_coverage.total;
 const treeKeys=(nodes:UsageGroup[]):string[]=>nodes.flatMap(n=>[n.key,...treeKeys(n.children)]);
 
-function usageCostText(rows:Metrics[]){
- const amount=estimatedMoney(rows),quota=rows.some(r=>r.actual_quota!=null)?rows.reduce((n,r)=>n+(r.actual_quota??0),0):null;
+function usageCostText(row:Metrics){
+ const amount=row.estimated_usd??null,quota=row.actual_quota??null;
  if(amount===null&&quota===null)return '';
- const ratio=amount!==null&&quota!==null&&quota>0?amount/quota:null;
- return `${amount===null?'—':formatApiCost(amount,'USD')+(partialMoney(rows)?' *':'')} | ${quota===null?'—':quotaNumber(quota)} (${ratio!==null&&Number.isFinite(ratio)?numeric(ratio):'—'})`;
+ const ratio=row.usd_per_quota_point??(amount!==null&&quota!==null&&quota>0?amount/quota:null);
+ return `${amount===null?'—':formatApiCost(amount,'USD')+(partialMoney(row)?' *':'')} | ${quota===null?'—':quotaNumber(quota)} (${ratio!==null&&Number.isFinite(ratio)?numeric(ratio):'—'})`;
 }
 
 export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:string;name:string;onClose:()=>void;groupId?:string;apiOverview?:React.ReactNode}){
@@ -102,7 +102,7 @@ export function CodexAccountInsights({id,name,onClose,groupId,apiOverview}:{id:s
   </div>
  </Dialog>;
 }
-function UsageCostCell({rows}:{rows:Metrics[]}){return <td className="ci-usage-cost" data-field-description={usageFieldDescriptions.cost} title={partialMoney(rows)?'部分模型或 Token 字段缺失，仅计入可估算记录；括号内为预估金额除以额度百分点':usageFieldDescriptions.cost}>{usageCostText(rows)}</td>;}
+function UsageCostCell({row}:{row:Metrics}){return <td className="ci-usage-cost" data-field-description={usageFieldDescriptions.cost} title={partialMoney(row)?'部分请求无法估价，额度按已知金额分摊。括号内为同期每百分点的参考金额。':usageFieldDescriptions.cost}>{usageCostText(row)}</td>;}
 const formatApiCost=(amount:number|null|undefined,currency:string)=>amount==null?'未提供':`${currency==='USD'||currency==='CNY'?'':`${currency} `}${amount.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 function tokenMetrics(row:Metrics,apiMode:boolean,currency?:string){
  const tokens=row.tokens,unit=apiMode?currency:'USD',breakdown=apiMode?row.api_cost?.breakdown:row.usd_breakdown;
@@ -119,7 +119,7 @@ function MetricCells({row,amountTotal,apiMode,currency}:{row:Metrics;amountTotal
  const {input_tokens:input,cached_input_tokens:cached}=row.tokens;
  const metrics=tokenMetrics(row,apiMode,currency);
  const cell=({key,count,cost}:ReturnType<typeof tokenMetrics>[number])=><td key={key} data-field-description={usageFieldDescriptions[key]} title={count==null?undefined:`${count.toLocaleString()} Token`}>{count==null?'':compact(count)}<span className="ci-token-cost" title={unit?`预估耗费 (${unit})`:'预估耗费未知：缺少可核验费率或必需 Token 数据'}> ({cost})</span></td>;
- return <>{metrics.slice(0,3).map(cell)}<td data-field-description={usageFieldDescriptions.hit}>{input!=null&&cached!=null&&cached<=input&&input>0?`${(cached/input*100).toFixed(1)}%`:''}</td>{metrics.slice(3).map(cell)}{!apiMode&&<><UsageCostCell rows={[row]}/><td data-field-description={usageFieldDescriptions.share}>{amountTotal&&amount!==null?`${(amount/amountTotal*100).toFixed(1)}%`:''}</td></>}</>;
+ return <>{metrics.slice(0,3).map(cell)}<td data-field-description={usageFieldDescriptions.hit}>{input!=null&&cached!=null&&cached<=input&&input>0?`${(cached/input*100).toFixed(1)}%`:''}</td>{metrics.slice(3).map(cell)}{!apiMode&&<><UsageCostCell row={row}/><td data-field-description={usageFieldDescriptions.share}>{amountTotal&&amount!==null?`${(amount/amountTotal*100).toFixed(1)}%`:''}</td></>}</>;
 }
 function Group({node,amountTotal,depth,apiMode,currency,defaultOpen=false,expansion,setExpansion}:{node:UsageGroup;amountTotal:number|null;depth:number;apiMode:boolean;currency?:string;defaultOpen?:boolean;expansion:Record<string,boolean>;setExpansion:React.Dispatch<React.SetStateAction<Record<string,boolean>>>}){
  const open=expansion[node.key]??defaultOpen,childKind=node.children[0]?.kind;

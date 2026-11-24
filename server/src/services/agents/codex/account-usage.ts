@@ -429,8 +429,18 @@ export function cachedAccountUsage(id:string,projection?:UsageCsvSnapshot|null){
   }
  }
  const quota_range:{start:string|null;end:string|null}={start:null,end:null},quota_hours:Array<{hour:string;quota:number}>=[],allocation=allocatedQuota(id,quota_range,quota_hours,timezone,projected);
- const dailyQuota=new Map<string,number>(),dailyCredits=new Map<string,number>();for(const h of quota_hours)dailyQuota.set(h.hour.slice(0,10),(dailyQuota.get(h.hour.slice(0,10))??0)+h.quota);for(const [key,value] of estimates){const [day]=JSON.parse(key);dailyCredits.set(day,(dailyCredits.get(day)??0)+value.value);}
- allocation.clear();for(const [key,entries] of models){const [day,cwd]=JSON.parse(key),total=dailyQuota.get(day),denominator=dailyCredits.get(day);if(total!==undefined&&denominator)for(const model of entries.values())if(model.estimated_credits!==null)allocation.set(JSON.stringify([day,null,cwd,model.model]),total*model.estimated_credits/denominator);}
+ const dailyQuota=new Map<string,number>(),dailyUsd=new Map<string,number>();
+ for(const h of quota_hours)dailyQuota.set(h.hour.slice(0,10),(dailyQuota.get(h.hour.slice(0,10))??0)+h.quota);
+ for(const [key,entries] of models){
+  const [day]=JSON.parse(key);
+  for(const model of entries.values())if(model.estimated_usd!==null)dailyUsd.set(day,(dailyUsd.get(day)??0)+model.estimated_usd);
+ }
+ allocation.clear();
+ for(const [key,entries] of models){
+  const [day,cwd]=JSON.parse(key),total=dailyQuota.get(day),amount=dailyUsd.get(day);
+  if(total===undefined||!amount)continue;
+  for(const model of entries.values())if(model.estimated_usd!==null)allocation.set(JSON.stringify([day,null,cwd,model.model]),total*model.estimated_usd/amount);
+ }
 
  const progress=db.prepare('SELECT data FROM codex_usage_progress WHERE account=?').get(id) as {data:string}|undefined;
  const initialized=!!db.prepare('SELECT account FROM codex_usage_snapshots WHERE account=? AND initialized=1').get(id);
@@ -583,8 +593,19 @@ export function cachedGroupUsage(ids:string[],granularity:'day'|'hour'='day',sin
   if(knownDaily!==knownHourly||daily.rows.some(row=>row.tokens.total_tokens==null))partial=true;
  }
  const quota_range:{start:string|null;end:string|null}={start:null,end:null},quota_hours:Array<{hour:string;quota:number}>=[],allocation=single?allocatedQuota(ids[0],quota_range,quota_hours,timezone,singleProjection):new Map<string,number>();
- const hourTotals=new Map(quota_hours.map(h=>[h.hour,h.quota])),hourCredits=new Map<string,number>();for(const r of grouped.values())for(const m of r.models.values())if(r.hour&&m.estimated_credits!==null)hourCredits.set(r.hour,(hourCredits.get(r.hour)??0)+m.estimated_credits);
- if(single&&granularity==='hour'){allocation.clear();for(const r of grouped.values()){const total=r.hour?hourTotals.get(r.hour):undefined,denominator=r.hour?hourCredits.get(r.hour):undefined;if(total!==undefined&&denominator)for(const m of r.models.values())if(m.estimated_credits!==null)allocation.set(JSON.stringify([r.date,r.hour,r.cwd,m.model]),total*m.estimated_credits/denominator);}}
+ if(single&&granularity==='hour'){
+  const hourTotals=new Map(quota_hours.map(h=>[h.hour,h.quota])),hourUsd=new Map<string,number>();
+  for(const row of grouped.values())for(const model of row.models.values()){
+   if(row.hour&&model.estimated_usd!==null)hourUsd.set(row.hour,(hourUsd.get(row.hour)??0)+model.estimated_usd);
+  }
+  allocation.clear();
+  for(const row of grouped.values()){
+   if(!row.hour)continue;
+   const total=hourTotals.get(row.hour),amount=hourUsd.get(row.hour);
+   if(total===undefined||!amount)continue;
+   for(const model of row.models.values())if(model.estimated_usd!==null)allocation.set(JSON.stringify([row.date,row.hour,row.cwd,model.model]),total*model.estimated_usd/amount);
+  }
+ }
 
   const api_pricing=currency&&today.coverage.covered?{currency,timezone:billingTimezone,today:{...today,date:todayDate,partial:partial||unknownTodayTime||today.coverage.covered<today.coverage.total}}:undefined;
   return {storage,initialized:checked.length>0,checked_at:checked.sort()[0]??null,quota_range,quota_hours,timezone,unassigned:single?unassignedUsage(ids[0],basis):retained.requests?retained:null,credit_rate_date:creditRateDate(),usd_rate_date:usdReferenceRateDate(),partial,...api_pricing?{api_pricing}:{},error:partial?(granularity==='hour'?'小时统计尚未完整：部分历史记录不可读取或时间未知；按日统计不受影响。':'部分环境尚未完成采集或存在无法去重的记录'):null,rows:[...grouped.values()].sort((a,b)=>b.date.localeCompare(a.date)||(b.hour||'').localeCompare(a.hour||'')).slice(0,5000).map(({models,...row})=>{const entries=[...models.values()].map(model=>({...model,actual_quota:quotaByModel(allocation,row.date,row.cwd,model.model,row.hour)})),known=entries.filter(m=>m.estimated_credits!==null),money=entries.filter(m=>m.estimated_usd!==null);return {...row,...directoryFor(row.cwd),models:entries,estimated_credits:known.length?known.reduce((s,m)=>s+m.estimated_credits!,0):null,credit_coverage:{covered:entries.reduce((s,m)=>s+m.credit_coverage.covered,0),total:entries.reduce((s,m)=>s+m.credit_coverage.total,0)},estimated_usd:money.length?money.reduce((s,m)=>s+m.estimated_usd!,0):null,usd_coverage:{covered:entries.reduce((s,m)=>s+m.usd_coverage.covered,0),total:entries.reduce((s,m)=>s+m.usd_coverage.total,0)}};})};

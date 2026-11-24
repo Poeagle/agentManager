@@ -9,16 +9,32 @@ export function usagePeriod(date:string,hour:string|null|undefined,dimension:Dim
 /** Compute once for the selected period, before search or column filtering.
  * Largest-remainder rounding conserves the displayed four-decimal account total. */
 export function allocateUsagePeriods(rows:UsageRow[],hours:Array<{hour:string;quota:number}>,dimension:Dimension):UsageRow[]{
- const totals=new Map<string,number>(),buckets=new Map<string,Array<{row:number;model:number;credit:number;key:string;units:number;remainder:number}>>();
+ const totals=new Map<string,number>(),buckets=new Map<string,Array<{row:number;model:number;amount:number;key:string;units:number;remainder:number}>>();
  for(const sample of hours){const key=usagePeriod(sample.hour.slice(0,10),sample.hour,dimension);totals.set(key,(totals.get(key)??0)+sample.quota);}
- const result=rows.map(row=>({...row,actual_quota:null as number|null,models:row.models?.map(model=>({...model,actual_quota:null as number|null}))}));
- rows.forEach((row,r)=>{const key=usagePeriod(row.date,row.hour,dimension),entries=buckets.get(key)??[];
- (row.models?.length?row.models:[row]).forEach((model,m)=>{if(model.estimated_credits!=null&&Number.isFinite(model.estimated_credits)&&model.estimated_credits>=0)entries.push({row:r,model:row.models?.length?m:-1,credit:model.estimated_credits,key:JSON.stringify([row.date,row.hour,row.cwd,'model' in model?model.model:null]),units:0,remainder:0});});buckets.set(key,entries);});
- for(const [key,entries] of buckets){const observed=totals.get(key),weight=entries.reduce((n,e)=>n+e.credit,0);if(observed===undefined||weight<=0)continue;
+ const result:UsageRow[]=rows.map(row=>({...row,actual_quota:null,usd_per_quota_point:undefined,models:row.models?.map(model=>({...model,actual_quota:null,usd_per_quota_point:undefined}))}));
+ rows.forEach((row,r)=>{
+  const key=usagePeriod(row.date,row.hour,dimension),entries=buckets.get(key)??[];
+  (row.models?.length?row.models:[row]).forEach((model,m)=>{
+   const amount=model.estimated_usd;
+   if(amount==null||!Number.isFinite(amount)||amount<0)return;
+   entries.push({row:r,model:row.models?.length?m:-1,amount,key:JSON.stringify([row.date,row.hour,row.cwd,'model' in model?model.model:null]),units:0,remainder:0});
+  });
+  buckets.set(key,entries);
+ });
+ for(const [key,entries] of buckets){
+  const observed=totals.get(key),amount=entries.reduce((sum,entry)=>sum+entry.amount,0);
+  if(observed===undefined||amount<=0)continue;
   const units=Math.round(observed*10000);let assigned=0;
-  for(const entry of entries){const exact=units*entry.credit/weight;entry.units=Math.floor(exact);entry.remainder=exact-entry.units;assigned+=entry.units;}
+  for(const entry of entries){const exact=units*entry.amount/amount;entry.units=Math.floor(exact);entry.remainder=exact-entry.units;assigned+=entry.units;}
   const ranked=[...entries].sort((a,b)=>b.remainder-a.remainder||a.key.localeCompare(b.key));for(let i=0;i<units-assigned;i++)ranked[i%ranked.length].units++;
-  for(const entry of entries){const row=result[entry.row],value=entry.units/10000;if(entry.model<0)row.actual_quota=value;else{row.models![entry.model].actual_quota=value;row.actual_quota=(row.actual_quota??0)+value;}}
+  const rate=observed>0?amount/observed:undefined;
+  for(const entry of entries){
+   const row=result[entry.row],model=entry.model<0?row:row.models![entry.model];
+   const value=entry.units/10000;
+   model.actual_quota=value;
+   if(entry.amount>0)model.usd_per_quota_point=rate;
+   if(entry.model>=0)row.actual_quota=(row.actual_quota??0)+value;
+  }
  }
  return result;
 }
