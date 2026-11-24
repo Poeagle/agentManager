@@ -1,6 +1,34 @@
-import {test,expect} from '@playwright/test';
+import {test,expect,type Locator} from '@playwright/test';
 import {mkdirSync,writeFileSync,readFileSync} from 'fs';
 import {join} from 'path';
+
+async function flowchartAppearance(image: Locator) {
+  return image.evaluate(async (img: HTMLImageElement) => {
+    const frame = document.createElement('iframe');
+    frame.hidden = true;
+    const loaded = new Promise<void>(resolve => frame.addEventListener('load', () => resolve(), { once: true }));
+    frame.src = img.currentSrc;
+    document.body.append(frame);
+    try {
+      await loaded;
+      const svg = frame.contentDocument!;
+      const styles = (selector: string) => frame.contentWindow!.getComputedStyle(svg.querySelector(selector)!);
+      const node = styles('g.node rect');
+      const edge = styles('path.flowchart-link');
+      return {
+        fill: node.fill,
+        border: node.stroke,
+        borderWidth: node.strokeWidth,
+        shadow: node.filter,
+        edge: edge.stroke,
+        edgeWidth: edge.strokeWidth,
+      };
+    } finally {
+      frame.remove();
+    }
+  });
+}
+
 test('Mermaid renders in chat, platform replies and editable Markdown; source and zoom remain available',async({page},info)=>{
  await page.addInitScript(()=>Object.defineProperty(window,'showSaveFilePicker',{value:undefined,configurable:true}));
  const dir=join(process.cwd(),'dashboard/.test-data/mermaid-proof');mkdirSync(dir,{recursive:true});
@@ -9,6 +37,31 @@ test('Mermaid renders in chat, platform replies and editable Markdown; source an
  await page.route('**/mermaid-proof',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><html data-theme="light"><head><style>body{font-family:Arial;--border:#ddd;--bg-primary:white;--accent:#2563eb;--text-secondary:#555}section{max-width:900px;margin:20px auto}</style></head><script type="module">import RefreshRuntime from "/@react-refresh";RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;</script><body><div id="root"></div><script type="module" src="/@fs'+join(dir,'mermaid-harness.tsx')+'"></script></body></html>'}));
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.goto('/mermaid-proof');
  for(const id of ['chat','platform','editor']){const section=page.locator(`#${id}`);await expect(section.getByRole('img',{name:'Mermaid 图表'})).toBeVisible();expect(await section.getByRole('img',{name:'Mermaid 图表'}).evaluate((img:HTMLImageElement)=>img.naturalWidth)).toBeGreaterThan(50);await expect(section.getByText('const n = 42;',{exact:true})).toBeVisible();}
+ for (const id of ['chat', 'platform', 'editor']) {
+  const image = page.locator(`#${id}`).getByRole('img', { name: 'Mermaid 图表' });
+  const appearance = await flowchartAppearance(image);
+  expect.soft(appearance).toMatchObject({
+    fill: 'rgb(255, 255, 255)',
+    border: 'rgb(40, 37, 61)',
+    borderWidth: '2px',
+    edge: 'rgb(0, 0, 0)',
+    edgeWidth: '2px',
+  });
+  expect.soft(appearance.shadow).toContain('-drop-shadow');
+ }
+ const chatImage = page.locator('#chat').getByRole('img', { name: 'Mermaid 图表' });
+ const lightSource = await chatImage.getAttribute('src');
+ await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+ await expect(chatImage).not.toHaveAttribute('src', lightSource!);
+ expect.soft(await flowchartAppearance(chatImage)).toMatchObject({
+   fill: 'rgb(17, 17, 19)',
+   border: 'rgb(255, 255, 255)',
+   borderWidth: '2px',
+   edgeWidth: '2px',
+ });
+ const darkSource = await chatImage.getAttribute('src');
+ await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+ await expect(chatImage).not.toHaveAttribute('src', darkSource!);
  // The full diagram scales to both the preview width and viewport height.
  // Keep aspect ratio and adapt again when the browser window changes.
  for(const id of ['chat','platform','editor']){
