@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
-test('keeps automatic context cards compact and leaves room around scrollable details', async ({ page }) => {
+test('keeps automatic context and scheduled input cards equally compact with room around scrollable details', async ({ page }) => {
   const auth = await (await page.request.get('/api/auth/status')).json();
   const login = await page.request.post(auth.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },
@@ -35,15 +35,32 @@ test('keeps automatic context cards compact and leaves room around scrollable de
     timestamp: '2026-11-23T08:40:42Z',
     payload: { type: 'message', id, role: 'user', content: [{ type: 'input_text', text }] },
   });
+  const scheduledInput = {
+    type: 'event_msg',
+    timestamp: '2026-11-23T08:40:43Z',
+    payload: {
+      type: 'item_completed',
+      turn_id: 'scheduled-turn',
+      item: {
+        type: 'UserMessage',
+        id: 'scheduled-input',
+        client_id: 'scheduled-layout-client',
+        content: [{ type: 'text', text: '定时任务正文' }],
+      },
+    },
+  };
   writeFileSync(join(logDirectory, `rollout-layout-${native}.jsonl`), [
     message('resources', '<octoally_shared_resources>\n凭据文件：/project/.env\n使用说明。\n</octoally_shared_resources>'),
     message('rules', rules),
+    JSON.stringify(scheduledInput),
   ].join('\n') + '\n');
 
   const Database = createRequire(import.meta.url)('../server/node_modules/better-sqlite3');
   const db = new Database(join(root, 'agentmanager.db'));
   try {
     db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex', native, session.id);
+    db.prepare('INSERT INTO conversation_input_sources(session_id,client_id,kind,label) VALUES(?,?,?,?)')
+      .run(session.id, scheduledInput.payload.item.client_id, 'scheduled', '每日会话布局与详情弹窗巡检');
   } finally {
     db.close();
   }
@@ -62,13 +79,28 @@ test('keeps automatic context cards compact and leaves room around scrollable de
     const title = '自动信息 · 项目规则 · 运行环境';
     const rulesCard = chat.getByRole('button', { name: new RegExp(title) });
     const resourcesCard = chat.getByRole('button', { name: /自动信息 · 共享资源/ });
+    const scheduledCard = chat.getByRole('button', { name: /定时任务 每日会话布局与详情弹窗巡检/ });
     const dialog = page.getByRole('dialog', { name: title });
 
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 680 });
-      for (const card of [rulesCard, resourcesCard]) {
+      const cards = [resourcesCard, rulesCard, scheduledCard];
+      for (const card of cards) {
         await expect(card).toBeVisible();
-        expect.soft((await card.boundingBox())!.height).toBeLessThanOrEqual(30);
+        expect.soft(await card.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      }
+      const [resourcesBox, rulesBox, scheduledBox] = await Promise.all(
+        cards.map(async card => (await card.boundingBox())!),
+      );
+      expect.soft(resourcesBox.height).toBeLessThanOrEqual(30);
+      expect.soft(rulesBox.height).toBe(resourcesBox.height);
+      expect.soft(scheduledBox.height).toBe(resourcesBox.height);
+      for (const gap of [
+        rulesBox.y - resourcesBox.y - resourcesBox.height,
+        scheduledBox.y - rulesBox.y - rulesBox.height,
+      ]) {
+        expect.soft(gap).toBeGreaterThan(0);
+        expect.soft(gap).toBeLessThanOrEqual(6);
       }
       await rulesCard.click();
       await expect(dialog.getByRole('heading', { name: '项目规则', exact: true })).toBeVisible();
