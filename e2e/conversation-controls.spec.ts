@@ -188,6 +188,20 @@ test('model controls use native capabilities and a docked file stays readable wh
   await batch.getByRole('button',{name:'删除第 1 条消息'}).click();await expect(batch).toHaveCount(0);
   await input.fill('批量发送后自动收起');await input.press('Enter');await expect(divider).toHaveAttribute('aria-valuenow',String(wider));
   await batch.getByRole('button',{name:'发送批量内容',exact:true}).click();await expect.poll(()=>inputs.length).toBe(4);await expect(batch).toHaveCount(0);await expect(mode).toHaveValue('batch');
+  const sentBatch=page.getByRole('button',{name:/批量消息.*批量发送后自动收起/});
+  for(const width of [1280,390]){
+   await page.setViewportSize({width,height:844});
+   await expect(sentBatch).toBeVisible();
+   const title=(await sentBatch.getByText('批量消息',{exact:false}).boundingBox())!;
+   const preview=(await sentBatch.getByText('批量发送后自动收起',{exact:true}).boundingBox())!;
+   expect(Math.abs(title.y + title.height/2 - preview.y - preview.height/2)).toBeLessThan(2);
+   expect(preview.width).toBeGreaterThan(20);
+  }
+  await sentBatch.click();
+  const sentDetails=page.getByRole('dialog',{name:'批量消息 · 1 条'});
+  await expect(sentDetails).toContainText('批量发送后自动收起');
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({width:1280,height:720});
   await mode.selectOption('immediate');
   await page.route(`**/api/sessions/${session.id}/input-check`,route=>route.fulfill({json:{enabled:true,needs_confirmation:false,matched:false,native_id:native,can_new:true,can_compact:true,token:'fixture',context_tokens:1000,context_window:40000,context_percent:2.5,idle_minutes:0,observed_at:null}}));
   await input.fill('尚未发送的草稿');await page.getByRole('button',{name:'简要压缩',exact:true}).click();

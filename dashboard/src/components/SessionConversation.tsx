@@ -599,7 +599,7 @@ const Bubble = memo(function Bubble({
           )}
         </div>
       )}
-      <div className="session-chat-body">
+      <div className={displayBatch?.length ? "session-chat-body session-chat-body--batch" : "session-chat-body"}>
         {message.role === "user" ? (
           <>
             <div className="session-chat-user-text">
