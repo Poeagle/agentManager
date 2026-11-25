@@ -52,6 +52,7 @@ function createCurrentSchema(): void {
       project_id TEXT REFERENCES projects(id),
       task TEXT NOT NULL,
       created_by_user_id TEXT REFERENCES users(id),
+      parent_session_id TEXT,
       mode TEXT NOT NULL DEFAULT 'session',
       status TEXT NOT NULL DEFAULT 'pending',
       pid INTEGER,
@@ -345,6 +346,7 @@ function migrateLegacySchema(): void {
   addColumn('sessions', 'cli_type', "TEXT DEFAULT 'claude'");
   addColumn('sessions', 'codex_session_id', 'TEXT');
   addColumn('sessions', 'created_by_user_id', 'TEXT REFERENCES users(id)');
+  addColumn('sessions', 'parent_session_id', 'TEXT');
   addColumn('sessions', 'mode', "TEXT DEFAULT 'session'");
   addColumn('users', 'max_tabs', 'INTEGER NOT NULL DEFAULT 10');
   addColumn('users', 'can_create_projects', 'INTEGER NOT NULL DEFAULT 0');

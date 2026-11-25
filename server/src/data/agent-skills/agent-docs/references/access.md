@@ -8,7 +8,7 @@ python3 scripts/platform_api.py capabilities
 
 客户端自动使用平台注入的本地 API 地址与会话凭据。这个命令不需要任何认证参数。凭据留在运行时，禁止打印、读取给用户看或塞入任务消息。只向平台指定的地址发请求。
 
-`GET /capabilities` 返回当前有效的 `user`、`source_tab_id`、`project_id`、`operations` 和 `limits`。其中的用户就是平台记录的创建人。服务器每次请求重新检查账户、项目、标签页可用性和操作权限。创建和发送按这个身份执行。用户切换浏览器账户与已有标签页的创建人是两回事。关闭标签页或撤销授权后，旧标签页凭据失效。
+`GET /capabilities` 返回当前有效的 `user`、`source_tab_id`、`project_id`、`operations` 和 `limits`。其中的用户就是平台记录的创建人。服务器每次请求重新检查账户、项目、标签页可用性和操作权限。创建、发送和删除按这个身份执行。用户切换浏览器账户与已有标签页的创建人是两回事。关闭标签页或撤销授权后，旧标签页凭据失效。
 
 | 已声明的操作 | 接口 | 用途 |
 |---|---|---|
@@ -18,10 +18,11 @@ python3 scripts/platform_api.py capabilities
 | `read-message` | `GET /inbox/{message_id}` | 读取自己已收到的指定消息完整正文。 |
 | `execution-options` | `GET /execution-options` | 按需查询可用 Agent、环境、模型和额度。 |
 | `create-tab` | `POST /tabs` | 以创建者身份启动新标签页并可选投递首条任务。 |
+| `delete-tab` | `POST /tabs/{tab_id}/delete` | 关闭其他同用户同项目的标签页，可明确请求永久删除历史。 |
 | `send-message` | `POST /messages` | 向一个或多个同项目标签页投递工作、问题或结果。 |
 | `operation` | `GET /operations/{request_id}` | 查询已有操作和逐目标回执。 |
 
-平台会根据 Agent 的适配能力列出操作和执行配置。配置变更、跨项目授权、对外发送等工作仍分别使用项目原有流程。收到授权失败时把具体受阻操作告诉用户。当前运行时没有注入协作能力时，仅使用已获授权的当前会话能力。
+读取需要 Agent API 读权限。创建、发送和删除还需要写权限，并受项目和目标会话授权约束。平台会根据 Agent 的适配能力列出操作和执行配置。配置变更、跨项目授权、对外发送等工作仍分别使用项目原有流程。收到授权失败时把具体受阻操作告诉用户。当前运行时没有注入协作能力时，仅使用已获授权的当前会话能力。
 
 ## 回执与重试边界
 

@@ -32,6 +32,7 @@ import {personalQuestionRuntime,setIgnoredQuestions} from '../services/question-
 import {watchSessionRuntime,stopSessionRuntimeWatches} from '../services/session-runtime-watch.js';
 import {createSessionRecordDeletionWorker,sessionRecordDeletionState} from '../services/session-record-deletion.js';
 import {removeSessionTabs,rememberNewTabName} from '../services/session-tabs.js';
+import {agentDocsParent} from '../services/agent-docs.js';
 import {broadcastEphemeral} from '../services/event-store.js';
 import {requirePermission,userHasPermission} from '../services/rbac.js';
 import {attachExistingSession} from '../services/session-attachment.js';
@@ -648,7 +649,8 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       launchPreference=checked.preference;
     }
 
-    const session = sessionManager.createSession(canonicalProjectPath, initialTask, resolvedProjectId, cliType, req.user!.id, 'session');
+    const parent = agentDocsParent(req.user!.id, resolvedProjectId);
+    const session = sessionManager.createSession(canonicalProjectPath, initialTask, resolvedProjectId, cliType, req.user!.id, 'session', parent);
     if(tabName)rememberNewTabName(session.id,req.user!.id,resolvedProjectId,tabName.trim());
     if(launchPreference)saveModelPreference(req.user!.id,session.id,launchPreference);
     // The first managed Claude input predates its JSONL file. Preserve the

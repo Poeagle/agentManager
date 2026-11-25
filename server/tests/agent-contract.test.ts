@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.37.0');
+    expect(contract.version).toBe('3.38.0');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation')?.description).toContain('include_context=true adds startup_context');
     for (const path of ['/api/sessions','/api/sessions/:id']) {
       expect(contract.endpoints.find(endpoint=>endpoint.method==='GET'&&endpoint.path===path)?.description).toContain('record_deletion');
@@ -49,6 +49,7 @@ describe('Agent API contract', () => {
       'GET /api/agent-docs/inbox',
       'POST /api/agent-docs/messages',
       'POST /api/agent-docs/tabs',
+      'POST /api/agent-docs/tabs/:id/delete',
       'GET /api/projects',
       'POST /api/files/upload-directory',
       'POST /api/files/upload',

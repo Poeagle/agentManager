@@ -22,6 +22,7 @@ def parse_args():
     commands.add_parser("capabilities")
     tabs = commands.add_parser("list-tabs")
     tabs.add_argument("--cursor")
+    tabs.add_argument("--include-ended", action="store_true")
     read = commands.add_parser("read-tab")
     read.add_argument("tab_id")
     inbox = commands.add_parser("inbox")
@@ -32,6 +33,10 @@ def parse_args():
     options.add_argument("--agent-id")
     options.add_argument("--include-quota", action="store_true")
     commands.add_parser("create-tab", help="Read the creation request JSON from stdin")
+    removal = commands.add_parser("delete-tab", help="Close a tab and optionally delete its history")
+    removal.add_argument("tab_id")
+    removal.add_argument("--request-id", required=True)
+    removal.add_argument("--delete-history", action="store_true")
     commands.add_parser("send-message", help="Read the delivery request JSON from stdin")
     operation = commands.add_parser("operation")
     operation.add_argument("request_id")
@@ -62,16 +67,21 @@ def make_request(args):
         route = "/tabs" if command == "list-tabs" else "/inbox"
         if args.cursor:
             query["cursor"] = args.cursor
+        if command == "list-tabs" and args.include_ended:
+            query["include_ended"] = "true"
     elif command == "execution-options":
         route = "/execution-options"
         if args.agent_id:
             query["agent_id"] = args.agent_id
         if args.include_quota:
             query["include_quota"] = "true"
-    elif command == "read-tab":
+    elif command in ("read-tab", "delete-tab"):
         if not args.tab_id or args.tab_id in (".", ".."):
             raise ValueError("需要有效的 tab_id")
         route = "/tabs/" + quote(args.tab_id, safe="")
+        if command == "delete-tab":
+            body = {"request_id": args.request_id, "delete_history": args.delete_history}
+            return route + "/delete", "", json.dumps(body).encode()
     elif command == "read-message":
         if not args.message_id or args.message_id in (".", ".."):
             raise ValueError("需要有效的 message_id")

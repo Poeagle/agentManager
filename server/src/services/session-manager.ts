@@ -158,6 +158,7 @@ export interface Session {
   pid: number | null;
   mode: 'session' | 'terminal' | null;
   created_by_user_id: string | null;
+  parent_session_id?: string | null;
   claude_session_id: string | null;
   codex_session_id: string | null;
   cli_type?: string;
@@ -1596,14 +1597,15 @@ export function createSession(
   cliType: string = 'claude',
   createdByUserId?: string,
   mode: 'session' | 'terminal' = 'session',
+  parentSessionId?: string,
 ): Session {
   const db = getDb();
   const id = nanoid(12);
 
   db.prepare(`
-    INSERT INTO sessions (id, project_id, task, status, cli_type, created_by_user_id, mode)
-    VALUES (?, ?, ?, 'pending', ?, ?, ?)
-  `).run(id, projectId || null, task, cliType || 'claude', createdByUserId || null, mode || 'session');
+    INSERT INTO sessions (id, project_id, task, status, cli_type, created_by_user_id, mode, parent_session_id)
+    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
+  `).run(id, projectId || null, task, cliType || 'claude', createdByUserId || null, mode || 'session', parentSessionId ?? null);
 
   return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
 }

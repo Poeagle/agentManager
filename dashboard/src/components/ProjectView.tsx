@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
-import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2, Loader2, List, PanelLeft, Search } from 'lucide-react';
+import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2, Loader2, List, PanelLeft, Search, CornerDownRight } from 'lucide-react';
 import { Terminal } from './Terminal';
 import { SessionWorkspacePane } from './SessionWorkspacePane';
 import { SessionTabSwitcher } from './SessionTabSwitcher';
@@ -27,6 +27,7 @@ import { ScheduledTasksPanel } from './ScheduledTasksPanel';
 import { LiveSessionSignalDot } from '../lib/session-signal';
 import { SessionTabLabel } from '../lib/session-activity';
 import { sessionActivityMs } from '../lib/session-activity-model';
+import { sessionTabTree } from '../lib/session-tab-tree';
 import { useStreamStore } from '../lib/websocket';
 import { promoteWarmTerminal, TERMINAL_COLD_DELAY_MS } from '../lib/warm-terminal-pool';
 import {
@@ -1275,13 +1276,28 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const sessionTabList = useRef<HTMLElement>(null);
   const sessionFilter = sessionSearch.trim().toLocaleLowerCase();
   const activeWorkspaceTab = activeMode === 'harness' ? HARNESS_TAB.id : activeMode === 'terminal' ? activeTerminalId : null;
-  const previewTabs = sortedWorkspaceTabs.filter(({ tab }, index) =>
-    index < SESSION_PREVIEW_LIMIT || (active && tab.id === activeWorkspaceTab) || tab.id === editingTabId,
+  const tabBranches = useMemo(() => sessionTabTree(
+    sortedWorkspaceTabs, id => allSessionLookup.get(id)?.parent_session_id,
+  ), [sortedWorkspaceTabs, allSessionLookup]);
+  const previewTabs = tabBranches.flatMap((branch, index) =>
+    index < SESSION_PREVIEW_LIMIT || branch.some(({ tab }) => (active && tab.id === activeWorkspaceTab) || tab.id === editingTabId)
+      ? branch : [],
   );
   const remainingSessions = workspaceTabs.length - previewTabs.length;
   const visibleWorkspaceTabs = sessionFilter
-    ? sortedWorkspaceTabs.filter(({ tab }) => (tab.customLabel?.trim() || tab.label).toLocaleLowerCase().includes(sessionFilter))
-    : nestedSessionNavigation && !showAllSessions ? previewTabs : sortedWorkspaceTabs;
+    ? tabBranches.flatMap(branch => {
+      const matching = new Set(branch.filter(({ tab }) =>
+        (tab.customLabel?.trim() || tab.label).toLocaleLowerCase().includes(sessionFilter),
+      ).map(({ tab }) => tab.id));
+      for (const { tab, depth } of [...branch].reverse()) {
+        if (depth && matching.has(tab.id)) {
+          const parent = allSessionLookup.get(tab.id)?.parent_session_id;
+          if (parent) matching.add(parent);
+        }
+      }
+      return branch.filter(({ tab }) => matching.has(tab.id));
+    })
+    : nestedSessionNavigation && !showAllSessions ? previewTabs : tabBranches.flat();
   const { data: scheduledData } = useQuery({
     queryKey: ['scheduled-tasks', projectId],
     queryFn: () => api.scheduledTasks.list(projectId),
@@ -1658,7 +1674,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         />
       </form>}
       <nav ref={sessionTabList} aria-label="会话标签" className="workspace-session-list">
-        {visibleWorkspaceTabs.map(({ tab: inst, index, sortAt }) => {
+        {visibleWorkspaceTabs.map(({ tab: inst, index, sortAt, depth }) => {
           const activityAt = workspaceActivity[index];
           const isHarness = inst.id === HARNESS_TAB.id;
           const isActive = (!nestedSessionNavigation || active) && inst.id === activeWorkspaceTab;
@@ -1689,6 +1705,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
               className="workspace-tab group"
               data-session-id={isHarness ? undefined : inst.id}
               data-active={isActive}
+              data-parent-session-id={session?.parent_session_id || undefined}
               onDragOver={(event) => {
                 if (sortAt !== null || !draggingTabId || draggingTabId === inst.id) return;
                 event.preventDefault();
@@ -1703,9 +1720,14 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
               }}
               style={{
                 background: isActive ? 'var(--bg-tertiary)' : 'transparent',
+                marginInlineStart: depth ? Math.min(depth, 4) * 12 : undefined,
                 outline: tabDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
               }}
             >
+              {session?.parent_session_id && <span
+                className="workspace-tab-parent-link"
+                title={depth ? '由上级标签页创建' : '由其他标签页创建，上级当前未打开'}
+              ><CornerDownRight size={12} aria-hidden="true" /></span>}
               {sigSession && (
                 <span className="workspace-tab-signal">
                   <LiveSessionSignalDot session={sigSession} active={isActive} />

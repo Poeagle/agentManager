@@ -74,6 +74,7 @@
 .workspace-tab-standalone { padding: 0 7px; }
 .workspace-tab-signal { display: flex; align-items: center; flex-shrink: 0; }
 .workspace-tab-icon { opacity: .65; }
+.workspace-tab-parent-link { display: flex; flex: none; color: var(--text-secondary); }
 .workspace-tab[data-active="true"] .workspace-tab-icon { opacity: 1; }
 .workspace-subtab-action {
   display: grid;

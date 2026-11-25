@@ -209,6 +209,10 @@ export function connectStream() {
         try { detail = event.data ? JSON.parse(event.data) : {}; } catch { /* ignore malformed tab payload */ }
         window.dispatchEvent(new CustomEvent('agentmanager:user-tab-state', { detail }));
         queryClientRef?.invalidateQueries({ queryKey: ['admin-monitor'] });
+        if (detail.action === 'delete') {
+          queryClientRef?.invalidateQueries({ queryKey: ['sessions'] });
+          queryClientRef?.invalidateQueries({ queryKey: ['project-sessions'] });
+        }
         return;
       }
 

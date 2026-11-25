@@ -45,14 +45,18 @@ beforeEach(async () => {
   tab('test', owner);
   tab('different-owner', other);
   tab('different-project', owner, 'q');
-  app = Fastify();
+  app = await testApp();
+});
+
+async function testApp() {
+  const app = Fastify();
   await app.register(websocket);
   app.addHook('onRequest', authHook);
   await app.register(agentRoutes, { prefix: '/api' });
   await app.register(sessionRoutes, { prefix: '/api' });
   await app.register(agentDocsRoutes, { prefix: '/api' });
-  await app.ready();
-});
+  return app.ready();
+}
 
 afterEach(async () => {
   await app.close();
@@ -130,8 +134,67 @@ it('creates a named tab as its creator and sends the first handoff only after la
   const response = await app.inject({ method: 'POST', url: base + '/tabs', headers, payload: request });
   expect(response.json()).toMatchObject({ result: { tab_id: expect.any(String), launch_status: 'ready', initial_message_status: 'submitted', initial_message_id: expect.any(String) } });
   const id = response.json().result.tab_id;
-  expect(manager.getSession(id)).toMatchObject({ created_by_user_id: owner, project_id: 'p' });
-  expect((await app.inject({ url: base + '/tabs', headers })).json().tabs).toContainEqual(expect.objectContaining({ tab_id: id, name: 'DBM-1234 排查' }));
+  expect(manager.getSession(id)).toMatchObject({ created_by_user_id: owner, project_id: 'p', parent_session_id: 'dev-one' });
+  expect((await app.inject({ url: base + '/tabs', headers })).json().tabs).toContainEqual(expect.objectContaining({ tab_id: id, name: 'DBM-1234 排查', parent_tab_id: 'dev-one' }));
   expect((await app.inject({ method: 'POST', url: base + '/tabs', headers, payload: request })).json()).toEqual(response.json());
   expect(manager.spawnSession).toHaveBeenCalledTimes(1);
+});
+
+it('closes only accessible tabs in the same project and reuses the receipt without restarting cleanup', async () => {
+  const headers = header('dev-one');
+  const post = (id: string, requestId: string, deleteHistory = false) => app.inject({
+    method: 'POST', url: base + '/tabs/' + id + '/delete', headers,
+    payload: { request_id: requestId, delete_history: deleteHistory },
+  });
+  expect((await app.inject({ url: base + '/capabilities', headers })).json().operations).toContain('delete-tab');
+  for (const id of ['different-owner', 'different-project', 'dev-one']) {
+    expect((await post(id, id)).json()).toMatchObject({ result: { status: 'rejected' } });
+    expect(manager.getSession(id)?.status).toBe('running');
+  }
+  getDb().prepare("UPDATE sessions SET parent_session_id='test' WHERE id='dev-two'").run();
+  const kill = vi.spyOn(manager, 'killSession').mockImplementation(async id => {
+    getDb().prepare("UPDATE sessions SET status='cancelled' WHERE id=?").run(id);
+    return true;
+  });
+  const response = await post('test', 'close-test');
+  expect(response.json()).toMatchObject({ state: 'settled', result: { tab_id: 'test', status: 'closed', history_status: 'retained' } });
+  expect((await post('test', 'close-test')).json()).toEqual(response.json());
+  expect(kill).toHaveBeenCalledTimes(1);
+  expect((await post('dev-two', 'close-test')).statusCode).toBe(409);
+  expect(manager.getSession('dev-two')).toMatchObject({ status: 'running', parent_session_id: 'test' });
+  const stored = getDb().prepare("SELECT value FROM user_ui_state WHERE user_id=? AND key='project:p'").get(owner) as {value: string};
+  expect(JSON.parse(stored.value).hiddenSessionIds).toContain('test');
+  expect(manager.getSession('test')).toMatchObject({ status: 'cancelled', native_session_id: native });
+  expect((await app.inject({ url: base + '/tabs', headers })).json().tabs).not.toContainEqual(expect.objectContaining({ tab_id: 'test' }));
+  expect((await app.inject({ url: base + '/tabs?include_ended=true', headers })).json().tabs)
+    .toContainEqual(expect.objectContaining({ tab_id: 'test', can_receive: false, can_delete: true }));
+});
+
+it('uses background deletion for explicit history removal and exposes its outcome by request ID', async () => {
+  const headers = header('dev-one');
+  vi.spyOn(manager, 'killSession').mockImplementation(async id => {
+    getDb().prepare("UPDATE sessions SET status='cancelled' WHERE id=?").run(id);
+    return true;
+  });
+  const purge = vi.spyOn(manager, 'purgeSessionRecord').mockResolvedValue({ ok: false, error: 'isolated failure' });
+  const create = await app.inject({
+    method: 'POST', url: base + '/tabs/test/delete', headers,
+    payload: { request_id: 'purge-test', delete_history: true },
+  });
+  expect(create.json()).toMatchObject({ result: { tab_id: 'test', status: 'closed', history_status: 'pending' } });
+  await vi.waitFor(() => expect(purge).toHaveBeenCalledWith('test', { background: true }));
+  const operation = () => app.inject({ url: base + '/operations/purge-test', headers });
+  expect((await operation()).json()).toMatchObject({ result: { history_status: 'failed' } });
+});
+
+it('recovers persisted creation receipts only within the original user and project', async () => {
+  const addReceipt = getDb().prepare("INSERT INTO agent_docs_operations(tab_id,request_id,fingerprint,state,result) VALUES(?,?,?,'settled',?)");
+  for (const [parent, child] of [['dev-one', 'test'], ['dev-one', 'different-project'], ['dev-one', 'different-owner']]) {
+    addReceipt.run(parent, child, child, JSON.stringify({ tab_id: child, launch_status: 'ready' }));
+  }
+  await app.close();
+  app = await testApp();
+  expect(manager.getSession('test')?.parent_session_id).toBe('dev-one');
+  expect(manager.getSession('different-project')?.parent_session_id).toBeNull();
+  expect(manager.getSession('different-owner')?.parent_session_id).toBeNull();
 });

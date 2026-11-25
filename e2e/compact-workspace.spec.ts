@@ -215,3 +215,61 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await search.press('Escape');
   await expect(switcher).toBeFocused();
 });
+
+test('keeps a created tab below its parent after refresh and visible when the parent closes', async ({ page }) => {
+  const status = await (await page.request.get('/api/auth/status')).json();
+  const login = await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
+    data: { username: 'e2e-admin', password: 'test-password' },
+  });
+  expect(login.ok()).toBeTruthy();
+  const { user } = await login.json();
+  const root = join(process.cwd(), '.test-data', 'e2e');
+  const projectPath = join(root, 'tab-lineage');
+  mkdirSync(projectPath, { recursive: true });
+  const { project } = await (await page.request.post('/api/projects', {
+    data: { name: 'Tab lineage', path: projectPath },
+  })).json();
+  const Database = createRequire(import.meta.url)('../server/node_modules/better-sqlite3');
+  const db = new Database(join(root, 'agentmanager.db'));
+  const tabs = [
+    { id: 'lineage-parent', label: '委派者', parent: null },
+    { id: 'lineage-child', label: '验证子任务', parent: 'lineage-parent' },
+    { id: 'lineage-grandchild', label: '回归子任务', parent: 'lineage-child' },
+    { id: 'lineage-peer', label: '独立会话', parent: null },
+  ];
+  try {
+    const insert = db.prepare(`INSERT INTO sessions(id,project_id,created_by_user_id,task,status,cli_type,parent_session_id,updated_at)
+      VALUES(?,?,?,?,'completed','codex',?,?)`);
+    tabs.forEach(({ id, label, parent }, index) => {
+      insert.run(id, project.id, user.id, label, parent, `2026-01-01T00:00:0${index}.000Z`);
+    });
+  } finally { db.close(); }
+  await page.request.put('/api/settings', { data: { settings: { statusline_prompted: 'true' } } });
+  await page.request.put('/api/user-state/app', {
+    data: { value: { projectTabs: [{ projectId: project.id, projectName: project.name }], activeTab: `project-${project.id}` } },
+  });
+  await page.request.put(`/api/user-state/project%3A${project.id}`, {
+    data: { value: { terminalInstances: tabs.map(({ id, label }) => ({ id, label, customLabel: label })), activeTerminalId: 'lineage-child' } },
+  });
+
+  await page.goto('/');
+  const nav = page.getByRole('navigation', { name: '会话标签' }).filter({ visible: true });
+  const parent = nav.locator('[data-session-id="lineage-parent"]');
+  const child = nav.locator('[data-session-id="lineage-child"]');
+  const grandchild = nav.locator('[data-session-id="lineage-grandchild"]');
+  await expect(parent).toBeVisible();
+  await expect(child).toHaveAttribute('data-parent-session-id', 'lineage-parent');
+  await expect(grandchild).toHaveAttribute('data-parent-session-id', 'lineage-child');
+  expect((await child.boundingBox())!.y).toBeGreaterThan((await parent.boundingBox())!.y);
+  expect((await child.boundingBox())!.x).toBeGreaterThan((await parent.boundingBox())!.x);
+  expect((await grandchild.boundingBox())!.x).toBeGreaterThan((await child.boundingBox())!.x);
+
+  await page.reload();
+  await expect(child).toBeVisible();
+  expect((await child.boundingBox())!.x).toBeGreaterThan((await parent.boundingBox())!.x);
+  await parent.getByRole('button', { name: 'Close session' }).click();
+  await page.getByRole('button', { name: '停止并关闭', exact: true }).click();
+  await expect(parent).toHaveCount(0);
+  await expect(child.getByTitle('由其他标签页创建，上级当前未打开')).toBeVisible();
+  await expect(grandchild).toBeVisible();
+});

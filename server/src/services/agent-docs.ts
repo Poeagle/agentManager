@@ -36,11 +36,27 @@ function installationSecret() {
   return secret;
 }
 
-export function agentDocsAllowed(session: AgentSession, level: 'read' | 'write' = 'read') {
+export function agentDocsTabAccessible(session: AgentSession, level: 'read' | 'write' = 'read') {
   const userId = session.created_by_user_id;
   return !!(session.id && session.project_id && userId && session.mode === 'session' &&
-    !isRetiredEnvironment(session.agent_environment_id) && agentDocsLiveStates.includes(session.status || '') && userHasPermission(userId, 'agent_api', level) &&
+    userHasPermission(userId, 'agent_api', level) &&
     userCanUseSessionTool(userId, session.id, session.agent_id || session.cli_type || 'claude', 'session'));
+}
+
+export function agentDocsAllowed(session: AgentSession, level: 'read' | 'write' = 'read') {
+  return !isRetiredEnvironment(session.agent_environment_id) && agentDocsLiveStates.includes(session.status || '') &&
+    agentDocsTabAccessible(session, level);
+}
+
+const creationSource = new AsyncLocalStorage<{id: string; userId: string; projectId: string}>();
+
+export function withAgentDocsCreation<T>(source: {id: string; userId: string; projectId: string}, create: () => Promise<T>) {
+  return creationSource.run(source, create);
+}
+
+export function agentDocsParent(userId: string, projectId: string) {
+  const source = creationSource.getStore();
+  return source?.userId === userId && source.projectId === projectId ? source.id : undefined;
 }
 
 function signature(session: AgentSession) {

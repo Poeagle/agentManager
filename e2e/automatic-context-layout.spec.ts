@@ -28,7 +28,9 @@ test('keeps session context collapsed and pinned above paginated messages in inj
     ...Array.from({ length: 40 }, (_, index) => `第 ${index + 1} 条项目规则。`),
     '规则正文结束。',
     '</INSTRUCTIONS>',
-    '<environment_context><cwd>/project</cwd></environment_context>',
+    '<environment_context><cwd>/project</cwd><shell>zsh</shell><current_date>2026-11-25</current_date><timezone>Asia/Taipei</timezone>' +
+      '<filesystem><workspace_roots><root>/project</root><root>/another/workspace</root></workspace_roots>' +
+      '<permission_profile type="disabled"><file_system type="unrestricted"/></permission_profile></filesystem></environment_context>',
   ].join('\n\n');
   const message = (id: string, text: string, role = 'user') => JSON.stringify({
     type: 'response_item',
@@ -106,6 +108,18 @@ test('keeps session context collapsed and pinned above paginated messages in inj
     await page.keyboard.press('Escape');
     await panel.getByRole('button', { name: /共享资源/ }).last().click();
     await expect(page.getByRole('dialog', { name: '自动信息 · 共享资源' })).toContainText('更新后的说明。');
+    await page.keyboard.press('Escape');
+
+    await panel.getByRole('button', { name: /运行环境/ }).click();
+    const environment = page.getByRole('dialog', { name: '自动信息 · 运行环境' });
+    await page.setViewportSize({ width: 390, height: 680 });
+    await expect(environment.getByText('当前工作目录', { exact: true })).toBeVisible();
+    await expect(environment.getByText('Asia/Taipei', { exact: true })).toBeVisible();
+    await expect(environment.getByText('/another/workspace', { exact: true })).toBeVisible();
+    await expect(environment.getByText('不受文件沙箱限制', { exact: true })).toBeVisible();
+    await expect(environment.locator('pre')).toBeHidden();
+    await environment.getByText('查看原始 XML').click();
+    await expect(environment.locator('pre')).toContainText('<permission_profile type="disabled">');
     await page.keyboard.press('Escape');
 
     const rulesCard = panel.getByRole('button', { name: /项目规则/ });

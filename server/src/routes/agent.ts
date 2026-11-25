@@ -113,7 +113,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.37.0',
+    version:'3.38.0',
     updatedAt:'2026-11-25',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -557,12 +557,13 @@ export function getAgentApiContract() {
         description: 'Read the selected authorized Codex Engine model catalog for a permitted project.',
       },
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/capabilities',description:'With a launch-issued tab credential, return the source tab, owner, project, callable operations and limits.'},
-      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs',description:'List the creator’s live Agent tabs in the same project. Optional cursor from next_cursor.'},
-      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs/:id',description:'Read state and recent public conversation text for an accessible tab.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs',description:'List the owner’s Agent tabs in the same project, including parent_tab_id and can_delete. Optional cursor from next_cursor and include_ended=true to include ended tabs.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs/:id',description:'Read parent_tab_id, state and recent public conversation text for an accessible tab.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox',description:'Read the current tab’s handoffs in receipt order with verified source, message id, reply reference and optional next_cursor.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox/:id',description:'Read the full body of one accepted or queued handoff addressed to the source tab.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/execution-options',description:'List project-authorized environments and launch settings. Optional agent_id and include_quota=true.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs',description:'Create and launch one tab in the source project. Body: request_id, name, execution and optional initial_message. The platform checks launch settings before sending the first task.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs/:id/delete',description:'Close another authorized tab belonging to the same user and project. Body: request_id and optional delete_history (default false). Explicit history removal runs in the background and can be tracked via GET /api/agent-docs/operations/:id. No cascade to child tabs.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text immediately, steering running work or starting input on an idle tab. A target that cannot accept immediate delivery rejects it. Body: request_id, text, optional intent, and either target_tab_ids or reply_to. The server resolves reply_to to the original sender.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/operations/:id',description:'Read settled or partial receipts for a request_id owned by the source tab.'},
       {

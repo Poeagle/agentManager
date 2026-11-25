@@ -71,3 +71,5 @@ python3 scripts/platform_api.py send-message
 ```sh
 python3 scripts/platform_api.py operation "$request_id"
 ```
+
+接收方的运行状态用于了解它是否空闲或正在执行。需要确认任务是否已做完时，以引用原消息的 `result` 和附带证据为准。消息正文建议见 [协作规范](collaboration.md#消息约定)。

@@ -3,15 +3,17 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { findUserById, userCanUseToolForProject } from '../auth.js';
 import { getDb } from '../db/index.js';
-import { agentDocsAllowed, verifyAgentDocsToken, withAgentDocsHandoff } from '../services/agent-docs.js';
+import { agentDocsAllowed, agentDocsTabAccessible, verifyAgentDocsToken, withAgentDocsCreation, withAgentDocsHandoff } from '../services/agent-docs.js';
 import { agentDescriptors, agentForSession, getAgent } from '../services/agents/index.js';
 import { nativeConversationId } from '../services/session-identity.js';
 import { sessionPresenter } from '../services/session-labels.js';
 import { automaticConversationContext } from '../shared/conversation-context.js';
 import { broadcastEphemeral } from '../services/event-store.js';
 import { getTracker } from '../services/session-state.js';
-import { consumePendingSpawn, getSession, spawnSession, waitForSessionLifecycle, type Session } from '../services/session-manager.js';
+import { canQueueSessionRecordDeletion, consumePendingSpawn, getSession, killSession, spawnSession, waitForSessionLifecycle, waitForStoppedSessionLifecycle, type Session } from '../services/session-manager.js';
 import { platformApi, PlatformApiError } from '../services/platform-ai/tools.js';
+import { removeSessionTabs } from '../services/session-tabs.js';
+import { sessionRecordDeletionState } from '../services/session-record-deletion.js';
 
 const LIMITS = { page_size: 50, targets: 8, pending_submissions: 20, message_bytes: 48 * 1024, operation_retention_seconds: 7 * 24 * 60 * 60 };
 const tabId = z.string().regex(/^[\w-]{1,100}$/);
@@ -27,6 +29,10 @@ const create = z.object({
     service_tier: z.string().max(50).optional(),
   }).strict(),
   initial_message: message.optional(),
+}).strict();
+const deleteTab = z.object({
+  request_id: tabId,
+  delete_history: z.boolean().default(false),
 }).strict();
 const send = z.object({
   request_id: tabId,
@@ -49,9 +55,10 @@ function scopeFor(req: FastifyRequest): Scope | undefined {
   return { source, userId: source.created_by_user_id, projectId: source.project_id };
 }
 
-function ownedTab(scope: Scope, id: string) {
+function ownedTab(scope: Scope, id: string, includeEnded = false) {
   const target = getSession(id);
-  return target?.created_by_user_id === scope.userId && target.project_id === scope.projectId && agentDocsAllowed(target) ? target : undefined;
+  const accessible = includeEnded ? agentDocsTabAccessible : agentDocsAllowed;
+  return target?.created_by_user_id === scope.userId && target.project_id === scope.projectId && accessible(target) ? target : undefined;
 }
 
 function operation(scope: Scope, requestId: string): Operation | undefined {
@@ -60,7 +67,12 @@ function operation(scope: Scope, requestId: string): Operation | undefined {
 }
 
 function operationView(requestId: string, row: Operation) {
-  return { request_id: requestId, state: row.state, result: row.result ? JSON.parse(row.result) : null };
+  const result = row.result ? JSON.parse(row.result) : null;
+  if (result?.history_status === 'pending') {
+    const state = sessionRecordDeletionState(result.tab_id);
+    result.history_status = state ?? (getSession(result.tab_id) ? 'unknown' : 'deleted');
+  }
+  return { request_id: requestId, state: row.state, result };
 }
 
 function recordResult(scope: Scope, requestId: string, result: Json, settled = false) {
@@ -159,6 +171,20 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
     CREATE INDEX IF NOT EXISTS agent_docs_inbox_expiry ON agent_docs_handoffs(created_at);
     CREATE INDEX IF NOT EXISTS agent_docs_inbox_reply ON agent_docs_handoffs(reply_to);
   `);
+  // Recover relationships for earlier creations whose receipts still identify both tabs.
+  getDb().exec(`
+    WITH creation AS MATERIALIZED (
+      SELECT tab_id AS parent_id, json_extract(result, '$.tab_id') AS child_id
+      FROM agent_docs_operations
+      WHERE CASE WHEN json_valid(result) THEN json_type(result, '$.launch_status') = 'text' ELSE 0 END
+        AND created_at >= datetime('now', '-7 days')
+    )
+    UPDATE sessions AS child SET parent_session_id = parent.id
+    FROM creation JOIN sessions AS parent ON parent.id = creation.parent_id
+    WHERE child.id = creation.child_id AND child.id <> parent.id AND child.parent_session_id IS NULL
+      AND child.project_id = parent.project_id AND child.created_by_user_id = parent.created_by_user_id
+      AND child.mode = 'session' AND parent.mode = 'session'
+  `);
   app.register(async scoped => {
     scoped.addHook('onRequest', async (req, reply) => {
       const scope = scopeFor(req);
@@ -174,23 +200,26 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
       const scope = readScope(req);
       const user = findUserById(scope.userId);
       const operations = ['list-tabs', 'read-tab', 'inbox', 'read-message', 'execution-options', 'operation'];
-      if (agentDocsAllowed(scope.source, 'write')) operations.push('create-tab', 'send-message');
-      return { version: '1.1.0', source_tab_id: scope.source.id, project_id: scope.projectId,
+      if (agentDocsAllowed(scope.source, 'write')) operations.push('create-tab', 'send-message', 'delete-tab');
+      return { version: '1.2.0', source_tab_id: scope.source.id, project_id: scope.projectId,
         user: { id: user?.id, display_name: user?.display_name || user?.username }, operations, limits: LIMITS };
     });
 
-    scoped.get<{ Querystring: { cursor?: string } }>('/tabs', async (req, reply) => {
+    scoped.get<{ Querystring: { cursor?: string; include_ended?: string } }>('/tabs', async (req, reply) => {
       const scope = readScope(req);
       const cursor = Number(req.query.cursor || 0);
       if (!Number.isSafeInteger(cursor) || cursor < 0) return reply.code(400).send({ error: '分页游标无效' });
       const rows = getDb().prepare("SELECT id,rowid AS cursor FROM sessions WHERE created_by_user_id=? AND project_id=? AND mode='session' AND rowid>? ORDER BY rowid LIMIT ?")
         .all(scope.userId, scope.projectId, cursor, LIMITS.page_size + 1) as Array<{ id: string; cursor: number }>;
       const present = sessionPresenter(scope.userId);
+      const includeEnded = req.query.include_ended === 'true';
+      const mayDelete = agentDocsAllowed(scope.source, 'write');
       const tabs = rows.slice(0, LIMITS.page_size).flatMap(row => {
-        const target = ownedTab(scope, row.id);
+        const target = ownedTab(scope, row.id, includeEnded);
         if (!target) return [];
-        return [{ tab_id: row.id, name: present(target).tab_name, agent_id: agentForSession(target).descriptor.id,
+        return [{ tab_id: row.id, parent_tab_id: target.parent_session_id ?? null, name: present(target).tab_name, agent_id: agentForSession(target).descriptor.id,
           state: getTracker(row.id)?.state.processState || target.status,
+          can_delete: mayDelete && target.id !== scope.source.id && agentDocsTabAccessible(target, 'write'),
           can_receive: !!nativeConversationId(target) && !!agentForSession(target).input.supportsImmediate && target.id !== scope.source.id && ['running','detached','released'].includes(target.status) }];
       });
       return { tabs, next_cursor: rows.length > LIMITS.page_size ? String(rows[LIMITS.page_size - 1].cursor) : null };
@@ -198,13 +227,13 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
 
     scoped.get<{ Params: { id: string } }>('/tabs/:id', async (req, reply) => {
       const scope = readScope(req);
-      const target = ownedTab(scope, req.params.id);
+      const target = ownedTab(scope, req.params.id, true);
       if (!target) return reply.code(404).send({ error: '找不到标签页' });
       const page = await platformApi(app, scope.userId, 'GET', `/api/sessions/${encodeURIComponent(target.id)}/conversation?limit=4`);
       const messages = Array.isArray(page.messages) ? page.messages.filter((item: { role: unknown; text: string; presentation?: string }) =>
         (item.role === 'user' || item.role === 'assistant') && typeof item.text === 'string' && !item.presentation && !automaticConversationContext(item.text))
         .map((item: { role: string; text: string }) => ({ role: item.role, text: item.text.slice(0, 2400) })) : [];
-      return { tab_id: target.id, state: getTracker(target.id)?.state.processState || target.status, messages };
+      return { tab_id: target.id, parent_tab_id: target.parent_session_id ?? null, state: getTracker(target.id)?.state.processState || target.status, messages };
     });
 
     scoped.get<{ Querystring: { cursor?: string } }>('/inbox', async (req, reply) => {
@@ -268,6 +297,39 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
       });
     });
 
+    scoped.post<{ Params: { id: string } }>('/tabs/:id/delete', async (req, reply) => {
+      const parsed = deleteTab.safeParse(req.body);
+      if (!parsed.success || !tabId.safeParse(req.params.id).success) {
+        return reply.code(400).send({ error: '无效的标签页删除请求' });
+      }
+      const scope = readScope(req), id = req.params.id;
+      const input = { ...parsed.data, tab_id: id };
+      return mutate(scope, 'delete', input, async () => {
+        const result = { tab_id: id, status: 'rejected' };
+        const target = ownedTab(scope, id, true);
+        if (!target || target.id === scope.source.id || !agentDocsTabAccessible(target, 'write')) {
+          return { ...result, reason: '目标标签不可删除' };
+        }
+        if (input.delete_history) {
+          try {
+            await platformApi(app, scope.userId, 'DELETE', `/api/sessions/${encodeURIComponent(id)}/record?stop=true&background=true`);
+          } catch (error) {
+            if (error instanceof PlatformApiError && error.statusCode < 500) return { ...result, reason: error.message };
+            throw error;
+          }
+          return { tab_id: id, status: 'closed', history_status: 'pending' };
+        }
+        await killSession(id);
+        await waitForStoppedSessionLifecycle(id);
+        const historyState = sessionRecordDeletionState(id);
+        if (!getSession(id)) return { tab_id: id, status: 'closed', history_status: 'deleted' };
+        if (historyState === 'pending') return { tab_id: id, status: 'closed', history_status: historyState };
+        if (!canQueueSessionRecordDeletion(id)) throw Error('标签页关闭状态待确认');
+        removeSessionTabs(id, { userId: scope.userId, projectId: scope.projectId });
+        return { tab_id: id, status: 'closed', history_status: 'retained' };
+      });
+    });
+
     scoped.post('/tabs', async (req, reply) => {
       const parsed = create.safeParse(req.body);
       if (!parsed.success) return reply.code(400).send({ error: '无效的标签页创建请求' });
@@ -282,16 +344,17 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
         if (!project) return rejected('项目不可用');
         let existing;
         try {
-          existing = await platformApi(app, scope.userId, 'POST', '/api/sessions', {
+          const source = { id: scope.source.id, userId: scope.userId, projectId: scope.projectId };
+          existing = await withAgentDocsCreation(source, () => platformApi(app, scope.userId, 'POST', '/api/sessions', {
             project_id: scope.projectId, project_path: project.path, mode: 'session', cli_type: agent_id,
             environment_id, launch_preference: launchPreference, tab_name: input.name,
-          });
+          }));
         } catch (error) {
           if (error instanceof PlatformApiError && error.statusCode < 500) return rejected(error.message);
           throw error;
         }
         const id = existing.session.id as string;
-        const state = { tab_id: id, launch_status: 'starting', applied_execution: null as Json | null,
+        const state = { tab_id: id, parent_tab_id: scope.source.id, launch_status: 'starting', applied_execution: null as Json | null,
           initial_message_status: input.initial_message ? 'unknown' : null };
         recordResult(scope, input.request_id, state);
         const pending = consumePendingSpawn(id);
