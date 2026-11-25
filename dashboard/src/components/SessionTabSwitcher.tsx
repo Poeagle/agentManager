@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Dialog } from './Dialog';
 
 export function SessionTabSwitcher({ tabs, activeId, onSelect, onClose }: {
-  tabs: { id: string; label: string }[];
+  tabs: { id: string; label: string; scheduled?: boolean }[];
   activeId?: string | null;
   onSelect: (id: string) => void;
   onClose: () => void;
@@ -32,9 +32,9 @@ export function SessionTabSwitcher({ tabs, activeId, onSelect, onClose }: {
           type="button"
           aria-current={tab.id === activeId ? true : undefined}
           onClick={() => onSelect(tab.id)}
-          className="w-full truncate rounded-md px-3 py-2 text-left text-sm hover:bg-[var(--bg-tertiary)] aria-[current=true]:font-semibold aria-[current=true]:text-[var(--accent)]"
+          className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-[var(--bg-tertiary)] aria-[current=true]:font-semibold aria-[current=true]:text-[var(--accent)]"
           title={tab.label}
-        >{tab.label}</button>
+        ><span className="truncate">{tab.label}</span>{tab.scheduled && <span className="workspace-session-scheduled">定时</span>}</button>
       </li>)}
     </ul> : <p role="status" className="px-3 py-2 text-sm text-[var(--text-secondary)]">没有匹配的会话</p>}
   </Dialog>;

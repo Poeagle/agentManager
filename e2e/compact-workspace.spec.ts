@@ -30,6 +30,11 @@ test('compact workspace preserves readable labels, activity details and keyboard
       VALUES (?,? ,? ,?,'session',?,?,?, ?,?)`)
       .run(`compact-${index}`,projects[0].id,label,index===2?'failed':'completed',index%2?'claude':'codex',user.id,now,now,now);
   } finally {db.close();}
+  const schedule = await page.request.post('/api/scheduled-tasks', { data: {
+    project_id: projects[0].id, target_type: 'existing', target_session_id: 'compact-23',
+    name: '会话绑定验证', prompt: 'fixture', schedule_kind: 'daily', schedule_value: '09:00', timezone: 'UTC', enabled: false,
+  } });
+  expect(schedule.ok()).toBeTruthy();
   await page.request.put('/api/user-state/app',{data:{value:{projectTabs:projects.map(project=>({projectId:project.id,projectName:project.name})),activeTab:`project-${projects[0].id}`}}});
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${projects[0].id}`)}`,{data:{value:{
     activeMode:'terminal',terminalInstances:labels.map((label,index)=>({id:`compact-${index}`,label,customLabel:label})),
@@ -49,13 +54,20 @@ test('compact workspace preserves readable labels, activity details and keyboard
   const sessions = page.getByLabel('会话标签',{exact:true}).filter({visible:true});
   await expect(sessions.getByRole('button',{name:'jira',exact:true})).toBeVisible();
   expect((await header.boundingBox())!.height).toBe(32);
-  expect((await projectTabs.boundingBox())!.height).toBe(28);
+  const projectRows = projectTabs.locator('.workspace-tab');
+  const firstProject = (await projectRows.nth(0).boundingBox())!;
+  const secondProjectRow = (await projectRows.nth(1).boundingBox())!;
+  expect(firstProject.x).toBe(secondProjectRow.x);
+  expect(secondProjectRow.y).toBeGreaterThan(firstProject.y);
   const toolbar = page.getByRole('toolbar', { name: '项目工具栏' });
   const toolBounds = await Promise.all((await toolbar.getByRole('button').all()).map(button => button.boundingBox()));
   expect(toolBounds).toHaveLength(6);
   expect(toolBounds.every(box => box?.y === toolBounds[0]?.y)).toBe(true);
   expect(toolBounds.at(-1)!.x).toBeGreaterThan(toolBounds[0]!.x);
+  expect(toolBounds[0]!.y).toBeLessThan((await header.boundingBox())!.height);
   const sessionRows = sessions.locator('.workspace-tab');
+  await expect(sessions.locator('[data-session-id="compact-23"]').getByText('定时', { exact: true })).toBeVisible();
+  await expect(sessions.getByText('定时', { exact: true })).toHaveCount(1);
   const firstRow = (await sessionRows.nth(0).boundingBox())!;
   const secondRow = (await sessionRows.nth(1).boundingBox())!;
   expect(firstRow.x).toBe(secondRow.x);
@@ -110,6 +122,23 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await expect(secondProject).toHaveCount(0);
   await expect(sessions.getByRole('button', { name: '界面设计', exact: true })).toBeVisible();
   const sidebar = page.getByRole('complementary', { name: '会话列表' });
+  const workspaceNav = page.getByRole('complementary', { name: '工作区导航' });
+  await expect(workspaceNav.getByRole('complementary', { name: '会话列表' })).toBeVisible();
+  expect((await sidebar.boundingBox())!.y).toBeGreaterThan((await projectTabs.boundingBox())!.y);
+  const separator = page.getByRole('separator', { name: '调整工作区导航宽度' });
+  const beforeResize = Number(await separator.getAttribute('aria-valuenow'));
+  const handle = (await separator.boundingBox())!;
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x + 64, handle.y + handle.height / 2, { steps: 8 });
+  await page.mouse.up();
+  const draggedWidth = Number(await separator.getAttribute('aria-valuenow'));
+  expect(draggedWidth).toBeGreaterThan(beforeResize + 55);
+  await separator.press('ArrowRight');
+  const savedWidth = draggedWidth + 16;
+  await expect(separator).toHaveAttribute('aria-valuenow', String(savedWidth));
+  await page.reload();
+  await expect(separator).toHaveAttribute('aria-valuenow', String(savedWidth));
   const desktopSearch = sidebar.getByRole('searchbox', { name: '搜索会话' });
   await desktopSearch.fill('并行任务 28');
   await expect(sessionRows).toHaveCount(1);
@@ -126,6 +155,12 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await page.screenshot({path:testInfo.outputPath('compact-workspace-desktop.png')});
   await page.setViewportSize({width:390,height:844});
   await expect(sidebar).toBeHidden();
+  await expect(projectTabs).toBeHidden();
+  const mobileProjects = page.getByRole('button', { name: '项目导航', exact: true });
+  await mobileProjects.click();
+  await expect(projectTabs.getByRole('button', { name: 'dolphindb_manager' })).toBeVisible();
+  await projectTabs.getByRole('button', { name: 'dolphindb_manager' }).click();
+  await expect(projectTabs).toBeHidden();
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
   await page.screenshot({path:testInfo.outputPath('compact-workspace-mobile.png')});
 
@@ -145,7 +180,7 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await expect(createSession).toBeInViewport();
 
   await switcher.click();
-  await expect(dialog.getByRole('button', { name: '并行任务 16', exact: true })).toHaveAttribute('aria-current', 'true');
+  await expect(dialog.getByRole('button', { name: '并行任务 16 定时', exact: true })).toHaveAttribute('aria-current', 'true');
   await search.fill('missing-tab');
   await expect(dialog.getByText('没有匹配的会话')).toBeVisible();
   await search.press('Escape');

@@ -50,6 +50,8 @@ interface ProjectViewProps {
   onFocusHarnessHandled?: () => void;
   conversationTarget?:{sessionId:string;focus:ConversationFocus}|null;
   notificationUnread?:Record<string,number>;
+  toolbarHost?: HTMLElement | null;
+  sessionNavigationHost?: HTMLElement | null;
 }
 /** A restored tab can load independently of expensive list/history enrichment. */
 function RestoreSessionRecord({sessionId,projectId,onRestore}:{sessionId:string;projectId:string;onRestore:(session:Session)=>void}) {
@@ -160,7 +162,7 @@ const projectToolButtons = [
 // handlers), so the shallow compare holds.
 export const ProjectView = memo(ProjectViewImpl);
 
-function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled, configuredHarnessUrl = '', configuredHarnessModel, focusHarness, onFocusHarnessHandled, conversationTarget,notificationUnread }: ProjectViewProps) {
+function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled, configuredHarnessUrl = '', configuredHarnessModel, focusHarness, onFocusHarnessHandled, conversationTarget, notificationUnread, toolbarHost, sessionNavigationHost }: ProjectViewProps) {
   const queryClient = useQueryClient();
   const sessionResume = useSessionResume(projectId);
   const [terminalConnectionVersions, setTerminalConnectionVersions] = useState<Record<string, number>>({});
@@ -1225,6 +1227,15 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     ? workspaceTabs.filter(tab => (tab.customLabel?.trim() || tab.label).toLocaleLowerCase().includes(sessionFilter))
     : workspaceTabs;
   const activeWorkspaceTab = activeMode === 'harness' ? HARNESS_TAB.id : activeMode === 'terminal' ? activeTerminalId : null;
+  const { data: scheduledData } = useQuery({
+    queryKey: ['scheduled-tasks', projectId],
+    queryFn: () => api.scheduledTasks.list(projectId),
+    enabled: active && workspaceTabs.length > 0,
+    retry: false,
+  });
+  const scheduledSessionIds = useMemo(() => new Set(
+    scheduledData?.tasks.flatMap(task => task.target_type === 'existing' && task.target_session_id ? [task.target_session_id] : []),
+  ), [scheduledData]);
 
   useEffect(() => {
     if (!active || !sessionSidebarOpen || sessionFilter || !activeWorkspaceTab) return;
@@ -1240,7 +1251,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     revealActive();
     window.addEventListener('resize', revealActive);
     return () => window.removeEventListener('resize', revealActive);
-  }, [active, activeWorkspaceTab, sessionFilter, sessionSidebarOpen, workspaceTabs.length]);
+  }, [active, activeWorkspaceTab, sessionFilter, sessionSidebarOpen, sessionNavigationHost, workspaceTabs.length]);
 
   function selectWorkspaceTab(id: string) {
     setSessionSearch('');
@@ -1257,216 +1268,164 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const adoptWidth = showAdoptMenu ? Math.min(360, window.innerWidth - 16) : 0;
   const adoptRight = adoptAnchor ? Math.min(window.innerWidth - 8, adoptAnchor.right) : 8;
 
-  return (
-    <div className="workspace-project h-full flex flex-col">
-      <div className="workspace-project-toolbar">
-        <button
-          type="button"
-          className="workspace-subtab-action workspace-session-sidebar-toggle"
-          aria-label={sessionSidebarOpen ? '收起会话列表' : '展开会话列表'}
-          aria-expanded={sessionSidebarOpen}
-          aria-controls={`project-session-sidebar-${projectId}`}
-          title={sessionSidebarOpen ? '收起会话列表' : '展开会话列表'}
-          onClick={() => setSessionSidebarOpen(open => !open)}
-        >
-          <PanelLeft className="h-4 w-4" aria-hidden="true" />
-        </button>
-        {workspaceTabs.length > 0 && <button
-          type="button"
-          className="workspace-subtab-action workspace-compact-session-switcher"
-          aria-label="切换会话"
-          aria-haspopup="dialog"
-          title="切换会话"
-          onClick={() => setShowTabSwitcher(true)}
-        >
-          <List className="h-4 w-4" aria-hidden="true" />
-        </button>}
-        <div role="toolbar" aria-label="项目工具栏" className="workspace-project-tools">
-          {projectToolButtons.map(({ id, icon: Icon, title }) => {
-            const isActive = id==='explorer'?fileTreeOpen && showSessionWorkspace:activeMode === id;
-            return (
-              <button
-                key={id}
-                type="button"
-                onClick={() => {
-                  if(id==='explorer') {
-                    setFileTreeOpen(open=>!open);
-                    if(!showSessionWorkspace)setActiveMode('terminal');
-                  } else {
-                    setActiveMode(id);
-                    if(id==='terminal' && activeTerminalId)focusTerminalById(activeTerminalId);
-                  }
-                }}
-                aria-expanded={id==='explorer'?fileTreeOpen && showSessionWorkspace:undefined}
-                aria-controls={id==='explorer'?`project-file-tree-${projectId}`:undefined}
-                onDragOver={id === 'explorer' ? (event) => {
-                  if (!isFileDrag(event.dataTransfer)) return;
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = 'copy';
-                  setFileTreeOpen(true);
-                  if(!showSessionWorkspace)setActiveMode('terminal');
-                } : undefined}
-                onDrop={id === 'explorer' ? (event) => {
-                  if (!isFileDrag(event.dataTransfer)) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setFileTreeOpen(true);
-                  if(!showSessionWorkspace)setActiveMode('terminal');
-                  const files = droppedFiles(event.dataTransfer);
-                  setExplorerUploadRequest((previous) => ({ ...files, explorerId: activeExplorerId, key: (previous?.key ?? 0) + 1 }));
-                } : undefined}
-                aria-label={title}
-                aria-pressed={id === 'explorer' ? undefined : isActive}
-                title={title}
-                className="workspace-project-tool flex items-center justify-center rounded transition-colors"
-                style={{
-                  background: isActive ? 'var(--bg-tertiary)' : 'transparent',
-                  color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
-                }}
-              >
-                <Icon className="w-4 h-4" />
-              </button>
-            );
-          })}
-        </div>
-        <div className="workspace-session-actions">
-          {/* Create directly through the same dialog as the project list. */}
-          <button
-            type="button"
-            onClick={() => setShowNewSession(true)}
-            disabled={!project || projectOpenModes(project, harnessUrl).length === 0}
-            className="workspace-subtab-action"
-            title="新建会话"
-            aria-label="新建会话"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
-
-          {/* Adopt external session button — on-demand scan */}
-          <div ref={adoptMenuRef}>
+  const projectToolbar = (
+    <div className="workspace-project-toolbar">
+      <button
+        type="button"
+        className="workspace-subtab-action workspace-session-sidebar-toggle"
+        aria-label={sessionSidebarOpen ? '收起会话列表' : '展开会话列表'}
+        aria-expanded={sessionSidebarOpen}
+        aria-controls={`project-session-sidebar-${projectId}`}
+        title={sessionSidebarOpen ? '收起会话列表' : '展开会话列表'}
+        onClick={() => setSessionSidebarOpen(open => !open)}
+      >
+        <PanelLeft className="h-4 w-4" aria-hidden="true" />
+      </button>
+      {workspaceTabs.length > 0 && <button
+        type="button"
+        className="workspace-subtab-action workspace-compact-session-switcher"
+        aria-label="切换会话"
+        aria-haspopup="dialog"
+        title="切换会话"
+        onClick={() => setShowTabSwitcher(true)}
+      >
+        <List className="h-4 w-4" aria-hidden="true" />
+      </button>}
+      <div role="toolbar" aria-label="项目工具栏" className="workspace-project-tools">
+        {projectToolButtons.map(({ id, icon: Icon, title }) => {
+          const isActive = id==='explorer'?fileTreeOpen && showSessionWorkspace:activeMode === id;
+          return (
             <button
+              key={id}
               type="button"
-              aria-label="恢复或接管会话"
-              aria-expanded={showAdoptMenu}
-              onClick={async () => {
-                if (showAdoptMenu) {
-                  setShowAdoptMenu(false);
+              onClick={() => {
+                if(id==='explorer') {
+                  setFileTreeOpen(open=>!open);
+                  if(!showSessionWorkspace)setActiveMode('terminal');
                 } else {
-                  await refetchDiscoverable();
-                  setShowAdoptMenu(true);
+                  setActiveMode(id);
+                  if(id==='terminal' && activeTerminalId)focusTerminalById(activeTerminalId);
                 }
               }}
-              className="flex items-center gap-1 px-2 rounded-md shrink-0 transition-colors text-xs"
-              title={hiddenSessions.length > 0 ? `${hiddenSessions.length} hidden session(s) — click to restore` : endedSessions.length > 0 ? `${endedSessions.length} recent ended session(s) — click to reopen` : 'Scan for external sessions to adopt'}
+              aria-expanded={id==='explorer'?fileTreeOpen && showSessionWorkspace:undefined}
+              aria-controls={id==='explorer'?`project-file-tree-${projectId}`:undefined}
+              onDragOver={id === 'explorer' ? (event) => {
+                if (!isFileDrag(event.dataTransfer)) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'copy';
+                setFileTreeOpen(true);
+                if(!showSessionWorkspace)setActiveMode('terminal');
+              } : undefined}
+              onDrop={id === 'explorer' ? (event) => {
+                if (!isFileDrag(event.dataTransfer)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                setFileTreeOpen(true);
+                if(!showSessionWorkspace)setActiveMode('terminal');
+                const files = droppedFiles(event.dataTransfer);
+                setExplorerUploadRequest((previous) => ({ ...files, explorerId: activeExplorerId, key: (previous?.key ?? 0) + 1 }));
+              } : undefined}
+              aria-label={title}
+              aria-pressed={id === 'explorer' ? undefined : isActive}
+              title={title}
+              className="workspace-project-tool flex items-center justify-center rounded transition-colors"
               style={{
-                height: 24,
-                color: hiddenSessions.length > 0 ? '#f59e0b' : showAdoptMenu ? 'var(--warning, #f59e0b)' : 'var(--text-secondary)',
-                background: showAdoptMenu ? 'var(--bg-tertiary)' : 'transparent',
+                background: isActive ? 'var(--bg-tertiary)' : 'transparent',
+                color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
               }}
             >
-              <Download className="w-3.5 h-3.5" />
-              {hiddenSessions.length > 0 && (
-                <span
-                  className="text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center"
-                  style={{ background: '#f59e0b', color: '#000' }}
-                >
-                  {hiddenSessions.length}
-                </span>
-              )}
+              <Icon className="w-4 h-4" />
             </button>
+          );
+        })}
+      </div>
+      <div className="workspace-session-actions">
+        {/* Create directly through the same dialog as the project list. */}
+        <button
+          type="button"
+          onClick={() => setShowNewSession(true)}
+          disabled={!project || projectOpenModes(project, harnessUrl).length === 0}
+          className="workspace-subtab-action"
+          title="新建会话"
+          aria-label="新建会话"
+        >
+          <Plus className="w-4 h-4" />
+        </button>
 
-            {showAdoptMenu && createPortal(
-              <div
-                ref={adoptDropdownRef}
-                className="fixed z-[9999] max-h-[60dvh] overflow-y-auto rounded-lg border py-1 shadow-lg"
-                style={{
-                  background: 'var(--bg-primary)',
-                  borderColor: 'var(--border)',
-                  top: (adoptAnchor?.bottom ?? 0) + 4,
-                  width: adoptWidth,
-                  left: Math.max(8, adoptRight - adoptWidth),
-                }}
+        {/* Adopt external session button — on-demand scan */}
+        <div ref={adoptMenuRef}>
+          <button
+            type="button"
+            aria-label="恢复或接管会话"
+            aria-expanded={showAdoptMenu}
+            onClick={async () => {
+              if (showAdoptMenu) {
+                setShowAdoptMenu(false);
+              } else {
+                await refetchDiscoverable();
+                setShowAdoptMenu(true);
+              }
+            }}
+            className="flex items-center gap-1 px-2 rounded-md shrink-0 transition-colors text-xs"
+            title={hiddenSessions.length > 0 ? `${hiddenSessions.length} hidden session(s) — click to restore` : endedSessions.length > 0 ? `${endedSessions.length} recent ended session(s) — click to reopen` : 'Scan for external sessions to adopt'}
+            style={{
+              height: 24,
+              color: hiddenSessions.length > 0 ? '#f59e0b' : showAdoptMenu ? 'var(--warning, #f59e0b)' : 'var(--text-secondary)',
+              background: showAdoptMenu ? 'var(--bg-tertiary)' : 'transparent',
+            }}
+          >
+            <Download className="w-3.5 h-3.5" />
+            {hiddenSessions.length > 0 && (
+              <span
+                className="text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center"
+                style={{ background: '#f59e0b', color: '#000' }}
               >
-                {/* Hidden sessions (tabs the user hid but processes still running) */}
-                {hiddenSessions.length > 0 && (
-                  <>
-                    <div className="flex items-center justify-between px-3 py-1.5">
-                      <span
-                        className="text-[10px] font-semibold uppercase tracking-wider"
-                        style={{ color: 'var(--text-secondary)' }}
+                {hiddenSessions.length}
+              </span>
+            )}
+          </button>
+
+          {showAdoptMenu && createPortal(
+            <div
+              ref={adoptDropdownRef}
+              className="fixed z-[9999] max-h-[60dvh] overflow-y-auto rounded-lg border py-1 shadow-lg"
+              style={{
+                background: 'var(--bg-primary)',
+                borderColor: 'var(--border)',
+                top: (adoptAnchor?.bottom ?? 0) + 4,
+                width: adoptWidth,
+                left: Math.max(8, adoptRight - adoptWidth),
+              }}
+            >
+              {/* Hidden sessions (tabs the user hid but processes still running) */}
+              {hiddenSessions.length > 0 && (
+                <>
+                  <div className="flex items-center justify-between px-3 py-1.5">
+                    <span
+                      className="text-[10px] font-semibold uppercase tracking-wider"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      Hidden
+                    </span>
+                    {hiddenSessions.length > 1 && (
+                      <button
+                        onClick={unhideAll}
+                        className="text-[10px] font-medium px-1.5 py-0.5 rounded hover:opacity-80 transition-opacity"
+                        style={{ color: 'var(--accent)', background: 'var(--bg-tertiary)' }}
                       >
-                        Hidden
-                      </span>
-                      {hiddenSessions.length > 1 && (
-                        <button
-                          onClick={unhideAll}
-                          className="text-[10px] font-medium px-1.5 py-0.5 rounded hover:opacity-80 transition-opacity"
-                          style={{ color: 'var(--accent)', background: 'var(--bg-tertiary)' }}
-                        >
-                          Restore All
-                        </button>
-                      )}
-                    </div>
-                    {hiddenSessions.map((s) => {
-                      const isTerminal = s.task === 'Terminal';
-                      const cliLabel=sessionAgent(s).label;
-                      const typeLabel = isTerminal ? 'Terminal' : `${cliLabel} Session`;
-                      const typeColor = isTerminal?'#f59e0b':sessionAgent(s).presentation.color;
-                      return (
-                        <button
-                          key={s.id}
-                          onClick={() => unhideSession(s.id)}
-                          className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-tertiary)] transition-colors"
-                          style={{ color: 'var(--text-primary)' }}
-                        >
-                          <div className="flex items-center gap-1.5">
-                            <span
-                              className="text-[9px] font-semibold px-1.5 py-0.5 rounded"
-                              style={{ background: `${typeColor}20`, color: typeColor }}
-                            >
-                              {typeLabel}
-                            </span>
-                            <span className="truncate">{s.task === 'Terminal' ? 'Interactive shell' : s.task?.slice(0, 50)}</span>
-                          </div>
-                          <div className="truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                            {s.status} · {s.created_at ? new Date(s.created_at + (s.created_at.endsWith('Z') ? '' : 'Z')).toLocaleString() : 'unknown'}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </>
-                )}
-
-                {/* Divider between sections */}
-                {hiddenSessions.length > 0 && discoverableSessions.length > 0 && (
-                  <div className="mx-3 my-1" style={{ height: 1, background: 'var(--border)' }} />
-                )}
-
-                {/* External sessions (tmux sessions not tracked by AgentManager) */}
-                <div
-                  className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
-                  style={{ color: 'var(--text-secondary)' }}
-                >
-                  External
-                </div>
-                {discoverableSessions.length === 0 ? (
-                  <div
-                    className="px-3 py-2 text-xs"
-                    style={{ color: 'var(--text-secondary)' }}
-                  >
-                    No external sessions found
+                        Restore All
+                      </button>
+                    )}
                   </div>
-                ) : (
-                  discoverableSessions.map((s) => {
-                    const isTerminal = !s.task || s.task === 'Terminal';
-                    const descriptor=project?.agent_catalog?.find(agent=>agent.id===s.cliType)??sessionAgent({cli_type:s.cliType});
-                    const cliLabel=descriptor.label;
-                    const typeLabel = isTerminal ? 'Terminal' : `${cliLabel ? cliLabel + ' ' : ''}Session`;
-                    const typeColor=isTerminal?'#f59e0b':descriptor.presentation.color;
+                  {hiddenSessions.map((s) => {
+                    const isTerminal = s.task === 'Terminal';
+                    const cliLabel=sessionAgent(s).label;
+                    const typeLabel = isTerminal ? 'Terminal' : `${cliLabel} Session`;
+                    const typeColor = isTerminal?'#f59e0b':sessionAgent(s).presentation.color;
                     return (
                       <button
-                        key={s.socketPath}
-                        onClick={() => handleAdoptSession(s.socketPath)}
+                        key={s.id}
+                        onClick={() => unhideSession(s.id)}
                         className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-tertiary)] transition-colors"
                         style={{ color: 'var(--text-primary)' }}
                       >
@@ -1477,233 +1436,293 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                           >
                             {typeLabel}
                           </span>
-                          <span className="truncate">{s.task?.slice(0, 60) || 'Session'}</span>
+                          <span className="truncate">{s.task === 'Terminal' ? 'Interactive shell' : s.task?.slice(0, 50)}</span>
                         </div>
                         <div className="truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                          {s.startedAt ? new Date(s.startedAt + (String(s.startedAt).endsWith('Z') ? '' : 'Z')).toLocaleString() : 'unknown time'}
+                          {s.status} · {s.created_at ? new Date(s.created_at + (s.created_at.endsWith('Z') ? '' : 'Z')).toLocaleString() : 'unknown'}
                         </div>
                       </button>
                     );
-                  })
-                )}
+                  })}
+                </>
+              )}
 
-                {/* Ended / recent sessions — reopen to restore the last screen + resume */}
-                {endedSessions.length > 0 && (
-                  <>
-                    <div className="mx-3 my-1" style={{ height: 1, background: 'var(--border)' }} />
-                    <div
-                      className="flex items-center justify-between gap-3 px-3 py-1.5"
-                      style={{ color: 'var(--text-secondary)' }}
+              {/* Divider between sections */}
+              {hiddenSessions.length > 0 && discoverableSessions.length > 0 && (
+                <div className="mx-3 my-1" style={{ height: 1, background: 'var(--border)' }} />
+              )}
+
+              {/* External sessions (tmux sessions not tracked by AgentManager) */}
+              <div
+                className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                External
+              </div>
+              {discoverableSessions.length === 0 ? (
+                <div
+                  className="px-3 py-2 text-xs"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  No external sessions found
+                </div>
+              ) : (
+                discoverableSessions.map((s) => {
+                  const isTerminal = !s.task || s.task === 'Terminal';
+                  const descriptor=project?.agent_catalog?.find(agent=>agent.id===s.cliType)??sessionAgent({cli_type:s.cliType});
+                  const cliLabel=descriptor.label;
+                  const typeLabel = isTerminal ? 'Terminal' : `${cliLabel ? cliLabel + ' ' : ''}Session`;
+                  const typeColor=isTerminal?'#f59e0b':descriptor.presentation.color;
+                  return (
+                    <button
+                      key={s.socketPath}
+                      onClick={() => handleAdoptSession(s.socketPath)}
+                      className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-tertiary)] transition-colors"
+                      style={{ color: 'var(--text-primary)' }}
                     >
-                      <span className="text-[10px] font-semibold uppercase tracking-wider">Ended / Recent</span>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setBulkDeleteEndedError(null);
-                          setConfirmBulkDeleteEnded(true);
-                          setShowAdoptMenu(false);
-                        }}
-                        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors hover:bg-red-500/10"
-                        style={{ color: 'var(--error)' }}
-                        title="Delete all ended session records for this project"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                        Delete all
-                      </button>
-                    </div>
-                    {endedSessions.map((s) => {
-                      const isTerminal = s.task === 'Terminal';
-                      const cliLabel=sessionAgent(s).label;
-                      const typeLabel = isTerminal ? 'Terminal' : `${cliLabel} Session`;
-                      const typeColor = isTerminal?'#f59e0b':sessionAgent(s).presentation.color;
-                      const when = s.completed_at || s.created_at;
-                      return (
-                        <div key={s.id} className="flex items-center group/ended hover:bg-[var(--bg-tertiary)] transition-colors">
-                          <button
-                            onClick={() => unhideSession(s.id)}
-                            className="flex-1 min-w-0 text-left px-3 py-2 text-xs"
-                            style={{ color: 'var(--text-primary)' }}
-                            title="Reopen — restore the last screen and resume"
-                          >
-                            <div className="flex items-center gap-1.5">
-                              <span
-                                className="text-[9px] font-semibold px-1.5 py-0.5 rounded"
-                                style={{ background: `${typeColor}20`, color: typeColor }}
-                              >
-                                {typeLabel}
-                              </span>
-                              <span className="truncate">{isTerminal ? 'Interactive shell' : (s.task?.slice(0, 50) || 'Session')}</span>
-                            </div>
-                            <div className="truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                              {s.status} · {when ? new Date(when + (when.endsWith('Z') ? '' : 'Z')).toLocaleString() : 'unknown'}
-                            </div>
-                          </button>
-                          <button
-                            onClick={() => deleteEndedSession(s.id)}
-                            className="px-2 self-stretch opacity-0 group-hover/ended:opacity-70 hover:!opacity-100 transition-opacity"
-                            style={{ color: 'var(--error)' }}
-                            title="Delete from history"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </>
-                )}
-              </div>,
-              document.body
-            )}
-          </div>
-
-        </div>
-        {activeMode === 'terminal' && <div ref={setSessionControlsHost} className="session-pane-controls-slot" />}
-      </div>
-
-      <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-        <div className="workspace-project-body flex flex-1 min-h-0 min-w-0">
-          <aside id={`project-session-sidebar-${projectId}`} className="workspace-session-sidebar" aria-label="会话列表" hidden={!sessionSidebarOpen}>
-            <form className="workspace-session-search" onSubmit={event => {
-              event.preventDefault();
-              const match = visibleWorkspaceTabs[0];
-              if (match) selectWorkspaceTab(match.id);
-            }}>
-              <input
-                type="search"
-                aria-label="搜索会话"
-                placeholder="搜索会话"
-                value={sessionSearch}
-                onChange={event => setSessionSearch(event.target.value)}
-                onKeyDown={event => {
-                  if (event.key === 'Escape' && sessionSearch) setSessionSearch('');
-                }}
-              />
-            </form>
-            <nav ref={sessionTabList} aria-label="会话标签" className="workspace-session-list">
-              {visibleWorkspaceTabs.map((inst) => {
-                const isHarness = inst.id === HARNESS_TAB.id;
-                const isActive = isHarness ? activeMode === 'harness' : activeMode === 'terminal' && inst.id === activeTerminalId;
-                const label = inst.customLabel?.trim() || inst.label;
-                const session = sessionLookup.get(inst.id) || allSessionLookup.get(inst.id);
-                // Status signal light — a leaf component subscribes to just this
-                // session's live state, so a state tick doesn't re-render the view.
-                const sigSession = allSessionLookup.get(inst.id);
-                const tabKind = session ? sessionTabKind(session) : 'session';
-                const isTerminal = tabKind === 'terminal';
-                const iconClass = 'workspace-tab-icon w-3 h-3 shrink-0';
-                const tabIcon = isHarness ? <Globe className={iconClass} aria-hidden="true" />
-                  : isTerminal ? <TerminalSquare className={iconClass} style={{ color: '#f59e0b' }} />
-                  : <AgentIcon session={session || {}} className={iconClass} />;
-                return (
-                  <div
-                    key={inst.id}
-                    draggable={editingTabId !== inst.id}
-                    onDragStart={(event) => {
-                      event.dataTransfer.effectAllowed = 'move';
-                      event.dataTransfer.setData('text/plain', inst.id);
-                      setDraggingTabId(inst.id);
-                    }}
-                    onDragEnd={() => {
-                      setDraggingTabId(null);
-                      setTabDropTargetId(null);
-                    }}
-                    className="workspace-tab group"
-                    data-session-id={isHarness ? undefined : inst.id}
-                    data-active={isActive}
-                    onDragOver={(event) => {
-                      if (!draggingTabId || draggingTabId === inst.id) return;
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = 'move';
-                      setTabDropTargetId(inst.id);
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      reorderTabs(inst.id);
-                      setDraggingTabId(null);
-                      setTabDropTargetId(null);
-                    }}
-                    style={{
-                      background: isActive ? 'var(--bg-tertiary)' : 'transparent',
-                      outline: tabDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
-                    }}
-                  >
-                    {sigSession && (
-                      <span className="workspace-tab-signal">
-                        <LiveSessionSignalDot session={sigSession} active={isActive} />
-                        {!!notificationUnread?.[inst.id]&&<span className="notification-tab-count" aria-label={`${notificationUnread[inst.id]} 条未读通知`}>{notificationUnread[inst.id]}</span>}
-                      </span>
-                    )}
-                    {editingTabId === inst.id ? (
-                      <div className="workspace-tab-button">
-                        {tabIcon}
-                        <input
-                          ref={renameInputRef}
-                          aria-label="标签名称"
-                          autoFocus
-                          value={editingTabValue}
-                          onChange={(e) => setEditingTabValue(e.target.value)}
-                          onFocus={(e) => e.target.select()}
-                          onBlur={() => {
-                            // Terminals steal focus on session updates — grab it back if we're
-                            // still editing. Real exits go through Enter / Esc / outside-mousedown.
-                            requestAnimationFrame(() => renameInputRef.current?.focus());
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') { e.preventDefault(); commitTabRename(inst.id); }
-                            else if (e.key === 'Escape') { e.preventDefault(); cancelTabRename(); }
-                          }}
-                          className="bg-transparent outline-none border-b text-xs font-medium w-[110px]"
-                          style={{ color: 'var(--text-primary)', borderColor: 'var(--accent)' }}
-                        />
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="text-[9px] font-semibold px-1.5 py-0.5 rounded"
+                          style={{ background: `${typeColor}20`, color: typeColor }}
+                        >
+                          {typeLabel}
+                        </span>
+                        <span className="truncate">{s.task?.slice(0, 60) || 'Session'}</span>
                       </div>
-                    ) : (
-                      <button
-                        type="button"
-                        aria-current={isActive ? true : undefined}
-                        onClick={(e) => {
-                          if (e.detail > 1) return; // 2nd click of a double-click → that's a rename
-                          selectWorkspaceTab(inst.id);
-                        }}
-                        onDoubleClick={() => beginTabRename(inst)}
-                        onKeyDown={(event) => {
-                          if (event.key !== 'F2') return;
-                          event.preventDefault();
-                          beginTabRename(inst);
-                        }}
-                        className="workspace-tab-button"
-                        style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-                        title={isHarness ? `${label} · 双击或按 F2 重命名` : '双击重命名'}
-                      >
-                        {tabIcon}
-                        {isHarness ? <span className="truncate">{label}</span>
-                          : <SessionTabLabel session={sigSession} label={label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session || {}).label}`} />}
-                      </button>
-                    )}
+                      <div className="truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                        {s.startedAt ? new Date(s.startedAt + (String(s.startedAt).endsWith('Z') ? '' : 'Z')).toLocaleString() : 'unknown time'}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+
+              {/* Ended / recent sessions — reopen to restore the last screen + resume */}
+              {endedSessions.length > 0 && (
+                <>
+                  <div className="mx-3 my-1" style={{ height: 1, background: 'var(--border)' }} />
+                  <div
+                    className="flex items-center justify-between gap-3 px-3 py-1.5"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    <span className="text-[10px] font-semibold uppercase tracking-wider">Ended / Recent</span>
                     <button
                       type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (isHarness) {
-                          setHarnessOpen(false);
-                          setActiveMode(mode => mode === 'harness' ? 'terminal' : mode);
-                          return;
-                        }
-                        setCloseConfirm({ id: inst.id, label, type: tabKind });
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setBulkDeleteEndedError(null);
+                        setConfirmBulkDeleteEnded(true);
+                        setShowAdoptMenu(false);
                       }}
-                      className="workspace-tab-close"
-                      style={{ color: 'var(--text-secondary)' }}
-                      aria-label={isHarness ? `关闭 ${label}` : undefined}
-                      title={isHarness ? undefined : 'Close session'}
+                      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors hover:bg-red-500/10"
+                      style={{ color: 'var(--error)' }}
+                      title="Delete all ended session records for this project"
                     >
-                      <X className="w-3 h-3" />
+                      <Trash2 className="h-3 w-3" />
+                      Delete all
                     </button>
                   </div>
-                );
-              })}
-              {sessionFilter && visibleWorkspaceTabs.length === 0 && <p className="workspace-session-empty" role="status">没有匹配的会话</p>}
-            </nav>
-          </aside>
+                  {endedSessions.map((s) => {
+                    const isTerminal = s.task === 'Terminal';
+                    const cliLabel=sessionAgent(s).label;
+                    const typeLabel = isTerminal ? 'Terminal' : `${cliLabel} Session`;
+                    const typeColor = isTerminal?'#f59e0b':sessionAgent(s).presentation.color;
+                    const when = s.completed_at || s.created_at;
+                    return (
+                      <div key={s.id} className="flex items-center group/ended hover:bg-[var(--bg-tertiary)] transition-colors">
+                        <button
+                          onClick={() => unhideSession(s.id)}
+                          className="flex-1 min-w-0 text-left px-3 py-2 text-xs"
+                          style={{ color: 'var(--text-primary)' }}
+                          title="Reopen — restore the last screen and resume"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className="text-[9px] font-semibold px-1.5 py-0.5 rounded"
+                              style={{ background: `${typeColor}20`, color: typeColor }}
+                            >
+                              {typeLabel}
+                            </span>
+                            <span className="truncate">{isTerminal ? 'Interactive shell' : (s.task?.slice(0, 50) || 'Session')}</span>
+                          </div>
+                          <div className="truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                            {s.status} · {when ? new Date(when + (when.endsWith('Z') ? '' : 'Z')).toLocaleString() : 'unknown'}
+                          </div>
+                        </button>
+                        <button
+                          onClick={() => deleteEndedSession(s.id)}
+                          className="px-2 self-stretch opacity-0 group-hover/ended:opacity-70 hover:!opacity-100 transition-opacity"
+                          style={{ color: 'var(--error)' }}
+                          title="Delete from history"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>,
+            document.body
+          )}
+        </div>
+
+      </div>
+      {activeMode === 'terminal' && <div ref={setSessionControlsHost} className="session-pane-controls-slot" />}
+    </div>
+  );
+
+  const sessionNavigation = (
+    <aside id={`project-session-sidebar-${projectId}`} className="workspace-session-sidebar" aria-label="会话列表" hidden={!sessionSidebarOpen}>
+      <form className="workspace-session-search" onSubmit={event => {
+        event.preventDefault();
+        const match = visibleWorkspaceTabs[0];
+        if (match) selectWorkspaceTab(match.id);
+      }}>
+        <input
+          type="search"
+          aria-label="搜索会话"
+          placeholder="搜索会话"
+          value={sessionSearch}
+          onChange={event => setSessionSearch(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Escape' && sessionSearch) setSessionSearch('');
+          }}
+        />
+      </form>
+      <nav ref={sessionTabList} aria-label="会话标签" className="workspace-session-list">
+        {visibleWorkspaceTabs.map((inst) => {
+          const isHarness = inst.id === HARNESS_TAB.id;
+          const isActive = isHarness ? activeMode === 'harness' : activeMode === 'terminal' && inst.id === activeTerminalId;
+          const label = inst.customLabel?.trim() || inst.label;
+          const session = sessionLookup.get(inst.id) || allSessionLookup.get(inst.id);
+          // Status signal light — a leaf component subscribes to just this
+          // session's live state, so a state tick doesn't re-render the view.
+          const sigSession = allSessionLookup.get(inst.id);
+          const tabKind = session ? sessionTabKind(session) : 'session';
+          const isTerminal = tabKind === 'terminal';
+          const iconClass = 'workspace-tab-icon w-3 h-3 shrink-0';
+          const tabIcon = isHarness ? <Globe className={iconClass} aria-hidden="true" />
+            : isTerminal ? <TerminalSquare className={iconClass} style={{ color: '#f59e0b' }} />
+            : <AgentIcon session={session || {}} className={iconClass} />;
+          return (
+            <div
+              key={inst.id}
+              draggable={editingTabId !== inst.id}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', inst.id);
+                setDraggingTabId(inst.id);
+              }}
+              onDragEnd={() => {
+                setDraggingTabId(null);
+                setTabDropTargetId(null);
+              }}
+              className="workspace-tab group"
+              data-session-id={isHarness ? undefined : inst.id}
+              data-active={isActive}
+              onDragOver={(event) => {
+                if (!draggingTabId || draggingTabId === inst.id) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                setTabDropTargetId(inst.id);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                reorderTabs(inst.id);
+                setDraggingTabId(null);
+                setTabDropTargetId(null);
+              }}
+              style={{
+                background: isActive ? 'var(--bg-tertiary)' : 'transparent',
+                outline: tabDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
+              }}
+            >
+              {sigSession && (
+                <span className="workspace-tab-signal">
+                  <LiveSessionSignalDot session={sigSession} active={isActive} />
+                  {!!notificationUnread?.[inst.id]&&<span className="notification-tab-count" aria-label={`${notificationUnread[inst.id]} 条未读通知`}>{notificationUnread[inst.id]}</span>}
+                </span>
+              )}
+              {editingTabId === inst.id ? (
+                <div className="workspace-tab-button">
+                  {tabIcon}
+                  <input
+                    ref={renameInputRef}
+                    aria-label="标签名称"
+                    autoFocus
+                    value={editingTabValue}
+                    onChange={(e) => setEditingTabValue(e.target.value)}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => {
+                      // Terminals steal focus on session updates — grab it back if we're
+                      // still editing. Real exits go through Enter / Esc / outside-mousedown.
+                      requestAnimationFrame(() => renameInputRef.current?.focus());
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { e.preventDefault(); commitTabRename(inst.id); }
+                      else if (e.key === 'Escape') { e.preventDefault(); cancelTabRename(); }
+                    }}
+                    className="bg-transparent outline-none border-b text-xs font-medium w-[110px]"
+                    style={{ color: 'var(--text-primary)', borderColor: 'var(--accent)' }}
+                  />
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  aria-current={isActive ? true : undefined}
+                  onClick={(e) => {
+                    if (e.detail > 1) return; // 2nd click of a double-click → that's a rename
+                    selectWorkspaceTab(inst.id);
+                  }}
+                  onDoubleClick={() => beginTabRename(inst)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'F2') return;
+                    event.preventDefault();
+                    beginTabRename(inst);
+                  }}
+                  className="workspace-tab-button"
+                  style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                  title={isHarness ? `${label} · 双击或按 F2 重命名` : '双击重命名'}
+                >
+                  {tabIcon}
+                  {isHarness ? <span className="truncate">{label}</span>
+                    : <SessionTabLabel session={sigSession} label={label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session || {}).label}`} />}
+                {scheduledSessionIds.has(inst.id) && <span className="workspace-session-scheduled">定时</span>}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (isHarness) {
+                    setHarnessOpen(false);
+                    setActiveMode(mode => mode === 'harness' ? 'terminal' : mode);
+                    return;
+                  }
+                  setCloseConfirm({ id: inst.id, label, type: tabKind });
+                }}
+                className="workspace-tab-close"
+                style={{ color: 'var(--text-secondary)' }}
+                aria-label={isHarness ? `关闭 ${label}` : undefined}
+                title={isHarness ? undefined : 'Close session'}
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          );
+        })}
+        {sessionFilter && visibleWorkspaceTabs.length === 0 && <p className="workspace-session-empty" role="status">没有匹配的会话</p>}
+      </nav>
+    </aside>
+  );
+
+  return (
+    <div className="workspace-project h-full flex flex-col">
+      {toolbarHost === undefined ? projectToolbar : toolbarHost && createPortal(projectToolbar, toolbarHost)}
+      <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+        <div className="workspace-project-body flex flex-1 min-h-0 min-w-0">
+          {sessionNavigationHost === undefined ? sessionNavigation : sessionNavigationHost && createPortal(sessionNavigation, sessionNavigationHost)}
           <aside id={`project-file-tree-${projectId}`} aria-label="项目文件树"
             className="workspace-file-tree" style={{display:fileTreeOpen && showSessionWorkspace?'flex':'none'}}>
             <div ref={setFileTreeHost} className="workspace-file-tree-host"/>
@@ -1890,7 +1909,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       </div>
 
       {active && showTabSwitcher && <SessionTabSwitcher
-        tabs={workspaceTabs.map(tab => ({ id: tab.id, label: tab.customLabel?.trim() || tab.label }))}
+        tabs={workspaceTabs.map(tab => ({ id: tab.id, label: tab.customLabel?.trim() || tab.label, scheduled: scheduledSessionIds.has(tab.id) }))}
         activeId={activeWorkspaceTab}
         onSelect={id => {
           setShowTabSwitcher(false);

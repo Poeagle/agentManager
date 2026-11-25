@@ -7,7 +7,7 @@ import { api, type AuthUser } from './lib/api';
 import { AuthGate } from './components/AuthGate';
 import { cleanupProjectStorage } from './lib/project-view-storage';
 import { confirmDiscardProject } from './lib/unsaved-files';
-import { X, LayoutGrid, ArrowUpCircle, Plus, Loader2 } from 'lucide-react';
+import { X, LayoutGrid, ArrowUpCircle, Plus, Loader2, Folders } from 'lucide-react';
 import { hasPermission, usePermissions } from './lib/permissions';
 import type { PlatformSection } from './components/PlatformCenter';
 import { CloseTabModal } from './components/CloseTabModal';
@@ -18,6 +18,7 @@ import { ProjectTabLabel } from './lib/session-activity';
 import './workspace-chrome.css';
 import { ExportTransferOverlay } from './components/ExportTransferOverlay';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { WorkspaceNavigationResizeHandle } from './components/WorkspaceNavigationResizeHandle';
 import {AgentQuotaIndicators} from './components/AgentQuotaIndicator';
 import { ServerResourceIndicator } from './components/ServerResourceIndicator';
 import {mergeSessionRuntimeLists} from './lib/session-runtime-cache';
@@ -95,6 +96,10 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     return t === 'skills' ? 'home' : t;
   });
   const [focusSessionId, setFocusSessionId] = useState<string | null>(null);
+  const [mobileProjectsOpen, setMobileProjectsOpen] = useState(false);
+  const [projectToolbarHost, setProjectToolbarHost] = useState<HTMLDivElement | null>(null);
+  const [sessionNavigationHost, setSessionNavigationHost] = useState<HTMLDivElement | null>(null);
+  const workspaceLayout = useRef<HTMLDivElement>(null);
   const [notificationDetailOpen,setNotificationDetailOpen]=useState(false);
   const [conversationTarget,setConversationTarget]=useState<{sessionId:string;focus:ConversationFocus}|null>(null);
   // Stable so memo(ProjectView) isn't busted by a new function identity each render.
@@ -318,6 +323,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
       ? prev
       : [...prev, { projectId, projectName }]);
     setActiveTab(`project-${projectId}`);
+    setMobileProjectsOpen(false);
     if (quickLaunch) {
       const suffix = cliType ? `_${cliType}` : '';
       setFocusSessionId(`__voice_create_${quickLaunch}${suffix}`);
@@ -437,10 +443,16 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         className="workspace-header flex items-center justify-between border-b shrink-0"
         style={{ borderColor: 'var(--border)', background: 'var(--bg-primary)' }}
       >
-        <div className="flex shrink-0 items-center gap-2">
-          <h1 className="workspace-brand font-bold">
+        <div className="workspace-header-primary">
+          <h1 className="workspace-brand shrink-0 font-bold">
             <span style={{ color: '#ef4444' }}>Agent</span><span style={{ color: 'var(--text-primary)' }}>Manager</span>
           </h1>
+          <button type="button" className="workspace-subtab-action workspace-mobile-project-toggle"
+            aria-label="项目导航" aria-expanded={mobileProjectsOpen} aria-controls="workspace-navigation"
+            onClick={() => setMobileProjectsOpen(open => !open)}>
+            <Folders className="h-4 w-4" aria-hidden="true" />
+          </button>
+          <div ref={setProjectToolbarHost} className="workspace-header-project-tools" />
         </div>
         <div className="workspace-header-tools flex min-w-0 items-center overflow-x-auto [scrollbar-width:none] [&>*]:shrink-0">
           <NotificationCenter userId={authUser.id} projects={projects} onOpen={openNotification} onDetailChange={setNotificationDetailOpen}/>
@@ -503,139 +515,138 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
         </div>
       )}
 
-      {/* Tab bar */}
-      <nav
-        aria-label="项目标签"
-        className="workspace-tab-strip border-b shrink-0 overflow-x-auto"
-        style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}
-      >
-        {/* Home tab */}
-        <button
-          onClick={() => { setActiveTab('home'); setPlatformSection(null); }}
-          className="workspace-tab-button workspace-tab-standalone rounded shrink-0"
-          style={{
-            background: activeTab === 'home' ? 'var(--bg-tertiary)' : 'transparent',
-            color: activeTab === 'home' ? 'var(--text-primary)' : 'var(--text-secondary)',
-          }}
-        >
-          <LayoutGrid className="w-3.5 h-3.5" />
-          Projects
-        </button>
-
-        {/* Divider */}
-        {projectTabs.length > 0 && (
-          <div
-            className="w-px h-5 mx-1 shrink-0"
-            style={{ background: 'var(--border)' }}
-          />
-        )}
-
-        {/* Project tabs */}
-        {projectTabs.map((tab) => {
-          const tabId = `project-${tab.projectId}`;
-          const isActive = activeTab === tabId;
-          const tabSessions = sessions.filter((session) => session.project_id === tab.projectId);
-          const project = projects.find((candidate) => candidate.id === tab.projectId);
-
-          return (
-            <div
-              key={tab.projectId}
-              draggable={editingTabId !== tab.projectId}
-              onDragStart={(event) => {
-                event.dataTransfer.effectAllowed = 'move';
-                event.dataTransfer.setData('text/plain', tab.projectId);
-                setDraggingProjectTabId(tab.projectId);
-              }}
-              onDragEnd={() => {
-                setDraggingProjectTabId(null);
-                setProjectTabDropTargetId(null);
-              }}
-              className="workspace-tab group touch-none"
-              data-active={isActive}
-              onDragOver={(event) => {
-                if (!draggingProjectTabId || draggingProjectTabId === tab.projectId) return;
-                event.preventDefault();
-                event.dataTransfer.dropEffect = 'move';
-                setProjectTabDropTargetId(tab.projectId);
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                reorderProjectTabs(tab.projectId);
-                setDraggingProjectTabId(null);
-                setProjectTabDropTargetId(null);
-              }}
-              style={{
-                background: isActive ? 'var(--bg-tertiary)' : 'transparent',
-                outline: projectTabDropTargetId === tab.projectId ? '1px solid var(--accent)' : '1px solid transparent',
-              }}
-            >
-              <ProjectRollupDot
-                sessions={tabSessions}
-                active={isActive}
-                size={6}
-              />
-              {editingTabId === tab.projectId ? (
-                <div className="workspace-tab-button">
-                  <input
-                    autoFocus
-                    value={editingTabValue}
-                    onChange={(e) => setEditingTabValue(e.target.value)}
-                    onFocus={(e) => e.target.select()}
-                    onBlur={() => {
-                      if (skipTabBlurCommitRef.current) { skipTabBlurCommitRef.current = false; return; }
-                      commitTabRename(tab.projectId);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
-                      else if (e.key === 'Escape') { e.preventDefault(); skipTabBlurCommitRef.current = true; cancelTabRename(); }
-                    }}
-                    className="bg-transparent outline-none border-b text-xs font-medium w-[120px]"
-                    style={{ color: 'var(--text-primary)', borderColor: 'var(--accent)' }}
-                  />
-                </div>
-              ) : (
-                <button
-                  onClick={() => { setActiveTab(tabId); setPlatformSection(null); }}
-                  onDoubleClick={() => beginTabRename(tab)}
-                  className="workspace-tab-button"
-                  style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-                  title="双击重命名标签"
-                >
-                  <ProjectTabLabel label={tab.customName?.trim() || tab.projectName} sessions={tabSessions} fallbackAt={project?.updated_at ?? project?.created_at} />
-                  {!!notifications.data?.unread_by_project[tab.projectId]&&<span className="notification-tab-count" aria-label={`${notifications.data.unread_by_project[tab.projectId]} 条未读通知`}>{notifications.data.unread_by_project[tab.projectId]}</span>}
-                </button>
-              )}
+      <div className="workspace-app-layout" ref={workspaceLayout}>
+        <aside id="workspace-navigation" className="workspace-navigation" aria-label="工作区导航" data-mobile-open={mobileProjectsOpen}>
+          <nav aria-label="项目标签" className="workspace-project-navigation">
+            <div className="workspace-project-navigation-header">
+              {/* Home tab */}
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeProjectTab(tab.projectId);
+                onClick={() => { setActiveTab('home'); setPlatformSection(null); setMobileProjectsOpen(false); }}
+                aria-current={activeTab === 'home' ? 'page' : undefined}
+                className="workspace-tab-button workspace-tab-standalone rounded shrink-0"
+                style={{
+                  background: activeTab === 'home' ? 'var(--bg-tertiary)' : 'transparent',
+                  color: activeTab === 'home' ? 'var(--text-primary)' : 'var(--text-secondary)',
                 }}
-                className="workspace-tab-close"
-                style={{ color: 'var(--text-secondary)' }}
-                title="Close tab"
-                aria-busy={checkingProjectId === tab.projectId}
-                disabled={checkingProjectId !== null}
               >
-                {checkingProjectId === tab.projectId
-                  ? <Loader2 aria-label="正在检查项目会话" className="w-3 h-3 animate-spin" />
-                  : <X className="w-3 h-3" />}
+                <LayoutGrid className="w-3.5 h-3.5" />
+                Projects
               </button>
+
+              {/* New-project "+" — jump home to add a project */}
+              {hasPermission(permissionsQuery.data, 'projects_create', 'write') && <button
+                onClick={() => { setActiveTab('home'); setPlatformSection(null); setMobileProjectsOpen(false); window.dispatchEvent(new CustomEvent('agentmanager:add-project')); }}
+                className="flex items-center justify-center rounded-md shrink-0 transition-colors ml-0.5"
+                style={{ width: 26, height: 26, color: 'var(--text-secondary)', background: 'transparent' }}
+                title="添加项目"
+                aria-label="添加项目"
+              >
+                <Plus className="w-4 h-4" />
+              </button>}
             </div>
-          );
-        })}
-        {/* New-project "+" — jump home to add a project */}
-        {hasPermission(permissionsQuery.data, 'projects_create', 'write') && <button
-          onClick={() => { setActiveTab('home'); setPlatformSection(null); window.dispatchEvent(new CustomEvent('agentmanager:add-project')); }}
-          className="flex items-center justify-center rounded-md shrink-0 transition-colors ml-0.5"
-          style={{ width: 26, height: 26, color: 'var(--text-secondary)', background: 'transparent' }}
-          title="添加项目"
-        >
-          <Plus className="w-4 h-4" />
-        </button>}
-      </nav>
+            <div className="workspace-project-tabs">
+              {/* Project tabs */}
+              {projectTabs.map((tab) => {
+                const tabId = `project-${tab.projectId}`;
+                const isActive = activeTab === tabId;
+                const tabSessions = sessions.filter((session) => session.project_id === tab.projectId);
+                const project = projects.find((candidate) => candidate.id === tab.projectId);
+
+                return (
+                  <div
+                    key={tab.projectId}
+                    draggable={editingTabId !== tab.projectId}
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData('text/plain', tab.projectId);
+                      setDraggingProjectTabId(tab.projectId);
+                    }}
+                    onDragEnd={() => {
+                      setDraggingProjectTabId(null);
+                      setProjectTabDropTargetId(null);
+                    }}
+                    className="workspace-tab group"
+                    data-active={isActive}
+                    onDragOver={(event) => {
+                      if (!draggingProjectTabId || draggingProjectTabId === tab.projectId) return;
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = 'move';
+                      setProjectTabDropTargetId(tab.projectId);
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      reorderProjectTabs(tab.projectId);
+                      setDraggingProjectTabId(null);
+                      setProjectTabDropTargetId(null);
+                    }}
+                    style={{
+                      background: isActive ? 'var(--bg-tertiary)' : 'transparent',
+                      outline: projectTabDropTargetId === tab.projectId ? '1px solid var(--accent)' : '1px solid transparent',
+                    }}
+                  >
+                    <ProjectRollupDot
+                      sessions={tabSessions}
+                      active={isActive}
+                      size={6}
+                    />
+                    {editingTabId === tab.projectId ? (
+                      <div className="workspace-tab-button">
+                        <input
+                          autoFocus
+                          value={editingTabValue}
+                          onChange={(e) => setEditingTabValue(e.target.value)}
+                          onFocus={(e) => e.target.select()}
+                          onBlur={() => {
+                            if (skipTabBlurCommitRef.current) { skipTabBlurCommitRef.current = false; return; }
+                            commitTabRename(tab.projectId);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
+                            else if (e.key === 'Escape') { e.preventDefault(); skipTabBlurCommitRef.current = true; cancelTabRename(); }
+                          }}
+                          className="bg-transparent outline-none border-b text-xs font-medium w-[120px]"
+                          style={{ color: 'var(--text-primary)', borderColor: 'var(--accent)' }}
+                        />
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => { setActiveTab(tabId); setPlatformSection(null); setMobileProjectsOpen(false); }}
+                        aria-current={isActive ? 'page' : undefined}
+                        onDoubleClick={() => beginTabRename(tab)}
+                        className="workspace-tab-button"
+                        style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                        title="双击重命名标签"
+                      >
+                        <ProjectTabLabel label={tab.customName?.trim() || tab.projectName} sessions={tabSessions} fallbackAt={project?.updated_at ?? project?.created_at} />
+                        {!!notifications.data?.unread_by_project[tab.projectId]&&<span className="notification-tab-count" aria-label={`${notifications.data.unread_by_project[tab.projectId]} 条未读通知`}>{notifications.data.unread_by_project[tab.projectId]}</span>}
+                      </button>
+                    )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        closeProjectTab(tab.projectId);
+                      }}
+                      className="workspace-tab-close"
+                      style={{ color: 'var(--text-secondary)' }}
+                      title="Close tab"
+                      aria-busy={checkingProjectId === tab.projectId}
+                      disabled={checkingProjectId !== null}
+                    >
+                      {checkingProjectId === tab.projectId
+                        ? <Loader2 aria-label="正在检查项目会话" className="w-3 h-3 animate-spin" />
+                        : <X className="w-3 h-3" />}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </nav>
+          <div ref={setSessionNavigationHost} className="workspace-session-navigation-host" />
+        </aside>
+        <WorkspaceNavigationResizeHandle layout={workspaceLayout} storageKey={`agentmanager-navigation-width:${authUser.id}`} />
 
       {/* Keep visited workspaces mounted to preserve terminal state. */}
-      <main className="flex-1 min-h-0 overflow-hidden relative isolate">
+      <main className="flex-1 min-w-0 min-h-0 overflow-hidden relative isolate">
         <div
           className="h-full"
           style={{ display: activeTab === 'home' ? 'block' : 'none' }}
@@ -686,6 +697,8 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                       projectPath={projectPath}
                       projectName={projectName}
                       active={isActive && !showPlatformCenter && !notificationDetailOpen}
+                      toolbarHost={isActive ? projectToolbarHost : null}
+                      sessionNavigationHost={isActive ? sessionNavigationHost : null}
                       conversationTarget={conversationTarget}
                       notificationUnread={notifications.data?.unread_by_session}
                       terminalsSuspended={showPlatformCenter}
@@ -703,6 +716,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           );
         })}
       </main>
+      </div>
 
       {confirmClose && (
         <CloseTabModal
