@@ -2268,12 +2268,18 @@ function killPidTree(pid: number): void {
 
 const stoppingWorkers = new Map<string, ChildProcess>();
 
-export async function killSession(sessionId: string, options?:{preserveLifecycle?:boolean}): Promise<boolean> {
+export async function killSession(sessionId: string, options?:{preserveLifecycle?:boolean; ifIdle?:()=>boolean}): Promise<boolean> {
   const session = getSession(sessionId);
   if (!session) return false;
+  // Memory cleanup is allowed only on a confirmed idle local worker. Do not
+  // interrupt a native turn or wait on native I/O between the guard and stop.
+  if (options?.ifIdle) {
+    const active = activeSessions.get(sessionId);
+    if (!active?.businessReady || active.externalSocket || sessionLifecyclePromises.has(sessionId) || !options.ifIdle()) return false;
+  }
   // Ended sessions may retain an identity whose native runtime is gone.
   // Their local cleanup must not depend on contacting that old runtime.
-  if(nativeConversationId(session) && (sessionStatusMayHaveProcess(session.status) || activeSessions.has(sessionId) || isManagedAgentActive(sessionId))) {
+  if(!options?.ifIdle && nativeConversationId(session) && (sessionStatusMayHaveProcess(session.status) || activeSessions.has(sessionId) || isManagedAgentActive(sessionId))) {
     const context=sessionAgentContext(session);
     const interrupt=beginSessionAction(context,'interrupt');
     try {
@@ -2762,6 +2768,7 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
   const db = getDb();
   const sessionId = staleSession.id;
   await waitForSessionReplayFinalization(sessionId);
+  await waitForStoppedTerminalWorker(sessionId);
   if (activeSessions.has(sessionId)) return;
   const sessionCliType=agentForSession(staleSession).descriptor.id;
   const nativeSessionId=nativeConversationId(staleSession);if(!nativeSessionId)throw Error(`No native conversation id is stored for ${sessionId}`);
@@ -2896,6 +2903,10 @@ export async function waitForStoppedSessionLifecycle(sessionId:string):Promise<v
     if(pending)await Promise.race([pending.catch(()=>{}),new Promise<void>(resolve=>{timer=setTimeout(resolve,8000);})]);
   }
   finally{clearTimeout(timer);}
+  await waitForStoppedTerminalWorker(sessionId);
+}
+
+async function waitForStoppedTerminalWorker(sessionId: string): Promise<void> {
   const worker=stoppingWorkers.get(sessionId);
   if(!worker)return;
   await new Promise<void>((resolve,reject)=>{

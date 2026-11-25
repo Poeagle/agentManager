@@ -1044,6 +1044,7 @@ export function SessionConversation({
       ? rows.filter(row=>!row.client_id||!received.has(row.client_id)) : rows);
   },[inputStorageKey,receivedInputKey]);
   const ended = ["completed", "failed", "cancelled"].includes(session.status);
+  const pausedForMemory = ended && session.stop_reason === "memory_pressure";
   const observingStream =
     receiveUpdates &&
     canRead &&
@@ -2809,7 +2810,7 @@ export function SessionConversation({
               data-attention={!!pendingQuestion || waiting}
               aria-hidden="true"
             />
-            {compaction.state ? (
+            {pausedForMemory ? <span>内存压力过高，会话已暂停</span> : compaction.state ? (
               <ConversationCompactionStatus
                 state={compaction.state}
                 now={now}

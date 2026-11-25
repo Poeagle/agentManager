@@ -287,10 +287,10 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false, adm
                     <div className="space-y-3" style={{ borderColor: 'var(--border)' }}>
                       <label className="flex items-center gap-2 text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
                         <input type="checkbox" checked={memoryCleanupEnabled} onChange={(event) => setMemoryCleanupEnabled(event.target.checked)} />
-                        内存不足时自动关闭空闲会话
+                        内存压力持续时暂停空闲会话
                       </label>
                       <p className="text-xs leading-5" style={{ color: 'var(--text-secondary)' }}>
-                        每 5 秒检查服务器内存。达到阈值后，按空闲时间从长到短逐个关闭会话，直到内存使用率低于阈值。保存后生效，无需重启。
+                        内存持续达到阈值 30 秒后，最多暂停一个空闲会话。内存持续低于阈值 30 秒后，才可再次回收。保存后生效，无需重启。
                       </p>
                       <div className="settings-panel-form-grid">
                         <label className="settings-panel-field">
@@ -307,7 +307,7 @@ export function SettingsModal({ onClose, readOnly = false, embedded = false, adm
                         </label>
                       </div>
                       <p className="text-xs leading-5" style={{ color: 'var(--text-muted)' }}>
-                        空闲指没有输入和输出，且会话处于空闲或等待输入状态。正在执行指令、启动中或无法确认活动状态的会话会跳过。关闭后保留会话记录，可手动恢复。
+                        只暂停确认空闲且可恢复的 Agent 会话。普通终端、执行中或等待回复的会话会跳过。暂停后保留原会话和历史，可手动恢复。
                       </p>
                       {memoryCleanupError && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{memoryCleanupError}</p>}
                     </div>

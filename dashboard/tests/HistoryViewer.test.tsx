@@ -30,6 +30,14 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('HistoryViewer resume controls', () => {
+  it('explains that memory pressure paused the session and offers to resume it', async () => {
+    const resume = vi.fn();
+    render(<HistoryViewer sessionId="session-1" onClose={vi.fn()} ended stopReason="memory_pressure" onResume={resume} />);
+    expect(await screen.findByText('内存压力过高，会话已暂停')).toBeVisible();
+    await userEvent.setup().click(screen.getByRole('button', { name: '恢复会话' }));
+    expect(resume).toHaveBeenCalledOnce();
+  });
+
   it('keeps one centered action group and disables resume and close while restoring an empty screen', async () => {
     vi.useFakeTimers();
     vi.mocked(api.sessions.renderedOutput).mockResolvedValue({ rendered: '' });

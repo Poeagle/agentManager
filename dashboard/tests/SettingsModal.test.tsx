@@ -38,7 +38,7 @@ describe('server memory cleanup settings', () => {
 
   it('loads saved values and saves an edited threshold, idle duration and switch', async () => {
     await mount();
-    const enabled = screen.getByLabelText('内存不足时自动关闭空闲会话');
+    const enabled = screen.getByLabelText('内存压力持续时暂停空闲会话');
     expect(enabled).toBeChecked();
     expect(screen.getByLabelText('最短空闲时间（分钟）')).toHaveValue(20);
     fireEvent.click(enabled);
@@ -64,7 +64,7 @@ describe('server memory cleanup settings', () => {
 
   it('keeps memory controls read-only for members', async () => {
     await mount(true);
-    expect(screen.getByLabelText('内存不足时自动关闭空闲会话')).toBeDisabled();
+    expect(screen.getByLabelText('内存压力持续时暂停空闲会话')).toBeDisabled();
     expect(screen.getByLabelText('内存使用率阈值（%）')).toBeDisabled();
     expect(screen.getByLabelText('最短空闲时间（分钟）')).toBeDisabled();
     expect(screen.queryByRole('button', { name: '保存设置' })).not.toBeInTheDocument();

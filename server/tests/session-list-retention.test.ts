@@ -33,3 +33,22 @@ it('shows the latest terminal sequence time and falls back to the session row wi
   await app.close();
  }
 });
+
+
+it('reports memory pressure for the current cancellation in list and detail responses', async () => {
+ const db = getDb();
+ db.prepare("UPDATE sessions SET status='cancelled', completed_at='2026-11-02 00:00:00' WHERE id IN ('old-running','old-detached')").run();
+ const event = db.prepare("INSERT INTO events (session_id,type,timestamp) VALUES (?,'session.memory_cleanup',?)");
+ event.run('old-running','2026-11-02 00:00:00');
+ event.run('old-detached','2026-11-01 00:00:00');
+ const app = Fastify();
+ app.addHook('onRequest', authHook);
+ await app.register(sessionRoutes, {prefix:'/api'});
+ try {
+  const headers = {cookie:`agentmanager_session=${createAuthSession(owner)}`};
+  const list = (await app.inject({url:'/api/sessions?status=cancelled',headers})).json().sessions;
+  expect(list.find((session:{id:string})=>session.id==='old-running')).toHaveProperty('stop_reason','memory_pressure');
+  expect(list.find((session:{id:string})=>session.id==='old-detached')).not.toHaveProperty('stop_reason');
+  expect((await app.inject({url:'/api/sessions/old-running',headers})).json().session).toHaveProperty('stop_reason','memory_pressure');
+ } finally { await app.close(); }
+});

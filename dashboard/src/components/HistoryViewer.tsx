@@ -3,7 +3,7 @@ import { X, Loader2, ScrollText, Play } from 'lucide-react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
-import { api } from '../lib/api';
+import { api, type Session } from '../lib/api';
 import '@xterm/xterm/css/xterm.css';
 
 interface HistoryViewerProps {
@@ -11,6 +11,7 @@ interface HistoryViewerProps {
   onClose: () => void | Promise<void>;
   /** Show session actions in the center instead of the history toolbar. */
   ended?: boolean;
+  stopReason?: Session['stop_reason'];
   /** Badge label (default "Viewing History"). */
   title?: string;
   /** Close-button tooltip (default "Close History (back to live terminal)"). */
@@ -21,7 +22,7 @@ interface HistoryViewerProps {
   resumeFailed?: boolean;
 }
 
-export function HistoryViewer({ sessionId, onClose, ended = false, title, closeTitle, onResume, resuming = false, resumeFailed = false }: HistoryViewerProps) {
+export function HistoryViewer({ sessionId, onClose, ended = false, stopReason, title, closeTitle, onResume, resuming = false, resumeFailed = false }: HistoryViewerProps) {
   const [loading, setLoading] = useState(true);
   const [empty, setEmpty] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -200,10 +201,12 @@ export function HistoryViewer({ sessionId, onClose, ended = false, title, closeT
             style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
           >
             <ScrollText className="mx-auto mb-3 h-7 w-7" style={{ color: 'var(--text-secondary)' }} />
-            <div className="text-base font-semibold">会话已结束</div>
+            <div className="text-base font-semibold">{stopReason === 'memory_pressure' ? '内存压力过高，会话已暂停' : '会话已结束'}</div>
             <div className="mt-2 text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
               {loading ? '正在加载最后的终端画面…' : empty ? '此会话没有保存的终端画面。' : '已保留最后的终端画面。'}
-              {onResume ? '可以恢复会话继续工作，或关闭会话释放资源。' : '可以关闭会话释放资源。'}
+              {stopReason === 'memory_pressure'
+                ? onResume && '可以恢复原会话继续工作。'
+                : onResume ? '可以恢复会话继续工作，或关闭会话释放资源。' : '可以关闭会话释放资源。'}
             </div>
             <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
               <button

@@ -74,7 +74,7 @@ test('Resume shows failure, immediate retry feedback, and progress until termina
   // Simulate a native CLI's delayed restore without launching Claude/Codex or
   // touching the user's real sessions. The full UI and xterm handshake run.
   const {agents}=await(await page.request.get('/api/agent/providers')).json();
-  let row = { ...session, status: 'completed', cli_type: 'codex', agent_id:'codex',native_session_id:'test-conversation',agent:agents.find((agent:{id:string})=>agent.id==='codex'),codex_session_id: 'test-conversation',claude_session_id:null };
+  let row = { ...session, status: 'cancelled', stop_reason: 'memory_pressure' as string | null, cli_type: 'codex', agent_id:'codex',native_session_id:'test-conversation',agent:agents.find((agent:{id:string})=>agent.id==='codex'),codex_session_id: 'test-conversation',claude_session_id:null };
   let requests = 0;
   let connections = 0;
   let handshakes = 0;
@@ -91,7 +91,7 @@ test('Resume shows failure, immediate retry feedback, and progress until termina
         await route.fulfill({ status: 400, json: { error: 'Test restore failure' } });
       } else {
         await resumeGate;
-        row = { ...row, status: 'running' };
+        row = { ...row, status: 'running', stop_reason: null };
         await route.fulfill({ json: { ok: true, session: row } });
       }
     } else if (url.pathname === '/api/sessions') {
@@ -118,6 +118,13 @@ test('Resume shows failure, immediate retry feedback, and progress until termina
   });
 
   await page.goto('/');
+  const pauseStatus = page.getByRole('status').filter({ hasText: '内存压力过高，会话已暂停' });
+  await expect(pauseStatus).toBeVisible();
+  await page.getByRole('button', { name: '原始终端', exact: true }).click();
+  await expect(page.getByRole('group', { name: '会话操作' })).toContainText('内存压力过高，会话已暂停');
+  await page.getByRole('button', { name: '对话', exact: true }).click();
+  await expect(pauseStatus).toBeVisible();
+  expect(requests).toBe(0);
   await page.getByRole('button', { name: '恢复会话', exact: true }).click();
   await expect(page.getByRole('alert').filter({hasText:'Test restore failure'})).toBeVisible();
   await page.getByRole('button', { name: '重试恢复会话', exact: true }).click();

@@ -953,6 +953,7 @@ export interface Session {
   last_activity_at?: string | null;
   content_summary?: string | null;
   record_deletion?: 'pending' | 'failed';
+  stop_reason?: 'memory_pressure';
   cli_type?: string;
   agent_id?:string|null;native_session_id?:string|null;agent?:AgentDescriptor;
   mode?: 'session' | 'terminal';

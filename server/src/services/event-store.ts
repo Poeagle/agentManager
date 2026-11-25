@@ -55,11 +55,11 @@ export function broadcastEphemeral(input: EventInput): void {
   } as Event);
 }
 
-export function insertEvent(input: EventInput): Event {
+export function insertEvent(input: EventInput, timestamp?: string): Event {
   const db = getDb();
   const stmt = db.prepare(`
-    INSERT INTO events (session_id, project_id, type, tool_name, data)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO events (session_id, project_id, type, tool_name, data, timestamp)
+    VALUES (?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
   `);
 
   const result = stmt.run(
@@ -67,7 +67,8 @@ export function insertEvent(input: EventInput): Event {
     input.project_id || null,
     input.type,
     input.tool_name || null,
-    input.data ? JSON.stringify(input.data) : null
+    input.data ? JSON.stringify(input.data) : null,
+    timestamp ?? null,
   );
 
   const event = db.prepare('SELECT * FROM events WHERE id = ?').get(result.lastInsertRowid) as Event;

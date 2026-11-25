@@ -90,6 +90,21 @@ function sqliteUtcToIso(value: string | null | undefined): string | null {
   return `${value.replace(' ', 'T')}Z`;
 }
 
+function memoryPausedSessions(sessions: Pick<sessionManager.Session, 'id' | 'status'>[]): Set<string> {
+  const cancelled = sessions.filter(session => session.status === 'cancelled').map(session => session.id);
+  if (!cancelled.length) return new Set();
+  // The event marks this cancellation only. A later stop of the same tab
+  // must not inherit the reason from an older pause.
+  const rows = getDb().prepare(`
+    SELECT s.id FROM json_each(?) requested JOIN sessions s ON s.id = requested.value
+    WHERE s.status = 'cancelled' AND EXISTS (
+      SELECT 1 FROM events e WHERE e.session_id = s.id
+      AND e.type = 'session.memory_cleanup' AND e.timestamp = s.completed_at
+    )
+  `).all(JSON.stringify(cancelled)) as { id: string }[];
+  return new Set(rows.map(row => row.id));
+}
+
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
   app.addContentTypeParser('application/octet-stream', binaryUploadParser);
   const deletions = createSessionRecordDeletionWorker(
@@ -160,6 +175,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
         if (row.created_at !== null) outputActivity.set(row.session_id, row.created_at);
       }
     }
+    const paused = memoryPausedSessions(visible);
     const present = sessionPresenter(req.user!.id);
     const account = sessionAccountLabels();
     const sessions = await Promise.all(visible
@@ -184,6 +200,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
           ...s,
           ...present(s),...presentAgentSession(s),...account(s),
           ...(deletion ? {record_deletion:deletion} : {}),
+          ...(paused.has(s.id) ? {stop_reason:'memory_pressure'} : {}),
           last_activity_at: native ? native.last_activity_at : lastActivityAt,
           ...(native ? {agent_runtime:native} : {}),
           content_summary: preview?.text||humanSessionTask(s.task),
@@ -238,7 +255,9 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
     const deletion = sessionRecordDeletionState(session.id);
     const account = canUseSessionEnvironment(session, req.user!.id) ? sessionAccountLabels()(session) : {};
-    return { session: {...session, ...sessionPresenter(req.user!.id)(session), ...account, ...(deletion ? {record_deletion:deletion} : {})} };
+    const paused = memoryPausedSessions([session]).has(session.id);
+    return { session: {...session, ...sessionPresenter(req.user!.id)(session), ...account,
+      ...(deletion ? {record_deletion:deletion} : {}), ...(paused ? {stop_reason:'memory_pressure'} : {})} };
   });
 
   app.post<{Params:{id:string};Body:{question_ids:string[];ignored?:boolean}}>('/sessions/:id/questions/ignore',async(req,reply)=>{

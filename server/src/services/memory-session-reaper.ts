@@ -1,10 +1,13 @@
 import { getDb } from '../db/index.js';
 import { getSetting } from '../routes/settings.js';
+import { agentForSession } from './agents/index.js';
+import { readAgentRuntime, sessionAgentContext } from './agents/session.js';
+import { nativeConversationId } from './session-identity.js';
 import { insertEvent } from './event-store.js';
 import { MEMORY_REAPER_DEFAULTS, memoryCleanupSettingError } from './memory-session-reaper-config.js';
 import { RESOURCE_SAMPLE_INTERVAL_MS, serverResourceSampler, type ServerResources } from './server-resources.js';
 import { getTracker } from './session-state.js';
-import { captureFinalSnapshot, flushPendingPtyOutputWithRetry, isSessionActive, killSession } from './session-manager.js';
+import { captureFinalSnapshot, flushPendingPtyOutputWithRetry, isSessionActive, killSession, type Session } from './session-manager.js';
 
 function cleanupSettings() {
   const settings = Object.fromEntries(Object.keys(MEMORY_REAPER_DEFAULTS).map((key) => [key, getSetting(key)]));
@@ -15,38 +18,49 @@ function cleanupSettings() {
   };
 }
 
-interface Candidate {
-  id: string;
-  project_id: string | null;
-  lastActivity: number;
+const PRESSURE_CONFIRM_MS = 30_000;
+
+function idleActivity(session: Session, idleMs: number): number | null {
+  const tracker = getTracker(session.id);
+  if (!tracker || tracker.hasPendingExecute || !isSessionActive(session.id)) return null;
+  const { processState, lastActivity } = tracker.state;
+  return processState === 'idle' && Date.now() - lastActivity >= idleMs ? lastActivity : null;
 }
 
-function idleCandidates(idleMs: number): Candidate[] {
-  const now = Date.now();
+function idleCandidates(idleMs: number) {
   const sessions = getDb().prepare(`
-    SELECT id, project_id FROM sessions WHERE status IN ('running', 'detached')
-  `).all() as { id: string; project_id: string | null }[];
-  const candidates: Candidate[] = [];
-  for (const session of sessions) {
-    // Only close processes whose live activity we can observe. Released and
-    // reconnecting processes have no reliable tracker and must be left alone.
-    if (!isSessionActive(session.id)) continue;
-    const tracker = getTracker(session.id);
-    if (!tracker || tracker.hasPendingExecute) continue;
-    const state = tracker.state;
-    if (state.processState === 'busy' || now - state.lastActivity < idleMs) continue;
-    candidates.push({ ...session, lastActivity: state.lastActivity });
-  }
-  return candidates.sort((a, b) => a.lastActivity - b.lastActivity || a.id.localeCompare(b.id));
+    SELECT * FROM sessions WHERE status = 'running' AND mode IS NOT 'terminal' AND project_id IS NOT NULL
+  `).all() as Session[];
+  return sessions.flatMap(session => {
+    const lastActivity = idleActivity(session, idleMs);
+    if (lastActivity === null) return [];
+    try {
+      const { descriptor } = agentForSession(session);
+      return descriptor.sessionHost === 'terminal' && descriptor.capabilities.resume && nativeConversationId(session)
+        ? [{ session, lastActivity }] : [];
+    } catch { return []; }
+  }).sort((a, b) => a.lastActivity - b.lastActivity || a.session.id.localeCompare(b.session.id));
 }
 
-/** Close at most one session per fresh sample, allowing process teardown and
- * memory reclamation to finish before deciding whether another is needed. */
+async function nativeIdle(session: Session, idleMs: number): Promise<boolean> {
+  try {
+    const { input } = agentForSession(session);
+    const runtime = await readAgentRuntime(session);
+    return runtime.state === 'idle' && !runtime.compaction && !runtime.pending_question_count
+      && !runtime.pending_questions?.length && !runtime.queued_answer_count
+      && Date.now() - Date.parse(runtime.last_activity_at ?? '') >= idleMs
+      && !await input.hasQueuedFollowUp?.(sessionAgentContext(session));
+  } catch { return false; }
+}
+
+/** A shared host can stay near the threshold because of other processes.
+ * Confirm sustained pressure and reclaim once until memory stays healthy. */
 export class MemorySessionReaper {
   private unsubscribe: (() => void) | null = null;
   private inFlight: Promise<string | null> | null = null;
   private stopped = false;
-  private lastCleanupSample: string | null = null;
+  private pressure: { above: boolean; since: number; last: number; threshold: number } | null = null;
+  private reclaimed = false;
 
   start(): void {
     if (this.unsubscribe) return;
@@ -71,46 +85,73 @@ export class MemorySessionReaper {
 
   private async reap(resources?: ServerResources): Promise<string | null> {
     const settings = cleanupSettings();
-    if (!settings.enabled) return null;
+    if (!settings.enabled) { this.pressure = null; return null; }
     const sample = resources ?? await serverResourceSampler.read();
-    if (this.stopped || !this.isFresh(sample) || sample.sampled_at === this.lastCleanupSample
-      || sample.memory.reliable === false || sample.memory.usage_percent < settings.threshold) return null;
-    const candidate = idleCandidates(settings.idleMs)[0];
-    if (!candidate) return null;
+    if (this.stopped || !this.observePressure(sample, settings.threshold)) return null;
 
-    // killSession clears replay. Persist the tail and retain the final screen
-    // before closing so history and explicit Resume keep working.
+    // A quiet terminal may still be running a turn or awaiting a response.
+    let oldest: ReturnType<typeof idleCandidates>[number] | undefined;
+    for (const entry of idleCandidates(settings.idleMs)) {
+      if (this.stopped) return null;
+      if (await nativeIdle(entry.session, settings.idleMs)) { oldest = entry; break; }
+    }
+    if (!oldest || this.stopped) return null;
+    const candidate = oldest;
+    const { id, project_id } = candidate.session;
+
     if (!(await flushPendingPtyOutputWithRetry())) return null;
-    if (this.stopped || !(await captureFinalSnapshot(candidate.id))) return null;
+    if (this.stopped || !(await captureFinalSnapshot(id))) return null;
+    if (!await nativeIdle(candidate.session, settings.idleMs)) return null;
 
-    // Input, output, configuration and shutdown can change during the snapshot.
-    // Recheck all conditions before sending the termination signal.
-    if (this.stopped) return null;
     const current = cleanupSettings();
-    if (!current.enabled) return null;
     const latest = serverResourceSampler.getLatest() ?? sample;
-    const memory = latest.memory;
-    if (!this.isFresh(latest) || latest.sampled_at === this.lastCleanupSample || memory.reliable === false || memory.usage_percent < current.threshold) return null;
-    const stillOldest = idleCandidates(current.idleMs)[0];
-    if (stillOldest?.id !== candidate.id || stillOldest.lastActivity !== candidate.lastActivity) return null;
+    if (this.stopped || !current.enabled || current.threshold !== settings.threshold
+      || current.idleMs !== settings.idleMs || !this.observePressure(latest, current.threshold)) return null;
     const idleMs = Date.now() - candidate.lastActivity;
-    if (!(await killSession(candidate.id))) return null;
-    this.lastCleanupSample = latest.sampled_at;
+    const eligible = () => {
+      const row = getDb().prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session | undefined;
+      return !!row && row.status === 'running'
+        && row.agent_environment_id === candidate.session.agent_environment_id
+        && nativeConversationId(row) === nativeConversationId(candidate.session)
+        && idleActivity(row, current.idleMs) === candidate.lastActivity;
+    };
+    if (!(await killSession(id, { ifIdle: eligible }))) return null;
+    this.reclaimed = true;
 
-    insertEvent({
-      session_id: candidate.id,
-      project_id: candidate.project_id ?? undefined,
+    const stopped = getDb().prepare("SELECT completed_at FROM sessions WHERE id = ? AND status = 'cancelled'").get(id) as
+      { completed_at: string | null } | undefined;
+    if (stopped?.completed_at) insertEvent({
+      session_id: id,
+      project_id: project_id ?? undefined,
       type: 'session.memory_cleanup',
       data: {
         reason: 'memory_pressure',
-        memory_usage_percent: memory.usage_percent,
+        memory_usage_percent: latest.memory.usage_percent,
         threshold_percent: current.threshold,
         idle_ms: idleMs,
         sampled_at: latest.sampled_at,
       },
-    });
-    console.log(`[MEMORY CLEANUP] Closed ${candidate.id}: memory ${memory.usage_percent.toFixed(1)}%, idle ${Math.floor(idleMs / 60_000)}m`);
-    return candidate.id;
+    }, stopped.completed_at);
+    console.log(`[MEMORY CLEANUP] Paused ${id}: memory ${latest.memory.usage_percent.toFixed(1)}%, idle ${Math.floor(idleMs / 60_000)}m`);
+    return id;
+  }
+
+  private observePressure(sample: ServerResources, threshold: number): boolean {
+    if (!this.isFresh(sample) || sample.memory.reliable === false || !Number.isFinite(sample.memory.usage_percent)) {
+      this.pressure = null;
+      return false;
+    }
+    const at = Date.parse(sample.sampled_at);
+    const above = sample.memory.usage_percent >= threshold;
+    const previous = this.pressure;
+    if (previous && at < previous.last) return false;
+    const continuous = previous?.above === above && previous.threshold === threshold
+      && at - previous.last <= RESOURCE_SAMPLE_INTERVAL_MS * 2;
+    const since = continuous ? previous.since : at;
+    this.pressure = { above, since, last: at, threshold };
+    if (at - since < PRESSURE_CONFIRM_MS) return false;
+    if (!above) this.reclaimed = false;
+    return above && !this.reclaimed;
   }
 
   private isFresh(resources: ServerResources): boolean {

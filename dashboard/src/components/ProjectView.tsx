@@ -1911,6 +1911,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                           <HistoryViewer
                             sessionId={term.id}
                             ended
+                            stopReason={endedSession?.stop_reason}
                             onResume={canResume || resuming ? () => { void sessionResume.resume(term.id); } : undefined}
                             resuming={resuming}
                             resumeFailed={resumeState?.phase === 'error'}

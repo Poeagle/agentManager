@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.42.0');
+    expect(contract.version).toBe('3.43.0');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/tabs'&&e.method==='POST')?.description).toContain('same Agent, Provider and account');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/execution-options')?.description).toContain('source_execution');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/messages')?.description).toContain('stored immediately');
@@ -17,6 +17,7 @@ describe('Agent API contract', () => {
       const description = contract.endpoints.find(endpoint=>endpoint.method==='GET'&&endpoint.path===path)?.description;
       expect(description).toContain('record_deletion');
       expect(description).toContain('agent_account_label');
+      expect(description).toContain('stop_reason=memory_pressure');
     }
     expect(contract.endpoints.find(e=>e.method==='POST'&&e.path==='/api/sessions')?.response?.session).toContain('agent_account_label');
     expect(contract.endpoints.find(e=>e.path==='/api/files/upload')?.description).toContain('maximum 500 MiB');

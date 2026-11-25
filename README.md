@@ -356,11 +356,13 @@ seconds. The header, monitoring page and idle-session cleanup all consume the
 same timestamped snapshot. Samples are pushed to the dashboard over WebSocket;
 REST reads return the cached snapshot without triggering another collection.
 Memory uses Linux `MemAvailable`, or on macOS an estimate from the free, inactive and speculative queues reported by `vm_stat` (using its reported page size). Purgeable pages overlap other queues and are not added twice; the [Apple vm_stat source](https://github.com/apple-oss-distributions/system_cmds/blob/main/vm_stat/vm_stat.c) documents the displayed queues. Collection is asynchronous and shared by the five-second sampler. If the platform cannot provide a reliable available-memory sample, the portable estimate is display-only and automatic memory cleanup is skipped.
-At or above the threshold it closes the longest-idle eligible session, then
-samples again on the next check before closing another. Input and output reset
-the idle time. Busy sessions, pending API executions, starting sessions and
-processes without live activity tracking are skipped. Final-screen snapshots
-and session records are retained for history and manual Resume.
+After 30 seconds at or above the threshold, the platform can pause one eligible
+session. Memory must remain below the threshold for 30 seconds before automatic
+cleanup can act again. Only resumable local Agent sessions confirmed idle by
+both the terminal tracker and the native runtime are eligible. Shell tabs and
+sessions waiting for input are left open. The saved screen and conversation
+remain accessible, and the tab shows the memory pressure reason and Resume
+action.
 
 ### Platform management and roles
 
