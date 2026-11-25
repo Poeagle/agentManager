@@ -423,6 +423,20 @@
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary));
 }
 .session-chat-sourced .conversation-card-trigger strong {max-width: min(21ch, 100%);}
+.session-chat-sourced[data-input-source="agent_handoff"] .conversation-card-trigger {
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding-inline: 8px;
+}
+.session-chat-sourced[data-input-source="agent_handoff"] .conversation-card-trigger strong {max-width: none;}
+@container (max-width: 255px) {
+  .session-chat-sourced[data-input-source="agent_handoff"] .conversation-card-trigger time {
+    min-width: 0;
+    flex-shrink: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
 .conversation-auto-context[data-context-kind="compaction_summary"] {
   width: fit-content;
   max-width: min(85%, 36rem);

@@ -78,7 +78,7 @@ for (const agent of ['codex', 'claude']) {
         const received = messages.find((item: { role: string; text: string }) => item.role === 'user' && item.text === incoming);
         expect(received?.id).toBeTruthy();
         db.prepare('INSERT INTO conversation_input_sources(session_id,client_id,kind,label,message_id) VALUES(?,?,?,?,?)')
-          .run(session.id, handoff, 'agent_handoff', '开发 A', received.id);
+          .run(session.id, handoff, 'agent_handoff', '开发 A · OPS 待办审查与跨模块兼容性验证的完整来源标签', received.id);
       } finally {
         db.close();
       }
@@ -101,10 +101,10 @@ for (const agent of ['codex', 'claude']) {
       const historyDialog = page.getByRole('dialog', { name: '简要压缩详情' });
 
       await page.goto('/');
-      const handoffCard = chat.getByRole('button', { name: /Agent 协作 开发 A/ });
+      const handoffCard = chat.getByRole('button', { name: /^开发 A/ });
       await expect(handoffCard).toBeVisible();
       await handoffCard.click();
-      const handoffDialog = page.getByRole('dialog', { name: 'Agent 协作 · 开发 A' });
+      const handoffDialog = page.getByRole('dialog', { name: '开发 A · OPS 待办审查与跨模块兼容性验证的完整来源标签' });
       await expect(handoffDialog).toContainText('请验证发行候选版本');
       await expect(handoffDialog).not.toContainText('source_tab_id');
       await page.keyboard.press('Escape');
@@ -127,6 +127,16 @@ for (const agent of ['codex', 'claude']) {
         const feedBounds = (await chat.locator('.session-chat-feed').boundingBox())!;
         expect(Math.max(handoffBounds.width, scheduledBounds.width)).toBeLessThan(feedBounds.width * 0.95);
         expect(await handoffCard.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+        expect(handoffBounds.height).toBeLessThan(34);
+        const source = (await handoffCard.locator('strong').boundingBox())!;
+        const handoffTime = handoffCard.locator('time');
+        expect(await handoffTime.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+        const sentAt = (await handoffTime.boundingBox())!;
+        const details = (await handoffCard.getByText('查看详情').boundingBox())!;
+        expect(source.x).toBeLessThan(sentAt.x);
+        expect(sentAt.x).toBeLessThan(details.x);
+        expect(Math.abs(source.y - sentAt.y)).toBeLessThan(3);
+        expect(Math.abs(source.y - details.y)).toBeLessThan(3);
         await expect(historyDialog).toHaveCount(0);
         await expect(taskDialog).toHaveCount(0);
         expect((await brief.boundingBox())!.y).toBeLessThan((await card.boundingBox())!.y);

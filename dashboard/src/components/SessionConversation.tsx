@@ -435,17 +435,17 @@ const Bubble = memo(function Bubble({
   if (message.role === 'user' && message.input_source) {
     const scheduled = message.input_source.kind === 'scheduled';
     const handoff = message.input_source.kind === 'agent_handoff';
-    const sourceLabel = handoff ? 'Agent 协作' : scheduled ? '定时任务' : '平台消息';
+    const sourceLabel = scheduled ? '定时任务' : '平台消息';
     return <>
       {briefCard}
-      <article className="session-chat-sourced" data-chat-message-id={message.id}>
+      <article className="session-chat-sourced" data-input-source={message.input_source.kind} data-chat-message-id={message.id}>
         <ConversationDialogCard
           active={active}
-          title={`${sourceLabel} · ${message.input_source.label}`}
+          title={handoff ? message.input_source.label : `${sourceLabel} · ${message.input_source.label}`}
           summary={
             <>
               {handoff ? <MessagesSquare size={14} /> : <CalendarClock size={14} />}
-              <span>{sourceLabel}</span>
+              {!handoff && <span>{sourceLabel}</span>}
               <strong title={message.input_source.label}>{message.input_source.label}</strong>
               {(scheduled || handoff) && message.timestamp && Number.isFinite(Date.parse(message.timestamp)) && (
                 <time dateTime={message.timestamp} title="发送时间">
