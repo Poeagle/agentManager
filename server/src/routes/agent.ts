@@ -113,7 +113,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.40.0',
+    version:'3.41.0',
     updatedAt:'2026-11-25',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -559,12 +559,15 @@ export function getAgentApiContract() {
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/capabilities',description:'With a launch-issued tab credential, return the source tab, owner, project, callable operations and limits.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs',description:'List the owner’s Agent tabs in the same project, including parent_tab_id and can_delete. Optional cursor from next_cursor and include_ended=true to include ended tabs.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs/:id',description:'Read parent_tab_id, state and recent public conversation text for an accessible tab.'},
-      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox',description:'Read the current tab’s handoffs in receipt order with verified source, message id, reply reference and optional next_cursor.'},
-      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox/:id',description:'Read the full body of one accepted or queued handoff addressed to the source tab.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox',description:'Read the current tab’s handoffs in receipt order with verified source, message id, reply reference, optional batch_id and next_cursor.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox/:id',description:'Read one submitted, queued or stored handoff addressed to the source tab, including batch replies before the parent wakes.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/batches',description:'With a write-capable tab credential, open a result collection batch for the current tab. Body: request_id and optional timeout_seconds (default 1800). Result: batch_id and deadline_at.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/batches/:id/seal',description:'Close batch registration. Body: request_id. Once sealed, all terminal tasks trigger one summary input to the parent. The deadline can also trigger that input.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/batches/:id',description:'Read an owned batch’s deadline, sealed state, wake_status and wake_reason with per-task message_id, delivery and result_message_id.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/execution-options',description:'Return source_execution and launch settings for the source tab’s bound Provider or account only. Optional agent_id filters results and include_quota=true adds available quota.'},
-      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs',description:'Create and launch one tab in the source project using the same Agent, Provider and account as the source tab. Body: request_id, name, optional execution and initial_message. A different agent_id or environment_id is rejected before launch. The platform checks model settings before sending the first task.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs',description:'Create and launch one tab in the source project using the same Agent, Provider and account as the source tab. Body: request_id, name, optional execution, initial_message and batch_id (requires initial_message). A different agent_id or environment_id is rejected before launch. The platform checks model settings before sending the first task.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs/:id/delete',description:'Close another authorized tab belonging to the same user and project. Body: request_id and optional delete_history (default false). Explicit history removal runs in the background and can be tracked via GET /api/agent-docs/operations/:id. No cascade to child tabs.'},
-      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text immediately, steering running work or starting input on an idle tab. A target that cannot accept immediate delivery rejects it. Body: request_id, text, optional intent, and either target_tab_ids or reply_to. The server resolves reply_to to the original sender.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text to target_tab_ids or to the original sender using reply_to. Body: request_id, text, optional intent and batch_id (only with direct task dispatch). Replies to a batched task are stored immediately. A blocker reply additionally attempts immediate input and reports wake_status. An ordinary reply outside a batch is delivered immediately.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/operations/:id',description:'Read settled or partial receipts for a request_id owned by the source tab.'},
       {
         category: 'Agents', method: 'GET', path: '/api/codex/environments',
@@ -597,6 +600,7 @@ export function getAgentApiContract() {
     ],
     tips: [
       'Agent Docs child tab example: POST /api/agent-docs/tabs with '+JSON.stringify({request_id:'child-review',name:'Review',initial_message:'Review the change and report the findings'})+'. Omit execution to inherit the source Agent, Provider and account.',
+      'Agent Docs batch example: open via POST /api/agent-docs/batches with '+JSON.stringify({request_id:'open-reviews',timeout_seconds:1800})+', reuse result.batch_id on each task dispatch, then POST /api/agent-docs/batches/:id/seal with an independent request_id.',
       'Batch input example: POST /api/sessions/:id/input with '+JSON.stringify({input:'one\n\ntwo',source:'conversation',client_id:'unique-batch-id',batch:[{length:3,attachments:0},{length:3,attachments:0}]}),
       'The output fields from display and execute are CLEAN TEXT — read them directly; do not strip ANSI or parse raw PTY data.',
       'Notification reply example: POST /api/sessions/:id/input with '+JSON.stringify({input:'Use the isolated environment',source:'conversation',client_id:'notification-reply-id',expected_native_id:'opaque-native-id',expected_environment_id:'native'}),

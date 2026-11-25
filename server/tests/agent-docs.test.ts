@@ -62,6 +62,7 @@ async function testApp() {
 
 afterEach(async () => {
   await app.close();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   cleanup();
 });
@@ -140,6 +141,145 @@ it('creates a named tab as its creator and sends the first handoff only after la
   expect((await app.inject({ url: base + '/tabs', headers })).json().tabs).toContainEqual(expect.objectContaining({ tab_id: id, name: 'DBM-1234 排查', parent_tab_id: 'dev-one' }));
   expect((await app.inject({ method: 'POST', url: base + '/tabs', headers, payload: request })).json()).toEqual(response.json());
   expect(manager.spawnSession).toHaveBeenCalledTimes(1);
+});
+
+it.each([['dev-one', 'claude'], ['dev-two', 'codex']])('wakes %s once when its dispatch is sealed and every task has a result', async (parent, parentAgent) => {
+  const submit = vi.spyOn(getAgent(parentAgent).input, 'submit').mockResolvedValue(true);
+  vi.spyOn(getAgent(parentAgent === 'claude' ? 'codex' : 'claude').input, 'submit').mockResolvedValue(true);
+  const child = 'test';
+  const post = async (tabId: string, path: string, payload: Record<string, unknown>) =>
+    app.inject({ method: 'POST', url: base + path, headers: header(tabId), payload });
+  const opened = await post(parent, '/batches', { request_id: 'open' });
+  expect(opened.statusCode).toBe(200);
+  const batchId = opened.json().result.batch_id;
+  expect((await post(parent, '/batches', { request_id: 'open' })).json()).toEqual(opened.json());
+  expect((await app.inject({ url: base + '/batches/' + batchId, headers: header(child) })).statusCode).toBe(404);
+  expect((await post(child, '/batches/' + batchId + '/seal', { request_id: 'foreign-seal' })).statusCode).toBe(404);
+  expect((await post(child, '/messages', {
+    request_id: 'foreign-assign', target_tab_ids: [parent], batch_id: batchId, intent: 'task', text: 'foreign',
+  })).statusCode).toBe(409);
+  const assign = async (request_id: string) => (await post(parent, '/messages', {
+    request_id, target_tab_ids: [child], batch_id: batchId, intent: 'task', text: request_id,
+  })).json().result.results[0].message_id;
+  const first = await assign('first');
+  const second = await assign('second');
+  submit.mockClear();
+  const reply = (request_id: string, reply_to: string, intent: string) =>
+    post(child, '/messages', { request_id, reply_to, intent, text: request_id });
+
+  const progress = await reply('progress', first, 'progress');
+  const result = await reply('result-first', first, 'result');
+  const { message_id } = result.json().result.results[0];
+  expect(progress.json().result.results[0].status).toBe('stored');
+  expect(result.json().result.results[0].status).toBe('stored');
+  expect((await app.inject({ url: base + '/inbox/' + message_id, headers: header(parent) })).json()).toMatchObject({
+    message: { content: 'result-first', reply_to: first, source_tab_id: child, batch_id: batchId },
+  });
+  expect(submit).toHaveBeenCalledTimes(0);
+
+  await reply('blocker', second, 'blocker');
+  expect(submit).toHaveBeenCalledTimes(1);
+  await reply('result-second', second, 'result');
+  expect(submit).toHaveBeenCalledTimes(1);
+  const seal = { request_id: 'seal' };
+  expect((await post(parent, '/batches/' + batchId + '/seal', seal)).statusCode).toBe(200);
+  expect((await post(parent, '/batches/' + batchId + '/seal', seal)).statusCode).toBe(200);
+  expect((await post(parent, '/messages', {
+    request_id: 'too-late', target_tab_ids: [child], batch_id: batchId, intent: 'task', text: 'later',
+  })).statusCode).toBe(409);
+  await reply('result-repeat', second, 'result');
+  expect(submit).toHaveBeenCalledTimes(2);
+  const wake = submit.mock.calls[1][1];
+  expect(wake).toContain(batchId);
+  expect(wake).toContain('已回传来源：test');
+  expect(linkConversationInputs(parent, native, [{ id: 'batch-echo', role: 'user', text: wake, timestamp: null, client_id: batchId }]))
+    .toMatchObject([{ text: wake, input_source: { kind: 'agent_handoff', label: '协作结果' } }]);
+  expect((await app.inject({ url: base + '/batches/' + batchId, headers: header(parent) })).json()).toMatchObject({
+    batch_id: batchId, wake_reason: 'complete', wake_status: 'submitted',
+    tasks: [{ message_id: first, state: 'result' }, { message_id: second, state: 'result' }],
+  });
+});
+
+it('wakes on the deadline after restart, keeps late results in the inbox, and leaves child tabs open', async () => {
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+  vi.spyOn(getAgent('claude').input, 'submit').mockResolvedValue(true);
+  const submit = vi.spyOn(getAgent('codex').input, 'submit').mockResolvedValue(true);
+  vi.spyOn(manager, 'spawnSession').mockImplementation(async id => {
+    getDb().prepare("UPDATE sessions SET status='running',native_session_id=? WHERE id=?").run(native, id);
+  });
+  const parent = 'dev-two';
+  const post = async (tabId: string, path: string, payload: Record<string, unknown>) =>
+    (await app.inject({ method: 'POST', url: base + path, headers: header(tabId), payload })).json();
+  const { result: { batch_id: batchId } } = await post(parent, '/batches', { request_id: 'open', timeout_seconds: 10 });
+  const { result: created } = await post(parent, '/tabs', { request_id: 'new', batch_id: batchId, name: 'A', initial_message: 'First' });
+  expect(created).toMatchObject({ launch_status: 'ready', initial_message_status: 'submitted' });
+  await post(parent, '/messages', {
+    request_id: 'assign', target_tab_ids: ['test', 'different-owner'], batch_id: batchId, intent: 'task', text: 'Second',
+  });
+  await post(parent, '/batches/' + batchId + '/seal', { request_id: 'seal' });
+  submit.mockClear();
+  await app.close();
+  app = await testApp();
+  await vi.advanceTimersByTimeAsync(10_000);
+  vi.useRealTimers();
+  const view = async () => (await app.inject({ url: base + '/batches/' + batchId, headers: header(parent) })).json();
+  await expect.poll(async () => (await view()).wake_status).toBe('submitted');
+  expect(await view()).toMatchObject({ wake_reason: 'deadline', wake_status: 'submitted', tasks: [
+    { state: 'pending', tab_id: created.tab_id }, { state: 'pending', tab_id: 'test' }, { state: 'unavailable' },
+  ] });
+  expect(submit).toHaveBeenCalledTimes(1);
+  expect(submit.mock.calls[0][1]).toContain('待回传 2 项，未能投递 1 项');
+  await post(created.tab_id, '/messages', {
+    request_id: 'late-result', reply_to: created.initial_message_id, intent: 'result', text: '迟到的结果',
+  });
+  expect((await view()).tasks[0]).toMatchObject({ state: 'result', source_tab_id: created.tab_id });
+  expect(submit).toHaveBeenCalledTimes(1);
+  expect(manager.getSession(created.tab_id)).toMatchObject({ status: 'running', parent_session_id: parent });
+});
+
+it('keeps the results when the parent changes its native conversation before the batch completes', async () => {
+  const submit = vi.spyOn(getAgent('claude').input, 'submit').mockResolvedValue(true);
+  const post = async (tabId: string, path: string, payload: Record<string, unknown>) =>
+    (await app.inject({ method: 'POST', url: base + path, headers: header(tabId), payload })).json();
+  const { result: { batch_id: batchId } } = await post('dev-one', '/batches', { request_id: 'open' });
+  const { result: { results: [{ message_id: taskId }] } } = await post('dev-one', '/messages', {
+    request_id: 'assign', target_tab_ids: ['test'], batch_id: batchId, intent: 'task', text: 'First',
+  });
+  await post('dev-one', '/batches/' + batchId + '/seal', { request_id: 'seal' });
+  getDb().prepare("UPDATE sessions SET native_session_id='changed-native' WHERE id='dev-one'").run();
+  submit.mockClear();
+  const result = await post('test', '/messages', { request_id: 'result', reply_to: taskId, intent: 'result', text: 'Result' });
+  expect(result.result.results[0]).toMatchObject({ status: 'stored' });
+  expect(submit).toHaveBeenCalledTimes(0);
+  expect((await app.inject({ url: base + '/batches/' + batchId, headers: header('dev-one') })).json()).toMatchObject({
+    wake_reason: 'complete', wake_status: 'rejected', tasks: [{ state: 'result' }],
+  });
+});
+
+it('does not retry a batch wake with an uncertain native receipt', async () => {
+  const submit = vi.spyOn(getAgent('claude').input, 'submit').mockResolvedValue(true);
+  const post = async (tabId: string, path: string, payload: Record<string, unknown>) =>
+    (await app.inject({ method: 'POST', url: base + path, headers: header(tabId), payload })).json();
+  const { result: { batch_id: batchId } } = await post('dev-one', '/batches', { request_id: 'open' });
+  const assign = (request_id: string) => post('dev-one', '/messages', {
+    request_id, target_tab_ids: ['test'], batch_id: batchId, intent: 'task', text: request_id,
+  });
+  const [a, b] = await Promise.all([assign('A'), assign('B')]);
+  await post('dev-one', '/batches/' + batchId + '/seal', { request_id: 'seal' });
+  submit.mockClear();
+  submit.mockRejectedValue(new Error('mock transport closed'));
+  const report = (request_id: string, assignment: typeof a) => post('test', '/messages', {
+    request_id, reply_to: assignment.result.results[0].message_id, intent: 'result', text: request_id,
+  });
+  await Promise.all([report('reply-a', a), report('reply-b', b)]);
+  expect(submit).toHaveBeenCalledTimes(1);
+  await app.close();
+  app = await testApp();
+  await report('reply-b', b);
+  expect(submit).toHaveBeenCalledTimes(1);
+  expect((await app.inject({ url: base + '/batches/' + batchId, headers: header('dev-one') })).json()).toMatchObject({
+    wake_reason: 'complete', wake_status: 'unknown', tasks: [{ state: 'result' }, { state: 'result' }],
+  });
 });
 
 it.each([

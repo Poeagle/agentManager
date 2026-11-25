@@ -39,6 +39,7 @@ JSON
 ```
 
 - `request_id` 和 `name` 必填。`initial_message` 可省略，省略时创建空白标签页。首条任务附有平台生成的 `message_id` 与发起方 `source_tab_id`。接收方用原 `message_id` 作为 `reply_to`。
+- 首条任务属于 [并行协作批次](batches.md)时，同时提交 `initial_message` 和 `batch_id`。
 - `execution` 可省略。指定 `model_id`、`reasoning_effort` 或 `service_tier` 时使用继承环境支持的组合。若请求仍带 `agent_id` 或 `environment_id`，其值必须与创建者匹配，平台会拒绝跨 Provider 或跨账号的创建。
 - 用响应 `result` 里的 `tab_id`、`launch_status`、`applied_execution` 和 `initial_message_status` 分别核对标签页、启动、配置和首条任务。返回的 `parent_tab_id` 为本次创建者。启动状态可为 `ready`、`starting`、`rejected` 或 `unknown`。未提交首条任务时，其状态为 `null`。已进入投递流程的首条任务带有 `initial_message_id`。投递状态见 [消息投递](messages.md)。
 - 已有 `tab_id` 且首条任务明确被拒绝时，解决原因后向这个标签页补发。明确拒绝的启动按错误类型处理，例如权限不足、配置不可用、达到标签页上限。启动或首条任务结果待确认时，用原请求 ID 查询。

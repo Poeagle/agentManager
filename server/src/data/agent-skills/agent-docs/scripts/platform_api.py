@@ -29,6 +29,12 @@ def parse_args():
     inbox.add_argument("--cursor")
     incoming = commands.add_parser("read-message")
     incoming.add_argument("message_id")
+    commands.add_parser("open-batch", help="Read the batch request JSON from stdin")
+    batch = commands.add_parser("read-batch")
+    batch.add_argument("batch_id")
+    seal = commands.add_parser("seal-batch")
+    seal.add_argument("batch_id")
+    seal.add_argument("--request-id", required=True)
     options = commands.add_parser("execution-options")
     options.add_argument("--agent-id")
     options.add_argument("--include-quota", action="store_true")
@@ -86,6 +92,12 @@ def make_request(args):
         if not args.message_id or args.message_id in (".", ".."):
             raise ValueError("需要有效的 message_id")
         route = "/inbox/" + quote(args.message_id, safe="")
+    elif command in ("read-batch", "seal-batch"):
+        if not args.batch_id or args.batch_id in (".", ".."):
+            raise ValueError("需要有效的 batch_id")
+        route = "/batches/" + quote(args.batch_id, safe="")
+        if command == "seal-batch":
+            return route + "/seal", "", json.dumps({"request_id": args.request_id}).encode()
     elif command == "operation":
         if not args.request_id or args.request_id in (".", ".."):
             raise ValueError("需要有效的 request_id")
@@ -100,7 +112,7 @@ def make_request(args):
             raise ValueError("请求正文必须是 JSON 对象") from None
         if not isinstance(value, dict) or not isinstance(value.get("request_id"), str) or not value["request_id"].strip():
             raise ValueError("请求正文必须包含 request_id")
-        return ("/tabs" if command == "create-tab" else "/messages"), "", body
+        return {"create-tab": "/tabs", "send-message": "/messages", "open-batch": "/batches"}[command], "", body
     return route, urlencode(query), None
 
 

@@ -21,7 +21,7 @@ PYTHON
 python3 scripts/platform_api.py send-message
 ```
 
-不同目标需要不同内容时，分别发送并使用不同请求 ID。带其他 Agent 文件内容或日志时，只包含当前任务需要的证据。
+不同目标需要不同内容时，分别发送并使用不同请求 ID。并行任务需要等齐汇总时，设置 `intent: "task"` 并附上 [`batch_id`](batches.md)。带其他 Agent 文件内容或日志时，只包含当前任务需要的证据。
 
 ## 查看收件箱并回传
 
@@ -32,7 +32,7 @@ python3 scripts/platform_api.py inbox
 python3 scripts/platform_api.py read-message "$original_message_id"
 ```
 
-回复时使用 `send-message` 的 `reply_to`，填当前标签页收到的原 `message_id`。回传调用省略 `target_tab_ids`，平台根据原消息确认并选择发送方。API 会拒绝引用其他标签页的来信。每项结果各用一次写请求。可用 `intent: "progress"` 表明进展，或用 `intent: "result"` 标记交付结论。保留工单号或其他交付物标识，方便对方汇总。
+回复时使用 `send-message` 的 `reply_to`，填当前标签页收到的原 `message_id`。平台通过原消息定位发送方和批次，无须填写 `target_tab_ids` 或 `batch_id`。API 会拒绝引用其他标签页的来信。每项结果各用一次写请求。`progress` 表示进展，`result` 表示交付结论，需要对方立刻协调时用 `blocker`。保留工单号或其他交付物标识，方便对方汇总。
 
 ```sh
 # reply_request_id 使用回传前已生成并记录的新 ID。
@@ -59,6 +59,7 @@ python3 scripts/platform_api.py send-message
 | `accepted` | 收到 Agent 接收回执。 |
 | `queued` | 旧版投递回执，等待既有 Agent 队列发送。新版协作消息在运行中即时插入，无法及时接收时返回 `rejected`。 |
 | `submitted` | 已交给运行时，尚无 Agent 接收回执。 |
+| `stored` | 批次回传已进入父标签页的收件箱，带来源和原任务引用。紧急阻塞另外返回 `wake_status`。 |
 | `rejected` | 已确认未交付。查看该目标的原因。 |
 | `unknown` | 交付结果待确认。保留原请求 ID。 |
 

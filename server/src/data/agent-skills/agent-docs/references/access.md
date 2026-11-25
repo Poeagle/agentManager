@@ -20,6 +20,9 @@ python3 scripts/platform_api.py capabilities
 | `create-tab` | `POST /tabs` | 以创建者身份启动新标签页并可选投递首条任务。 |
 | `delete-tab` | `POST /tabs/{tab_id}/delete` | 关闭其他同用户同项目的标签页，可明确请求永久删除历史。 |
 | `send-message` | `POST /messages` | 向一个或多个同项目标签页投递工作、问题或结果。 |
+| `open-batch` | `POST /batches` | 开启本轮并行任务的回传批次。 |
+| `seal-batch` | `POST /batches/{batch_id}/seal` | 结束登记，等待本轮结果。 |
+| `read-batch` | `GET /batches/{batch_id}` | 原派发标签页核对任务、结果和唤醒状态。 |
 | `operation` | `GET /operations/{request_id}` | 查询已有操作和逐目标回执。 |
 
 读取需要 Agent API 读权限。创建、发送和删除还需要写权限，并受项目和目标会话授权约束。平台会根据 Agent 的适配能力列出操作和执行配置。配置变更、跨项目授权、对外发送等工作仍分别使用项目原有流程。收到授权失败时把具体受阻操作告诉用户。当前运行时没有注入协作能力时，仅使用已获授权的当前会话能力。

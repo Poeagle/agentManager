@@ -187,7 +187,7 @@ describe('immediate session input',()=>{
     getDb().prepare("UPDATE sessions SET codex_session_id='019ff001-8888-7888-8888-888888888888' WHERE id='own'").run();
     const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue(true);
     const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'能否再详细一下',source:'conversation'}});
-    expect(result.statusCode).toBe(202);expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','能否再详细一下',undefined,[],expect.any(Function));expect(manager.writeToSession).not.toHaveBeenCalled();
+    expect(result.statusCode).toBe(202);expect(submit.mock.calls[0].slice(0,5)).toEqual(['019ff001-8888-7888-8888-888888888888','能否再详细一下',undefined,[],expect.any(Function)]);expect(manager.writeToSession).not.toHaveBeenCalled();
   });
   it.each(['unchanged', 'before reconnect', 'during reconnect'] as const)('handles a first brief send disconnect on the selected account (binding: %s)', async (binding) => {
     const db = getDb();
@@ -264,7 +264,7 @@ describe('immediate session input',()=>{
     const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue(true);
     const post=(client_id:unknown)=>app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'继续',source:'conversation',client_id}});
     expect((await post('client-one')).statusCode).toBe(202);
-    expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','继续','client-one',[],expect.any(Function));
+    expect(submit.mock.calls[0].slice(0,5)).toEqual(['019ff001-8888-7888-8888-888888888888','继续','client-one',[],expect.any(Function)]);
     for(const value of ['',42,'x'.repeat(101)])expect((await post(value)).statusCode).toBe(400);
     expect(submit).toHaveBeenCalledTimes(1);expect(manager.writeToSession).not.toHaveBeenCalled();
   });
@@ -277,7 +277,7 @@ describe('immediate session input',()=>{
     const submit=vi.spyOn(conversation,'submitStreamingCodexInput').mockResolvedValue(true);
     const attachments=[{kind:'file',name:'note.txt',path}];
     const result=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'',source:'conversation',client_id:'file-only',attachments}});
-    expect(result.statusCode).toBe(202);expect(submit).toHaveBeenCalledWith('019ff001-8888-7888-8888-888888888888','', 'file-only',[{...attachments[0],path:realpathSync(path)}],expect.any(Function));
+    expect(result.statusCode).toBe(202);expect(submit.mock.calls[0].slice(0,5)).toEqual(['019ff001-8888-7888-8888-888888888888','', 'file-only',[{...attachments[0],path:realpathSync(path)}],expect.any(Function)]);
     const rejected=await app.inject({method:'POST',url:'/api/sessions/own/input',headers:{cookie},payload:{input:'read',source:'conversation',attachments:[{kind:'file',name:'private',path:'/etc/passwd'}]}});
     expect(rejected.statusCode).toBe(400);expect(submit).toHaveBeenCalledTimes(1);expect(manager.writeToSession).not.toHaveBeenCalled();
   });

@@ -7,9 +7,11 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.40.0');
+    expect(contract.version).toBe('3.41.0');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/tabs'&&e.method==='POST')?.description).toContain('same Agent, Provider and account');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/execution-options')?.description).toContain('source_execution');
+    expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/messages')?.description).toContain('stored immediately');
+    expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/batches/:id/seal')?.description).toContain('one summary input');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation')?.description).toContain('include_context=true adds startup_context');
     for (const path of ['/api/sessions','/api/sessions/:id']) {
       const description = contract.endpoints.find(endpoint=>endpoint.method==='GET'&&endpoint.path===path)?.description;
@@ -52,6 +54,9 @@ describe('Agent API contract', () => {
       'GET /api/agent/capabilities',
       'GET /api/agent-docs/capabilities',
       'GET /api/agent-docs/inbox',
+      'POST /api/agent-docs/batches',
+      'POST /api/agent-docs/batches/:id/seal',
+      'GET /api/agent-docs/batches/:id',
       'POST /api/agent-docs/messages',
       'POST /api/agent-docs/tabs',
       'POST /api/agent-docs/tabs/:id/delete',
