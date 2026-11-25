@@ -29,7 +29,7 @@ python3 scripts/platform_api.py send-message
 
 ```sh
 python3 scripts/platform_api.py inbox
-python3 scripts/platform_api.py read-message "$original_message_id"
+python3 scripts/platform_api.py read-message -- "$original_message_id"
 ```
 
 回复时使用 `send-message` 的 `reply_to`，填当前标签页收到的原 `message_id`。平台通过原消息定位发送方和批次，无须填写 `target_tab_ids` 或 `batch_id`。API 会拒绝引用其他标签页的来信。每项结果各用一次写请求。`progress` 表示进展，`result` 表示交付结论，需要对方立刻协调时用 `blocker`。保留工单号或其他交付物标识，方便对方汇总。
@@ -70,7 +70,7 @@ python3 scripts/platform_api.py send-message
 `GET /operations/{request_id}` 对应 `operation`。响应包含 `request_id`、操作状态 `pending` 或 `settled`，以及当前可确认的创建或逐目标投递结果。读取次数和保留窗口以能力响应为准。查本次回传使用本次已记录的请求 ID，填写 `reply_to` 使用收到的原消息 ID。查不到记录时保留不确定状态，避免再次创建或发送。
 
 ```sh
-python3 scripts/platform_api.py operation "$request_id"
+python3 scripts/platform_api.py operation -- "$request_id"
 ```
 
 接收方的运行状态用于了解它是否空闲或正在执行。需要确认任务是否已做完时，以引用原消息的 `result` 和附带证据为准。消息正文建议见 [协作规范](collaboration.md#消息约定)。

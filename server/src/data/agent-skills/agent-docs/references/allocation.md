@@ -6,10 +6,10 @@
 
 ```sh
 python3 scripts/platform_api.py list-tabs --children
-python3 scripts/platform_api.py tab-controls "$target_tab_id"
+python3 scripts/platform_api.py tab-controls -- "$target_tab_id"
 # 仅当当前目标模型的 reasoning_efforts 含 max 时执行。
-python3 scripts/platform_api.py update-tab-controls "$target_tab_id" \
-  --request-id "$request_id" --reasoning-effort max
+python3 scripts/platform_api.py update-tab-controls --request-id="$request_id" \
+  --reasoning-effort max -- "$target_tab_id"
 ```
 
 - `--model-id`、`--reasoning-effort`、`--service-tier` 可单独或组合提交。Fast 用模型目录公布的档位 ID，`default` 恢复默认档位。请用目录中的值解析用户说的「最高」或「Fast」。

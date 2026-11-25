@@ -17,7 +17,7 @@ python3 scripts/platform_api.py send-message <<JSON
 {"request_id":"$task_request_id","batch_id":"$batch_id","target_tab_ids":["$child_id"],"intent":"task","text":"复验这一项。回传结论、证据和未完成项。"}
 JSON
 
-python3 scripts/platform_api.py seal-batch "$batch_id" --request-id "$seal_request_id"
+python3 scripts/platform_api.py seal-batch --request-id="$seal_request_id" -- "$batch_id"
 ```
 
 ## 回传与汇总
@@ -27,8 +27,8 @@ python3 scripts/platform_api.py seal-batch "$batch_id" --request-id "$seal_reque
 派发结束后，全部任务已有结果或明确投递失败时，平台唤醒父标签页一次。到了截止时间也会通知一次，尚无结论的任务仍列为待回传。过时回传依旧入箱，可按需读取。
 
 ```sh
-python3 scripts/platform_api.py read-batch "$batch_id"
-python3 scripts/platform_api.py read-message "$result_message_id"
+python3 scripts/platform_api.py read-batch -- "$batch_id"
+python3 scripts/platform_api.py read-message -- "$result_message_id"
 ```
 
 `read-batch` 返回每项的委派 `message_id`、目标、状态和可用的 `result_message_id`。读取结果正文可核对来源及证据。若批次到期，按读到的状态汇报。若唤醒被拒绝或结果不明，用 `wake_status`、`wake_error` 及收件箱核对，避免重复派发。父标签页决定是否沿用子标签页追问或复验，收尾后再按授权关闭。

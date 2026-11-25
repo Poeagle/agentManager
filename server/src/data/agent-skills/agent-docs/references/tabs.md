@@ -20,7 +20,7 @@ python3 scripts/platform_api.py list-tabs --include-ended
 用 `GET /tabs/{tab_id}` 读取某个标签页的状态和少量近期用户与 Agent 消息。只在需要核对具体进度时调用。返回的历史节选用于了解当前工作，任务的验收结论仍由执行方回传。
 
 ```sh
-python3 scripts/platform_api.py read-tab "$target_tab_id"
+python3 scripts/platform_api.py read-tab -- "$target_tab_id"
 ```
 
 ## 继续原会话
@@ -50,7 +50,7 @@ JSON
 - 已有 `tab_id` 且首条任务明确被拒绝时，解决原因后向这个标签页补发。明确拒绝的启动按错误类型处理，例如权限不足、配置不可用、达到标签页上限。启动或首条任务结果待确认时，用原请求 ID 查询。
 
 ```sh
-python3 scripts/platform_api.py operation "$request_id"
+python3 scripts/platform_api.py operation -- "$request_id"
 ```
 
 ## 关闭或删除标签页
@@ -60,7 +60,7 @@ python3 scripts/platform_api.py operation "$request_id"
 子标签回传结果后，由父标签验收并决定是否关闭。需要追问、复验，或还有该标签页正在处理的其他请求时，保留标签页继续协作。详情见[多轮跟进与关闭](collaboration.md#多轮跟进与关闭)。
 
 ```sh
-python3 scripts/platform_api.py delete-tab "$target_tab_id" --request-id "$request_id"
+python3 scripts/platform_api.py delete-tab --request-id="$request_id" -- "$target_tab_id"
 ```
 
 - 默认关闭标签页并保留会话历史。回执显示 `status: "closed"` 和 `history_status: "retained"`，用户可以从项目历史找回。
