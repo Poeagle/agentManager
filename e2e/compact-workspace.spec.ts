@@ -29,6 +29,10 @@ test('compact workspace preserves readable labels, activity details and keyboard
       (id,project_id,task,status,mode,cli_type,created_by_user_id,created_at,updated_at,completed_at)
       VALUES (?,? ,? ,?,'session',?,?,?, ?,?)`)
       .run(`compact-${index}`,projects[0].id,label,index===2?'failed':'completed',index%2?'claude':'codex',user.id,now,now,now);
+    db.prepare(`INSERT INTO sessions
+      (id,project_id,task,status,mode,cli_type,created_by_user_id,created_at,updated_at,completed_at)
+      VALUES (?, ?, ?, 'completed', 'session', 'claude', ?, ?, ?, ?)`)
+      .run('compact-backup',projects[1].id,'备份验证',user.id,now,now,now);
   } finally {db.close();}
   const schedule = await page.request.post('/api/scheduled-tasks', { data: {
     project_id: projects[0].id, target_type: 'existing', target_session_id: 'compact-23',
@@ -39,6 +43,10 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${projects[0].id}`)}`,{data:{value:{
     activeMode:'terminal',terminalInstances:labels.map((label,index)=>({id:`compact-${index}`,label,customLabel:label})),
     terminalLabels:Object.fromEntries(labels.map((label,index)=>[`compact-${index}`,label])),activeTerminalId:'compact-0',explorerInstances:[],hiddenSessionIds:[],
+  }}});
+  await page.request.put(`/api/user-state/${encodeURIComponent(`project:${projects[1].id}`)}`,{data:{value:{
+    activeMode:'terminal',terminalInstances:[{id:'compact-backup',label:'备份验证',customLabel:'备份验证'}],
+    terminalLabels:{'compact-backup':'备份验证'},activeTerminalId:'compact-backup',explorerInstances:[],hiddenSessionIds:[],
   }}});
   const projectHistoryRequests = new Set<string>();
   page.on('request', request => {
@@ -51,10 +59,11 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await page.goto('/');
   const header = page.locator('.workspace-header');
   const projectTabs = page.getByRole('navigation',{name:'项目标签'});
-  const sessions = page.getByLabel('会话标签',{exact:true}).filter({visible:true});
+  const firstBranch = projectTabs.locator('.workspace-project-item').filter({has:page.getByRole('button',{name:'dolphindb_manager',exact:true})});
+  const sessions = firstBranch.getByRole('navigation',{name:'会话标签'});
   await expect(sessions.getByRole('button',{name:'jira',exact:true})).toBeVisible();
   expect((await header.boundingBox())!.height).toBe(32);
-  const projectRows = projectTabs.locator('.workspace-tab');
+  const projectRows = projectTabs.locator('.workspace-project-row');
   const firstProject = (await projectRows.nth(0).boundingBox())!;
   const secondProjectRow = (await projectRows.nth(1).boundingBox())!;
   expect(firstProject.x).toBe(secondProjectRow.x);
@@ -66,13 +75,18 @@ test('compact workspace preserves readable labels, activity details and keyboard
   expect(toolBounds.at(-1)!.x).toBeGreaterThan(toolBounds[0]!.x);
   expect(toolBounds[0]!.y).toBeLessThan((await header.boundingBox())!.height);
   const sessionRows = sessions.locator('.workspace-tab');
+  await expect(sessionRows).toHaveCount(5);
+  expect((await sessionRows.first().boundingBox())!.x).toBeGreaterThan(firstProject.x);
+  expect(secondProjectRow.y).toBeGreaterThan((await sessionRows.last().boundingBox())!.y);
+  await firstBranch.getByRole('button',{name:'展开其余 31 个会话'}).click();
+  await expect(sessionRows).toHaveCount(36);
   await expect(sessions.locator('[data-session-id="compact-23"]').getByText('定时', { exact: true })).toBeVisible();
   await expect(sessions.getByText('定时', { exact: true })).toHaveCount(1);
   const firstRow = (await sessionRows.nth(0).boundingBox())!;
   const secondRow = (await sessionRows.nth(1).boundingBox())!;
   expect(firstRow.x).toBe(secondRow.x);
   expect(secondRow.y).toBeGreaterThan(firstRow.y);
-  expect(await sessions.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  expect(await projectTabs.locator('.workspace-project-tabs').evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
   expect(await sessions.getByText('jira',{exact:true}).evaluate(element=>getComputedStyle(element.parentElement!).fontSize)).toBe('12px');
   expect(await sessions.locator('.workspace-tab').first().locator('svg').count()).toBe(2); // Agent + close, with a separate status dot.
   await expect(sessions.getByText('jira',{exact:true})).toHaveAttribute('title',/最后活跃：/);
@@ -84,7 +98,9 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await tab.hover();
   expect(await tab.boundingBox()).toEqual(bounds);
   const close = tab.getByRole('button',{name:'Close session'});
-  await close.focus();
+  await tab.getByRole('button',{name:'jira',exact:true}).focus();
+  await page.keyboard.press('Tab');
+  await expect(close).toBeFocused();
   await expect(close).toHaveCSS('opacity','1');
   await page.keyboard.press('Tab');
   await expect(sessions.getByRole('button',{name:'UI',exact:true})).toBeFocused();
@@ -99,11 +115,20 @@ test('compact workspace preserves readable labels, activity details and keyboard
     const url = new URL(response.url());
     return url.pathname === '/api/sessions' && url.searchParams.get('project_id') === projects[1].id;
   });
-  await projectTabs.getByRole('button', { name: 'backuprestore', exact: true }).click();
+  const secondBranch = projectTabs.locator('.workspace-project-item').filter({has:page.getByRole('button',{name:'backuprestore',exact:true})});
+  const secondProjectButton = secondBranch.getByRole('button',{name:'backuprestore',exact:true});
+  await secondBranch.getByRole('button',{name:'展开 backuprestore 的会话'}).click();
   expect((await secondHistory).ok()).toBe(true);
+  await expect(secondProjectButton).not.toHaveAttribute('aria-current','page');
+  const backupSession = secondBranch.getByRole('button',{name:'备份验证',exact:true});
+  await backupSession.click();
+  await expect(secondProjectButton).toHaveAttribute('aria-current','page');
+  await expect(backupSession).toHaveAttribute('aria-current','true');
+  await secondBranch.getByRole('button',{name:'收起 backuprestore 的会话'}).click();
+  await expect(backupSession).toBeHidden();
   await projectTabs.getByRole('button', { name: 'dolphindb_manager', exact: true }).click();
   await expect(sessions.getByRole('button', { name: '界面设计', exact: true })).toBeVisible();
-  const secondProject = projectTabs.locator('.workspace-tab').filter({ hasText: 'backuprestore' });
+  const secondProject = projectRows.filter({ hasText: 'backuprestore' });
   const closeProject = secondProject.getByTitle('Close tab');
   let releaseCheck!: () => void;
   const pendingCheck = new Promise<void>(resolve => { releaseCheck = resolve; });
@@ -121,7 +146,7 @@ test('compact workspace preserves readable labels, activity details and keyboard
   }
   await expect(secondProject).toHaveCount(0);
   await expect(sessions.getByRole('button', { name: '界面设计', exact: true })).toBeVisible();
-  const sidebar = page.getByRole('complementary', { name: '会话列表' });
+  const sidebar = firstBranch.getByRole('complementary', { name: '会话列表' });
   const workspaceNav = page.getByRole('complementary', { name: '工作区导航' });
   await expect(workspaceNav.getByRole('complementary', { name: '会话列表' })).toBeVisible();
   expect((await sidebar.boundingBox())!.y).toBeGreaterThan((await projectTabs.boundingBox())!.y);
@@ -140,10 +165,13 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await page.reload();
   await expect(separator).toHaveAttribute('aria-valuenow', String(savedWidth));
   const desktopSearch = sidebar.getByRole('searchbox', { name: '搜索会话' });
+  await expect(desktopSearch).toBeHidden();
+  await sidebar.getByRole('button', { name: '搜索会话', exact: true }).click();
+  await expect(desktopSearch).toBeFocused();
   await desktopSearch.fill('并行任务 28');
   await expect(sessionRows).toHaveCount(1);
   await desktopSearch.press('Enter');
-  await expect(desktopSearch).toHaveValue('');
+  await expect(desktopSearch).toBeHidden();
   const destination = sessions.getByRole('button', { name: '并行任务 28', exact: true });
   await expect(destination.locator('..')).toHaveAttribute('data-active', 'true');
   await expect(destination).toBeInViewport();
@@ -158,11 +186,12 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await expect(projectTabs).toBeHidden();
   const mobileProjects = page.getByRole('button', { name: '项目导航', exact: true });
   await mobileProjects.click();
-  await expect(projectTabs.getByRole('button', { name: 'dolphindb_manager' })).toBeVisible();
-  await projectTabs.getByRole('button', { name: 'dolphindb_manager' }).click();
+  await expect(projectTabs.getByRole('button', { name: 'dolphindb_manager', exact: true })).toBeVisible();
+  await expect(destination).toBeVisible();
+  await page.screenshot({path:testInfo.outputPath('compact-workspace-mobile.png')});
+  await destination.click();
   await expect(projectTabs).toBeHidden();
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
-  await page.screenshot({path:testInfo.outputPath('compact-workspace-mobile.png')});
 
   const switcher = page.getByRole('button', { name: '切换会话', exact: true });
   const createSession = page.getByRole('button', { name: '新建会话', exact: true });

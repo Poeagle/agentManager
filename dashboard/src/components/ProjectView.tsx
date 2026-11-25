@@ -3,7 +3,7 @@ import {sessionAgent,agentNativeId,agentSupports} from '../lib/agents';
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2, Loader2, List, PanelLeft } from 'lucide-react';
+import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2, Loader2, List, PanelLeft, Search } from 'lucide-react';
 import { Terminal } from './Terminal';
 import { SessionWorkspacePane } from './SessionWorkspacePane';
 import { SessionTabSwitcher } from './SessionTabSwitcher';
@@ -52,7 +52,12 @@ interface ProjectViewProps {
   notificationUnread?:Record<string,number>;
   toolbarHost?: HTMLElement | null;
   sessionNavigationHost?: HTMLElement | null;
+  sessionNavigationExpanded?: boolean;
+  onSetSessionNavigationExpanded?: (projectId: string, expanded: boolean) => void;
+  onActivateProject?: (projectId: string) => void;
 }
+
+const SESSION_PREVIEW_LIMIT = 5;
 /** A restored tab can load independently of expensive list/history enrichment. */
 function RestoreSessionRecord({sessionId,projectId,onRestore}:{sessionId:string;projectId:string;onRestore:(session:Session)=>void}) {
   const query=useQuery({queryKey:['session-record',sessionId],queryFn:()=>api.sessions.get(sessionId),retry:false});
@@ -162,7 +167,7 @@ const projectToolButtons = [
 // handlers), so the shallow compare holds.
 export const ProjectView = memo(ProjectViewImpl);
 
-function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled, configuredHarnessUrl = '', configuredHarnessModel, focusHarness, onFocusHarnessHandled, conversationTarget, notificationUnread, toolbarHost, sessionNavigationHost }: ProjectViewProps) {
+function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled, configuredHarnessUrl = '', configuredHarnessModel, focusHarness, onFocusHarnessHandled, conversationTarget, notificationUnread, toolbarHost, sessionNavigationHost, sessionNavigationExpanded, onSetSessionNavigationExpanded, onActivateProject }: ProjectViewProps) {
   const queryClient = useQueryClient();
   const sessionResume = useSessionResume(projectId);
   const [terminalConnectionVersions, setTerminalConnectionVersions] = useState<Record<string, number>>({});
@@ -1219,18 +1224,27 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const showSessionWorkspace = activeMode === 'terminal' || activeMode === 'explorer' || activeMode === 'harness';
   const [sessionControlsHost,setSessionControlsHost]=useState<HTMLDivElement|null>(null);
   const [showTabSwitcher, setShowTabSwitcher] = useState(false);
-  const [sessionSidebarOpen, setSessionSidebarOpen] = useState(true);
+  const [localSessionSidebarOpen, setLocalSessionSidebarOpen] = useState(true);
+  const [showAllSessions, setShowAllSessions] = useState(false);
+  const [showSessionSearch, setShowSessionSearch] = useState(false);
+  const nestedSessionNavigation = sessionNavigationExpanded !== undefined;
+  const sessionSidebarOpen = sessionNavigationExpanded ?? localSessionSidebarOpen;
   const [sessionSearch, setSessionSearch] = useState('');
+  const sessionSearchToggle = useRef<HTMLButtonElement>(null);
   const sessionTabList = useRef<HTMLElement>(null);
   const sessionFilter = sessionSearch.trim().toLocaleLowerCase();
+  const activeWorkspaceTab = activeMode === 'harness' ? HARNESS_TAB.id : activeMode === 'terminal' ? activeTerminalId : null;
+  const previewTabs = workspaceTabs.filter((tab, index) =>
+    index < SESSION_PREVIEW_LIMIT || (active && tab.id === activeWorkspaceTab) || tab.id === editingTabId,
+  );
+  const remainingSessions = workspaceTabs.length - previewTabs.length;
   const visibleWorkspaceTabs = sessionFilter
     ? workspaceTabs.filter(tab => (tab.customLabel?.trim() || tab.label).toLocaleLowerCase().includes(sessionFilter))
-    : workspaceTabs;
-  const activeWorkspaceTab = activeMode === 'harness' ? HARNESS_TAB.id : activeMode === 'terminal' ? activeTerminalId : null;
+    : nestedSessionNavigation && !showAllSessions ? previewTabs : workspaceTabs;
   const { data: scheduledData } = useQuery({
     queryKey: ['scheduled-tasks', projectId],
     queryFn: () => api.scheduledTasks.list(projectId),
-    enabled: active && workspaceTabs.length > 0,
+    enabled: (active || !!sessionNavigationExpanded) && workspaceTabs.length > 0,
     retry: false,
   });
   const scheduledSessionIds = useMemo(() => new Set(
@@ -1242,19 +1256,22 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     const revealActive = () => {
       const list = sessionTabList.current;
       const current = list?.querySelector<HTMLElement>('[data-active="true"]');
-      if (!list?.clientHeight || !current) return;
-      const bounds = list.getBoundingClientRect();
+      const scroller = nestedSessionNavigation ? list?.closest<HTMLElement>('.workspace-project-tabs') : list;
+      if (!scroller?.clientHeight || !current) return;
+      const bounds = scroller.getBoundingClientRect();
       const row = current.getBoundingClientRect();
-      if (row.top < bounds.top) list.scrollTop += row.top - bounds.top;
-      else if (row.bottom > bounds.bottom) list.scrollTop += row.bottom - bounds.bottom;
+      if (row.top < bounds.top) scroller.scrollTop += row.top - bounds.top;
+      else if (row.bottom > bounds.bottom) scroller.scrollTop += row.bottom - bounds.bottom;
     };
     revealActive();
     window.addEventListener('resize', revealActive);
     return () => window.removeEventListener('resize', revealActive);
-  }, [active, activeWorkspaceTab, sessionFilter, sessionSidebarOpen, sessionNavigationHost, workspaceTabs.length]);
+  }, [active, activeWorkspaceTab, nestedSessionNavigation, sessionFilter, sessionSidebarOpen, sessionNavigationHost, visibleWorkspaceTabs.length]);
 
   function selectWorkspaceTab(id: string) {
     setSessionSearch('');
+    setShowSessionSearch(false);
+    onActivateProject?.(projectId);
     if (id === HARNESS_TAB.id) {
       openHarness();
       return;
@@ -1275,9 +1292,12 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         className="workspace-subtab-action workspace-session-sidebar-toggle"
         aria-label={sessionSidebarOpen ? '收起会话列表' : '展开会话列表'}
         aria-expanded={sessionSidebarOpen}
-        aria-controls={`project-session-sidebar-${projectId}`}
+        aria-controls={nestedSessionNavigation ? `project-session-branch-${projectId}` : `project-session-sidebar-${projectId}`}
         title={sessionSidebarOpen ? '收起会话列表' : '展开会话列表'}
-        onClick={() => setSessionSidebarOpen(open => !open)}
+        onClick={() => {
+          if (onSetSessionNavigationExpanded) onSetSessionNavigationExpanded(projectId, !sessionSidebarOpen);
+          else setLocalSessionSidebarOpen(open => !open);
+        }}
       >
         <PanelLeft className="h-4 w-4" aria-hidden="true" />
       </button>
@@ -1574,26 +1594,32 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
 
   const sessionNavigation = (
     <aside id={`project-session-sidebar-${projectId}`} className="workspace-session-sidebar" aria-label="会话列表" hidden={!sessionSidebarOpen}>
-      <form className="workspace-session-search" onSubmit={event => {
+      {(!nestedSessionNavigation || showSessionSearch) && <form className="workspace-session-search" onSubmit={event => {
         event.preventDefault();
         const match = visibleWorkspaceTabs[0];
         if (match) selectWorkspaceTab(match.id);
       }}>
         <input
           type="search"
+          autoFocus={nestedSessionNavigation}
           aria-label="搜索会话"
           placeholder="搜索会话"
           value={sessionSearch}
           onChange={event => setSessionSearch(event.target.value)}
           onKeyDown={event => {
-            if (event.key === 'Escape' && sessionSearch) setSessionSearch('');
+            if (event.key !== 'Escape') return;
+            setSessionSearch('');
+            if (nestedSessionNavigation) {
+              setShowSessionSearch(false);
+              sessionSearchToggle.current?.focus();
+            }
           }}
         />
-      </form>
+      </form>}
       <nav ref={sessionTabList} aria-label="会话标签" className="workspace-session-list">
         {visibleWorkspaceTabs.map((inst) => {
           const isHarness = inst.id === HARNESS_TAB.id;
-          const isActive = isHarness ? activeMode === 'harness' : activeMode === 'terminal' && inst.id === activeTerminalId;
+          const isActive = (!nestedSessionNavigation || active) && inst.id === activeWorkspaceTab;
           const label = inst.customLabel?.trim() || inst.label;
           const session = sessionLookup.get(inst.id) || allSessionLookup.get(inst.id);
           // Status signal light — a leaf component subscribes to just this
@@ -1687,8 +1713,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                 >
                   {tabIcon}
                   {isHarness ? <span className="truncate">{label}</span>
-                    : <SessionTabLabel session={sigSession} label={label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session || {}).label}`} />}
-                {scheduledSessionIds.has(inst.id) && <span className="workspace-session-scheduled">定时</span>}
+                    : <SessionTabLabel session={sigSession} label={label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session || {}).label}`} showActivityAge={nestedSessionNavigation && !scheduledSessionIds.has(inst.id)} />}
+                  {scheduledSessionIds.has(inst.id) && <span className="workspace-session-scheduled">定时</span>}
                 </button>
               )}
               <button
@@ -1713,7 +1739,31 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           );
         })}
         {sessionFilter && visibleWorkspaceTabs.length === 0 && <p className="workspace-session-empty" role="status">没有匹配的会话</p>}
+        {nestedSessionNavigation && projHydrated && projectHistoryLoaded && workspaceTabs.length === 0 && <p className="workspace-session-empty">暂无会话</p>}
       </nav>
+      {nestedSessionNavigation && (workspaceTabs.length > SESSION_PREVIEW_LIMIT || showSessionSearch) && (
+        <div className="workspace-session-navigation-actions">
+          {!sessionFilter && remainingSessions > 0 && (
+            <button type="button" className="workspace-session-more" aria-expanded={showAllSessions} onClick={() => setShowAllSessions(open => !open)}>
+              {showAllSessions ? '收起其余会话' : `展开其余 ${remainingSessions} 个会话`}
+            </button>
+          )}
+          <button
+            ref={sessionSearchToggle}
+            type="button"
+            className="workspace-subtab-action workspace-session-search-toggle"
+            aria-label={showSessionSearch ? '关闭会话搜索' : '搜索会话'}
+            aria-expanded={showSessionSearch}
+            title={showSessionSearch ? '关闭会话搜索' : '搜索会话'}
+            onClick={() => {
+              setShowSessionSearch(open => !open);
+              setSessionSearch('');
+            }}
+          >
+            <Search size={13} aria-hidden="true" />
+          </button>
+        </div>
+      )}
     </aside>
   );
 
@@ -1722,7 +1772,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       {toolbarHost === undefined ? projectToolbar : toolbarHost && createPortal(projectToolbar, toolbarHost)}
       <div className="flex-1 min-w-0 min-h-0 flex flex-col">
         <div className="workspace-project-body flex flex-1 min-h-0 min-w-0">
-          {sessionNavigationHost === undefined ? sessionNavigation : sessionNavigationHost && createPortal(sessionNavigation, sessionNavigationHost)}
+          {sessionNavigationHost === undefined ? sessionNavigation : sessionNavigationHost && sessionSidebarOpen && createPortal(sessionNavigation, sessionNavigationHost)}
           <aside id={`project-file-tree-${projectId}`} aria-label="项目文件树"
             className="workspace-file-tree" style={{display:fileTreeOpen && showSessionWorkspace?'flex':'none'}}>
             <div ref={setFileTreeHost} className="workspace-file-tree-host"/>
