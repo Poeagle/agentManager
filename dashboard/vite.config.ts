@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -5,7 +6,15 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig(({ command }) => {
   const port = Number(process.env.VITE_PORT) || 42011;
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), {
+      name: 'watch-shared-server-sources',
+      apply: 'serve',
+      configureServer({ config, watcher }) {
+        // Dashboard imports these files from outside the Vite root. Watch their
+        // directory so replacing a file during a Git checkout keeps HMR working.
+        watcher.add(resolve(config.root, '../server/src/shared'));
+      },
+    }],
     // Dev and Playwright servers run concurrently from the same source tree.
     // Sharing optimized files lets one server overwrite another server's React
     // chunks while its transform cache still points at the previous graph.
