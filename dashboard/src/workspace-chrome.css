@@ -73,6 +73,17 @@
 .workspace-tab-signal { display: flex; align-items: center; flex-shrink: 0; }
 .workspace-tab-icon { opacity: .65; }
 .workspace-tab[data-active="true"] .workspace-tab-icon { opacity: 1; }
+.workspace-subtab-action {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  color: var(--text-secondary);
+}
+.workspace-subtab-action:hover:not(:disabled) { background: var(--bg-tertiary); }
+.workspace-subtab-action:disabled { opacity: .45; }
 .workspace-sidebar {
   width: 36px;
   padding: 3px 0;
@@ -81,6 +92,7 @@
 .workspace-sidebar-button { width: 28px; height: 28px; }
 .workspace-header button:focus-visible,
 .workspace-tab-strip button:focus-visible,
+.workspace-subtab-action:focus-visible,
 .workspace-sidebar button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;

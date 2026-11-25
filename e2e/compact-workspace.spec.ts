@@ -20,7 +20,8 @@ test('compact workspace preserves readable labels, activity details and keyboard
   const require = createRequire(import.meta.url);
   const Database = require('../server/node_modules/better-sqlite3');
   const db = new Database(join(process.cwd(),'.test-data','e2e','agentmanager.db'));
-  const labels = ['jira','UI','数据运维','元数据问题修复','设计文档','Agent','日志','英文文档'];
+  const labels = ['jira','UI','数据运维','元数据问题修复','设计文档','Agent','日志','英文文档',
+    ...Array.from({ length: 16 }, (_, index) => `并行任务 ${index + 1}`)];
   const now = new Date().toISOString();
   // Native CLI processes are unnecessary for checking saved workspace navigation.
   try {
@@ -107,4 +108,29 @@ test('compact workspace preserves readable labels, activity details and keyboard
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
   expect(await sessions.evaluate(element=>element.scrollWidth>element.clientWidth)).toBe(true);
   await page.screenshot({path:testInfo.outputPath('compact-workspace-mobile.png')});
+
+  const switcher = page.getByRole('button', { name: '切换会话', exact: true });
+  const createSession = page.getByRole('button', { name: '新建会话', exact: true });
+  await expect(switcher).toBeInViewport();
+  await expect(createSession).toBeInViewport();
+  await expect(sessions.getByRole('button', { name: '并行任务 16', exact: true })).not.toBeInViewport();
+  await switcher.click();
+  const dialog = page.getByRole('dialog', { name: '切换会话', exact: true });
+  const search = dialog.getByRole('searchbox', { name: '搜索会话' });
+  await expect(search).toBeFocused();
+  await expect(dialog.getByRole('button', { name: '界面设计', exact: true })).toHaveAttribute('aria-current', 'true');
+  await search.fill('并行任务 16');
+  await search.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  const destination = sessions.getByRole('button', { name: '并行任务 16', exact: true });
+  await expect(destination.locator('..')).toHaveAttribute('data-active', 'true');
+  await expect(destination).toBeInViewport();
+  await expect(switcher).toBeInViewport();
+  await expect(createSession).toBeInViewport();
+
+  await switcher.click();
+  await search.fill('missing-tab');
+  await expect(dialog.getByText('没有匹配的会话')).toBeVisible();
+  await search.press('Escape');
+  await expect(switcher).toBeFocused();
 });

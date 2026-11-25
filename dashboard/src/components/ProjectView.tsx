@@ -3,9 +3,10 @@ import {sessionAgent,agentNativeId,agentSupports} from '../lib/agents';
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2,Loader2 } from 'lucide-react';
+import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2, Loader2, List } from 'lucide-react';
 import { Terminal } from './Terminal';
 import { SessionWorkspacePane } from './SessionWorkspacePane';
+import { SessionTabSwitcher } from './SessionTabSwitcher';
 import { FileExplorer, type FileRefreshRequest } from './FileExplorer';
 import { droppedFiles, isFileDrag, type FileUploadRequest } from '../lib/file-upload';
 import { GitPanel } from './GitPanel';
@@ -1215,6 +1216,26 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   // Sub-tab bar for terminal and explorer modes
   const showSubTabs = activeMode === 'terminal' || activeMode === 'explorer' || activeMode === 'harness';
   const [sessionControlsHost,setSessionControlsHost]=useState<HTMLDivElement|null>(null);
+  const [showTabSwitcher, setShowTabSwitcher] = useState(false);
+  const sessionTabStrip = useRef<HTMLDivElement>(null);
+  const activeWorkspaceTab = activeMode === 'harness' ? HARNESS_TAB.id : activeMode === 'terminal' ? activeTerminalId : null;
+
+  useEffect(() => {
+    if (active && showSubTabs && activeWorkspaceTab) {
+      sessionTabStrip.current?.querySelector<HTMLElement>('[data-active="true"]')
+        ?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    }
+  }, [active, showSubTabs, activeWorkspaceTab, workspaceTabs.length]);
+
+  function selectWorkspaceTab(id: string) {
+    if (id === HARNESS_TAB.id) {
+      openHarness();
+      return;
+    }
+    setActiveTerminalId(id);
+    setActiveMode('terminal');
+    focusTerminalById(id);
+  }
 
   return (
     <div className="workspace-project h-full flex">
@@ -1281,7 +1302,18 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         {/* Sub-tab bar */}
         {showSubTabs && (
           <div className="workspace-subtab-row">
+          {workspaceTabs.length > 0 && <button
+            type="button"
+            className="workspace-subtab-action ml-1"
+            aria-label="切换会话"
+            aria-haspopup="dialog"
+            title="切换会话"
+            onClick={() => setShowTabSwitcher(true)}
+          >
+            <List className="h-4 w-4" aria-hidden="true" />
+          </button>}
           <div
+            ref={sessionTabStrip}
             aria-label="会话标签"
             className="workspace-tab-strip shrink-0 overflow-x-auto"
             style={{
@@ -1289,8 +1321,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
               background: 'var(--bg-secondary)',
             }}
           >
-            {showSubTabs && (
-              <>
                 {workspaceTabs.map((inst) => {
                   const isHarness = inst.id === HARNESS_TAB.id;
                   const isActive = isHarness ? activeMode === 'harness' : activeMode === 'terminal' && inst.id === activeTerminalId;
@@ -1373,15 +1403,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                           aria-pressed={isHarness ? isActive : undefined}
                           onClick={(e) => {
                             if (e.detail > 1) return; // 2nd click of a double-click → that's a rename
-                            if (isHarness) {
-                              openHarness();
-                              return;
-                            }
-                            setActiveTerminalId(inst.id);
-                            setActiveMode('terminal');
-
-                            // Focus the terminal after switching tabs.
-                            focusTerminalById(inst.id);
+                            selectWorkspaceTab(inst.id);
                           }}
                           onDoubleClick={() => beginTabRename(inst)}
                           onKeyDown={(event) => {
@@ -1419,13 +1441,15 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                     </div>
                   );
                 })}
+          </div>
 
+          <div className="flex shrink-0 items-center">
                 {/* Create directly through the same dialog as the project list. */}
                 <button
+                  type="button"
                   onClick={() => setShowNewSession(true)}
                   disabled={!project || projectOpenModes(project, harnessUrl).length === 0}
-                  className="flex items-center justify-center rounded-md shrink-0 transition-colors"
-                  style={{ width: 24, height: 24, color: 'var(--text-secondary)', background: 'transparent' }}
+                  className="workspace-subtab-action"
                   title="新建会话"
                   aria-label="新建会话"
                 >
@@ -1643,9 +1667,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                   )}
                 </div>
 
-              </>
-            )}
-
           </div>
           {activeMode==='terminal' && <div ref={setSessionControlsHost} className="session-pane-controls-slot"/>}
           </div>
@@ -1837,6 +1858,15 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         </div>
       </div>
 
+      {active && showSubTabs && showTabSwitcher && <SessionTabSwitcher
+        tabs={workspaceTabs.map(tab => ({ id: tab.id, label: tab.customLabel?.trim() || tab.label }))}
+        activeId={activeWorkspaceTab}
+        onSelect={id => {
+          setShowTabSwitcher(false);
+          selectWorkspaceTab(id);
+        }}
+        onClose={() => setShowTabSwitcher(false)}
+      />}
       {showNewSession && project && <ProjectSessionCreateDialog project={project} title="新建会话" onClose={closeNewSession} onSessionCreated={handleSessionCreated} harnessUrl={harnessUrl} onHarnessOpen={openHarness} />}
 
       {/* Close tab confirmation modal */}

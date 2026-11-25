@@ -1,0 +1,41 @@
+import { useState } from 'react';
+import { Dialog } from './Dialog';
+
+export function SessionTabSwitcher({ tabs, activeId, onSelect, onClose }: {
+  tabs: { id: string; label: string }[];
+  activeId?: string | null;
+  onSelect: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const search = query.trim().toLocaleLowerCase();
+  const matches = tabs.filter(tab => tab.label.toLocaleLowerCase().includes(search));
+
+  return <Dialog title="切换会话" onClose={onClose}>
+    <form onSubmit={event => {
+      event.preventDefault();
+      const first = matches[0];
+      if (first) onSelect(first.id);
+    }}>
+      <input
+        type="search"
+        aria-label="搜索会话"
+        placeholder="搜索会话名称"
+        value={query}
+        onChange={event => setQuery(event.target.value)}
+        className="mb-2 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm focus-visible:outline-[var(--accent)]"
+      />
+    </form>
+    {matches.length ? <ul aria-label="已打开的会话">
+      {matches.map(tab => <li key={tab.id}>
+        <button
+          type="button"
+          aria-current={tab.id === activeId ? true : undefined}
+          onClick={() => onSelect(tab.id)}
+          className="w-full truncate rounded-md px-3 py-2 text-left text-sm hover:bg-[var(--bg-tertiary)] aria-[current=true]:font-semibold aria-[current=true]:text-[var(--accent)]"
+          title={tab.label}
+        >{tab.label}</button>
+      </li>)}
+    </ul> : <p role="status" className="px-3 py-2 text-sm text-[var(--text-secondary)]">没有匹配的会话</p>}
+  </Dialog>;
+}
