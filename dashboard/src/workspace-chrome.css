@@ -146,19 +146,37 @@
 .workspace-session-list .workspace-tab-button { flex: 1; max-width: none; height: 100%; }
 .workspace-session-list .workspace-tab-close { top: 2px; }
 .workspace-session-empty { padding: 5px; color: var(--text-secondary); font-size: 12px; }
-.workspace-session-scheduled {
-  flex-shrink: 0;
+.workspace-session-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   margin-left: auto;
+  min-width: max-content;
+}
+.workspace-session-badges:has(.workspace-session-account) {
+  min-width: 0;
+  max-width: 60%;
+}
+.workspace-session-scheduled, .workspace-session-account {
   padding: 0 4px;
   border-radius: 3px;
-  background: color-mix(in srgb, var(--accent) 12%, var(--bg-secondary));
-  color: var(--text-primary);
   font-size: 10px;
   line-height: 16px;
 }
+.workspace-session-account {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+.workspace-session-scheduled {
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-secondary));
+  color: var(--text-primary);
+}
 .workspace-session-age {
   flex-shrink: 0;
-  margin-left: auto;
   color: var(--text-secondary);
   font-size: 10px;
   font-variant-numeric: tabular-nums;

@@ -4,7 +4,7 @@ import {join,dirname} from 'path';
 import {tmpdir} from 'os';
 import {config} from '../../../config.js';
 import {AgentSubmissionError} from '../submission.js';
-import {assertSessionEnvironment,engineForEnvironment} from './environments.js';
+import {assertSessionEnvironment,engineForEnvironment,getCodexEnvironment,sessionEnvironmentId} from './environments.js';
 import {canControlEnvironment} from '../environment-access.js';
 import {runInCodexEngine,inCodexThread,engineForThread,currentCodexEngine} from './engine-context.js';
 import {retryableConversationError} from '../../conversation-retry.js';
@@ -27,7 +27,9 @@ import {alternateCodexAccount,codexAccountRemaining} from './account-status.js';
 import {applyManagedCommandDefaults} from '../management-store.js';
 export const codexAdapter: AgentAdapter = {
     descriptor: { launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'stopTurn', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) },
-    identity: { read: session => session.codex_session_id ?? null, legacyField: 'codex_session_id', purgeHistory: purgeCodexHistory, purge: context => { if (context.session.id)
+    identity: { read: session => session.codex_session_id ?? null,
+        accountLabel: session => getCodexEnvironment(sessionEnvironmentId(session)).name,
+        legacyField: 'codex_session_id', purgeHistory: purgeCodexHistory, purge: context => { if (context.session.id)
             try {
                 unlinkSync(codexBindingFile(context.session.id));
             }

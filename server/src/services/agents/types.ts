@@ -815,6 +815,8 @@ export interface AgentCommandPort {
 }
 export interface AgentIdentityPort {
   read(session: AgentSession): string | null;
+  /** Public display name of the account or provider for this environment binding. */
+  accountLabel?(session: AgentSession): string | undefined;
   matchesProcess?(args: string[]): boolean;
   legacyField?: "codex_session_id" | "claude_session_id";
   discoverTerminal?(

@@ -19,6 +19,25 @@ export function sessionAgentContext(session: AgentSession, options: Partial<Agen
     });
 }
 export function presentAgentSession(session: AgentSession) { const adapter = agentForSession(session); return { agent: adapter.descriptor, agent_id: adapter.descriptor.id, native_session_id: session.native_session_id ?? adapter.identity.read(session) }; }
+export function sessionAccountLabels() {
+    const labels = new Map<string, string | undefined>();
+    // Callers authorize access to the session environment before reading its name.
+    return (session: AgentSession): { agent_account_label?: string } => {
+        try {
+            const { descriptor, identity } = agentForSession(session);
+            if (!identity.accountLabel) return {};
+            if (session.mode === 'terminal' && !session.agent_environment_id && !(session.native_session_id ?? identity.read(session))) return {};
+            const key = JSON.stringify([descriptor.id, session.agent_environment_id ?? null]);
+            if (!labels.has(key)) labels.set(key, identity.accountLabel(session)?.trim() || undefined);
+            const label = labels.get(key);
+            return label ? { agent_account_label: label } : {};
+        } catch {
+            // A missing or outdated configuration leaves the account unknown.
+            return {};
+        }
+    };
+}
+
 export async function readAgentRuntime(session: AgentSession, verifyProcess = false) { return agentForSession(session).runtime.read(sessionAgentContext(session, { verifyProcess })); }
 
 export function canReplaceAgentConversation(runtime: AgentRuntime | null): boolean {

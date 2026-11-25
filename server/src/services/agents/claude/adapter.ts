@@ -39,6 +39,7 @@ import {
   canControlClaudeEnvironment,
   canUseClaudeEnvironment,
   claudeEnvironmentId,
+  claudeSessionAccountLabel,
 } from "./providers.js";
 export const claudeAdapter: AgentDefinition = {
   descriptor: {
@@ -70,6 +71,7 @@ export const claudeAdapter: AgentDefinition = {
   identity: {
     read: (session) =>
       session.native_session_id ?? session.claude_session_id ?? null,
+    accountLabel: claudeSessionAccountLabel,
     legacyField: "claude_session_id",
     purgeHistory: purgeClaudeHistory,
     matchesProcess: (args) =>

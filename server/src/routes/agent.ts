@@ -113,7 +113,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.38.0',
+    version:'3.39.0',
     updatedAt:'2026-11-25',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -239,14 +239,14 @@ export function getAgentApiContract() {
         category: 'Sessions',
         method: 'GET',
         path: '/api/sessions',
-        description: 'List sessions visible to the authenticated user. Optional ?status=running filter. Session records with a dashboard deletion request may include record_deletion: pending or failed.',
+        description: 'List sessions visible to the authenticated user. Optional ?status=running filter. Session records with a dashboard deletion request may include record_deletion: pending or failed. When known and visible to the caller, agent_account_label is the configured name of the bound Agent account or provider.',
         response: { sessions: 'Session[]' },
       },
       {
         category: 'Sessions',
         method: 'GET',
         path: '/api/sessions/:id',
-        description: 'Read one session visible to the authenticated user. Optional record_deletion reports pending or failed dashboard deletion.',
+        description: 'Read one session visible to the authenticated user. Optional record_deletion reports pending or failed dashboard deletion. Optional agent_account_label follows the same rules as the session list.',
         response: { session: 'Session' },
         errors: { 404: 'Session not found or not visible' },
       },
@@ -289,7 +289,7 @@ export function getAgentApiContract() {
           cli_type: { type:'registered Agent ID', required: false, default: 'claude', description: 'Used by Session mode.' },
           environment_id: { type:'string', required:false, description:'Authorized Codex Engine ID for a new Codex session. If omitted, the default native environment must be authorized.' },
         },
-        response: { ok: 'true', session: 'Created session; use session.id for control endpoints.' },
+        response: { ok: 'true', session: 'Created session with optional agent_account_label as in the session list. Use session.id for control endpoints.' },
         errors: { 400: 'Missing required fields', 401: 'Not authenticated', 403: 'Project or requested tool combination is not permitted', 429: 'Active tab/session limit reached' },
       },
       {

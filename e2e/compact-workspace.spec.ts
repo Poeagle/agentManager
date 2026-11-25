@@ -25,10 +25,17 @@ test('compact workspace preserves readable labels, activity details and keyboard
   const now = new Date().toISOString();
   // Native CLI processes are unnecessary for checking saved workspace navigation.
   try {
+    const environment = db.prepare('INSERT INTO agent_environments (id, agent_id, name, kind, config, allowed_user_ids) VALUES (?, ?, ?, ?, ?, ?)');
+    environment.run('native', 'codex', '本机账号', 'native', '{}', null);
+    environment.run('account:review', 'codex', '界面审查账号', 'account', JSON.stringify({
+      username: 'review', port: 22, identityFile: '', codexCommand: 'codex', codexHome: '',
+    }), JSON.stringify([user.id]));
     for (const [index,label] of labels.entries()) db.prepare(`INSERT INTO sessions
       (id,project_id,task,status,mode,cli_type,created_by_user_id,created_at,updated_at,completed_at)
       VALUES (?,? ,? ,?,'session',?,?,?, ?,?)`)
       .run(`compact-${index}`,projects[0].id,label,index===2?'failed':'completed',index%2?'claude':'codex',user.id,now,now,now);
+    db.prepare('UPDATE sessions SET cli_type=?, agent_environment_id=? WHERE id=?')
+      .run('codex', 'account:review', 'compact-23');
     db.prepare(`INSERT INTO sessions
       (id,project_id,task,status,mode,cli_type,created_by_user_id,created_at,updated_at,completed_at)
       VALUES (?, ?, ?, 'completed', 'session', 'claude', ?, ?, ?, ?)`)
@@ -80,7 +87,15 @@ test('compact workspace preserves readable labels, activity details and keyboard
   expect(secondProjectRow.y).toBeGreaterThan((await sessionRows.last().boundingBox())!.y);
   await firstBranch.getByRole('button',{name:'展开其余 31 个会话'}).click();
   await expect(sessionRows).toHaveCount(36);
-  await expect(sessions.locator('[data-session-id="compact-23"]').getByText('定时', { exact: true })).toBeVisible();
+  const scheduledRow = sessions.locator('[data-session-id="compact-23"]');
+  await expect(scheduledRow.getByText('定时', { exact: true })).toBeVisible();
+  await expect(scheduledRow.getByText('界面审查账号', { exact: true })).toBeVisible();
+  await expect(scheduledRow.getByRole('button', { name: '并行任务 16 定时' })).toHaveAccessibleDescription('账号：界面审查账号');
+  const accountBounds = (await scheduledRow.getByText('界面审查账号', { exact: true }).boundingBox())!;
+  const scheduledBounds = (await scheduledRow.getByText('定时', { exact: true }).boundingBox())!;
+  expect(accountBounds.x + accountBounds.width).toBeLessThan(scheduledBounds.x);
+  expect(accountBounds.y).toBe(scheduledBounds.y);
+  await expect(sessions.getByRole('button', { name: 'jira', exact: true }).getByText('本机账号', { exact: true })).toBeVisible();
   await expect(sessions.getByText('定时', { exact: true })).toHaveCount(1);
   const firstRow = (await sessionRows.nth(0).boundingBox())!;
   const secondRow = (await sessionRows.nth(1).boundingBox())!;
@@ -225,7 +240,9 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await expect(createSession).toBeInViewport();
 
   await switcher.click();
-  await expect(dialog.getByRole('button', { name: '并行任务 16 定时', exact: true })).toHaveAttribute('aria-current', 'true');
+  const scheduledResult = dialog.getByRole('button', { name: '并行任务 16 定时', exact: true });
+  await expect(scheduledResult).toHaveAttribute('aria-current', 'true');
+  await expect(scheduledResult.getByText('界面审查账号', { exact: true })).toBeVisible();
   await search.fill('missing-tab');
   await expect(dialog.getByText('没有匹配的会话')).toBeVisible();
   await search.press('Escape');

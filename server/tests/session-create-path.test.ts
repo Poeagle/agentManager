@@ -10,7 +10,8 @@ import { sessionRoutes } from '../src/routes/sessions.js';
 import { consumePendingSpawn } from '../src/services/session-manager.js';
 import * as sessionManager from '../src/services/session-manager.js';
 import { createTestDatabase } from './helpers/database.js';
-import { nativeClaudeProviderState, updateNativeClaudeProvider } from '../src/services/agents/claude/providers.js';
+import { createClaudeProvider, nativeClaudeProviderState, updateNativeClaudeProvider } from '../src/services/agents/claude/providers.js';
+import { saveCodexEnvironment } from '../src/services/agents/codex/environments.js';
 
 describe('session creation project identity', () => {
   let app: FastifyInstance;
@@ -186,6 +187,53 @@ describe('session creation project identity', () => {
       'codex-session',
       'claude-session',
     ]));
+  });
+
+  it('exposes the configured account name for bound Codex and Claude sessions', async () => {
+    const codex = await saveCodexEnvironment({
+      name: 'Review account', connection: { username: 'review', port: 22 }, allowed_user_ids: [adminId],
+    });
+    createClaudeProvider({ id: 'fixture', name: 'Claude Gateway', apiKey: 'fixture-token',
+      fields: { baseUrl: 'https://fixture.example', models: ['fixture-model'] } });
+    const created = await app.inject({ method: 'POST', url: '/api/sessions', headers: { cookie }, payload: {
+      project_id: 'project-1', project_path: projectPath, cli_type: 'codex', environment_id: codex.id,
+    } });
+    expect(created.statusCode).toBe(200);
+    expect(created.json().session).toHaveProperty('agent_account_label', 'Review account');
+    consumePendingSpawn(created.json().session.id);
+    const insert = getDb().prepare(`
+      INSERT INTO sessions (id, project_id, task, status, mode, cli_type, agent_environment_id, created_by_user_id)
+      VALUES (?, 'project-1', 'Review', 'completed', ?, ?, ?, ?)
+    `);
+    insert.run('bound-codex', 'session', 'codex', codex.id, adminId);
+    insert.run('bound-claude', 'session', 'claude', 'claude-provider:fixture', adminId);
+    insert.run('unbound-claude', 'session', 'claude', null, adminId);
+    insert.run('plain-terminal', 'terminal', 'codex', null, adminId);
+
+    const response = await app.inject({ url: '/api/sessions?project_id=project-1', headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    const byId = new Map(response.json().sessions.map((session: { id: string }) => [session.id, session]));
+    for (const [id, name] of [['bound-codex', 'Review account'], ['bound-claude', 'Claude Gateway']]) {
+      expect(byId.get(id)).toHaveProperty('agent_account_label', name);
+      const detail = await app.inject({ url: `/api/sessions/${id}`, headers: { cookie } });
+      expect(detail.json().session).toHaveProperty('agent_account_label', name);
+    }
+    expect(byId.get('unbound-claude')).not.toHaveProperty('agent_account_label');
+    expect(byId.get('plain-terminal')).not.toHaveProperty('agent_account_label');
+    expect(response.body).not.toContain('fixture-token');
+
+    const member = createUser({ username: 'session-codex-member', password: 'password1', role: 'member' });
+    const memberCookie = `agentmanager_session=${createAuthSession(member.id)}`;
+    getDb().prepare(`
+      INSERT INTO sessions (id, task, status, mode, cli_type, agent_environment_id, created_by_user_id)
+      VALUES ('restricted-codex', 'Review', 'completed', 'session', 'codex', ?, ?)
+    `).run(codex.id, member.id);
+    const detail = await app.inject({ url: '/api/sessions/restricted-codex', headers: { cookie: memberCookie } });
+    expect(detail.statusCode).toBe(403);
+    expect(detail.body).not.toContain('Review account');
+    const memberList = await app.inject({ url: '/api/sessions', headers: { cookie: memberCookie } });
+    expect(memberList.statusCode).toBe(200);
+    expect(memberList.json().sessions).toEqual([]);
   });
 
   it('keeps healthy sessions visible when a Claude Provider-bound record is unavailable', async () => {

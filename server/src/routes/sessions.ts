@@ -2,7 +2,7 @@ import { saveModelPreference } from '../services/agents/model-preferences.js';
 import {canUseSessionEnvironment,assertEnvironmentUse} from '../services/agents/environment-access.js';
 import {detachManagedAgents,observeAgentConversation} from '../services/agents/host.js';
 import {agentForSession,getAgent} from '../services/agents/index.js';
-import {readAgentRuntime,presentAgentSession,sessionAgentContext} from '../services/agents/session.js';
+import {readAgentRuntime,presentAgentSession,sessionAccountLabels,sessionAgentContext} from '../services/agents/session.js';
 import {nativeConversationId} from '../services/session-identity.js';
 import {FastifyPluginAsync} from 'fastify';
 import {createRequire} from 'module';
@@ -161,6 +161,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       }
     }
     const present = sessionPresenter(req.user!.id);
+    const account = sessionAccountLabels();
     const sessions = await Promise.all(visible
       // Enrich with live process-state (busy/idle/waiting_for_input) so tab signal
       // lights are correct on first load, before any WS state_change arrives.
@@ -181,7 +182,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
           : sqliteUtcToIso(outputActivity.get(s.id) ?? s.updated_at ?? s.completed_at ?? s.started_at ?? s.created_at);
         return {
           ...s,
-          ...present(s),...presentAgentSession(s),
+          ...present(s),...presentAgentSession(s),...account(s),
           ...(deletion ? {record_deletion:deletion} : {}),
           last_activity_at: native ? native.last_activity_at : lastActivityAt,
           ...(native ? {agent_runtime:native} : {}),
@@ -236,7 +237,8 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     const session = sessionManager.getSession(req.params.id);
     if (!session || !canAccessSessionByRow(req.user!.id, session)) return reply.status(404).send({ error: 'Session not found' });
     const deletion = sessionRecordDeletionState(session.id);
-    return { session: {...session, ...sessionPresenter(req.user!.id)(session), ...(deletion ? {record_deletion:deletion} : {})} };
+    const account = canUseSessionEnvironment(session, req.user!.id) ? sessionAccountLabels()(session) : {};
+    return { session: {...session, ...sessionPresenter(req.user!.id)(session), ...account, ...(deletion ? {record_deletion:deletion} : {})} };
   });
 
   app.post<{Params:{id:string};Body:{question_ids:string[];ignored?:boolean}}>('/sessions/:id/questions/ignore',async(req,reply)=>{
@@ -670,7 +672,9 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     if(getAgent(cliType).descriptor.sessionHost==='managed')await sessionManager.spawnSession(session.id,canonicalProjectPath,initialTask,120,40,cliType,client_id);
     else registerPendingSpawn(session.id, { projectPath: canonicalProjectPath, task: initialTask, mode: 'session', projectId: resolvedProjectId, cliType });
 
-    return {ok:true,session:sessionManager.getSession(session.id)};
+    const created = sessionManager.getSession(session.id);
+    if (!created || !canUseSessionEnvironment(created, req.user!.id)) return {ok:true,session:created};
+    return {ok:true,session:{...created,...sessionAccountLabels()(created)}};
   });
 
   // Kill a session — never blocks longer than 3s

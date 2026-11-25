@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Dialog } from './Dialog';
+import { SessionTabBadges } from '../lib/session-activity';
 
 export function SessionTabSwitcher({ tabs, activeId, onSelect, onClose }: {
-  tabs: { id: string; label: string; scheduled?: boolean }[];
+  tabs: { id: string; label: string; scheduled?: boolean; account?: string }[];
   activeId?: string | null;
   onSelect: (id: string) => void;
   onClose: () => void;
@@ -31,10 +32,11 @@ export function SessionTabSwitcher({ tabs, activeId, onSelect, onClose }: {
         <button
           type="button"
           aria-current={tab.id === activeId ? true : undefined}
+          aria-description={tab.account ? `账号：${tab.account}` : undefined}
           onClick={() => onSelect(tab.id)}
           className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-[var(--bg-tertiary)] aria-[current=true]:font-semibold aria-[current=true]:text-[var(--accent)]"
           title={tab.label}
-        ><span className="truncate">{tab.label}</span>{tab.scheduled && <span className="workspace-session-scheduled">定时</span>}</button>
+        ><span className="truncate">{tab.label}</span><SessionTabBadges account={tab.account} scheduled={tab.scheduled} /></button>
       </li>)}
     </ul> : <p role="status" className="px-3 py-2 text-sm text-[var(--text-secondary)]">没有匹配的会话</p>}
   </Dialog>;

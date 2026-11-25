@@ -162,10 +162,16 @@ test('configures Harness and restores its workspace, custom tab name and order',
       .filter({ has: page.getByRole('button', { name, exact: true }) });
     const strip = projectBranch(projects[0]).getByLabel('会话标签', { exact: true });
     const tabButtons = strip.locator('.workspace-tab-button');
+    const expectTabOrder = async (labels: string[]) => {
+      await expect(tabButtons).toHaveCount(labels.length);
+      for (const [index, label] of labels.entries()) {
+        await expect(tabButtons.nth(index)).toHaveAccessibleName(label);
+      }
+    };
     const [codexLabel, claudeLabel] = otherTabs.map(tab => tab.label);
     const harnessLabel = '项目调研';
     const harnessTab = strip.getByRole('button', { name: 'DeepSeek Harness', exact: true });
-    await expect(tabButtons).toHaveText([codexLabel, claudeLabel, 'DeepSeek Harness']);
+    await expectTabOrder([codexLabel, claudeLabel, 'DeepSeek Harness']);
     await harnessTab.dblclick();
     const rename = strip.getByRole('textbox', { name: '标签名称' });
     await expect(rename).toBeVisible({ timeout: 4_000 });
@@ -179,14 +185,14 @@ test('configures Harness and restores its workspace, custom tab name and order',
 
     const codexTab = strip.getByRole('button', { name: codexLabel, exact: true });
     await renamed.dragTo(codexTab);
-    await expect(tabButtons).toHaveText([harnessLabel, codexLabel, claudeLabel]);
+    await expectTabOrder([harnessLabel, codexLabel, claudeLabel]);
     await codexTab.dragTo(renamed);
-    await expect(tabButtons).toHaveText([codexLabel, harnessLabel, claudeLabel]);
+    await expectTabOrder([codexLabel, harnessLabel, claudeLabel]);
     await expect(visibleHarness(page).getByLabel('Project path')).toHaveText(paths[0]);
     expect(received.filter(path => path === paths[0])).toHaveLength(1);
 
     await page.reload();
-    await expect(tabButtons).toHaveText([codexLabel, harnessLabel, claudeLabel]);
+    await expectTabOrder([codexLabel, harnessLabel, claudeLabel]);
     await expect(visibleHarness(page).getByLabel('Project path')).toHaveText(paths[0]);
 
     await page.getByRole('navigation', { name: '项目标签' }).getByRole('button', { name: 'Projects', exact: true }).click();
@@ -195,7 +201,7 @@ test('configures Harness and restores its workspace, custom tab name and order',
     const projectTabs = page.getByRole('navigation', { name: '项目标签' });
     await projectTabs.getByText(projects[0], { exact: true }).click();
     await expect(visibleHarness(page).getByLabel('Project path')).toHaveText(paths[0]);
-    await expect(tabButtons).toHaveText([codexLabel, harnessLabel, claudeLabel]);
+    await expectTabOrder([codexLabel, harnessLabel, claudeLabel]);
     await projectTabs.getByText(projects[1], { exact: true }).click();
     await expect(visibleHarness(page).getByLabel('Project path')).toHaveText(paths[1]);
 

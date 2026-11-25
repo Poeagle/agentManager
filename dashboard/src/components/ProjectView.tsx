@@ -25,7 +25,7 @@ import { useSessionResume } from '../lib/use-session-resume';
 import { ProjectSkillsPanel } from './ProjectSkillsPanel';
 import { ScheduledTasksPanel } from './ScheduledTasksPanel';
 import { LiveSessionSignalDot } from '../lib/session-signal';
-import { SessionTabLabel } from '../lib/session-activity';
+import { SessionTabBadges, SessionTabLabel } from '../lib/session-activity';
 import { sessionActivityMs } from '../lib/session-activity-model';
 import { sessionTabTree } from '../lib/session-tab-tree';
 import { useStreamStore } from '../lib/websocket';
@@ -1682,6 +1682,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           const isActive = (!nestedSessionNavigation || active) && inst.id === activeWorkspaceTab;
           const label = inst.customLabel?.trim() || inst.label;
           const session = sessionLookup.get(inst.id) || allSessionLookup.get(inst.id);
+          const account = session?.agent_account_label;
           // Status signal light — a leaf component subscribes to just this
           // session's live state, so a state tick doesn't re-render the view.
           const sigSession = allSessionLookup.get(inst.id);
@@ -1763,6 +1764,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                 <button
                   type="button"
                   aria-current={isActive ? true : undefined}
+                  aria-description={account ? `账号：${account}` : undefined}
                   onClick={(e) => {
                     if (e.detail > 1) return; // 2nd click of a double-click → that's a rename
                     selectWorkspaceTab(inst.id);
@@ -1779,8 +1781,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                 >
                   {tabIcon}
                   {isHarness ? <span className="truncate">{label}</span>
-                    : <SessionTabLabel session={sigSession} label={label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session || {}).label}`} activityAt={activityAt} showActivityAge={nestedSessionNavigation && !scheduledSessionIds.has(inst.id)} />}
-                  {scheduledSessionIds.has(inst.id) && <span className="workspace-session-scheduled">定时</span>}
+                    : <SessionTabLabel session={sigSession} label={label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session || {}).label}`} activityAt={activityAt} />}
+                  {!isHarness && <SessionTabBadges account={account} scheduled={scheduledSessionIds.has(inst.id)} activityAt={nestedSessionNavigation ? activityAt : null} />}
                 </button>
               )}
               <button
@@ -2025,7 +2027,12 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       </div>
 
       {active && showTabSwitcher && <SessionTabSwitcher
-        tabs={sortedWorkspaceTabs.map(({ tab }) => ({ id: tab.id, label: tab.customLabel?.trim() || tab.label, scheduled: scheduledSessionIds.has(tab.id) }))}
+        tabs={sortedWorkspaceTabs.map(({ tab }) => ({
+          id: tab.id,
+          label: tab.customLabel?.trim() || tab.label,
+          scheduled: scheduledSessionIds.has(tab.id),
+          account: allSessionLookup.get(tab.id)?.agent_account_label,
+        }))}
         activeId={activeWorkspaceTab}
         onSelect={id => {
           setShowTabSwitcher(false);

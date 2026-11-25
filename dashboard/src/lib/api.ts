@@ -939,6 +939,7 @@ export interface Session {
   parent_session_id?: string | null;
   native_title?:string|null;
   agent_environment_id?: string | null;
+  agent_account_label?: string;
   id: string;
   project_id: string | null;
   task: string;

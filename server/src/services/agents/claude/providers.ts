@@ -788,6 +788,11 @@ export function claudeProviderIdForSession(
   return id.startsWith('claude-provider:') ? id.slice(16) : null;
 }
 
+export function claudeSessionAccountLabel(session: { agent_environment_id?: string | null }): string | undefined {
+  const id = claudeProviderIdForSession({ agent_environment_id: claudeEnvironmentId(session.agent_environment_id ?? '') });
+  return id ? configuredProviders().find(provider => provider.id === id)?.name : undefined;
+}
+
 export function canUseClaudeEnvironment(
   environmentId: string,
   userId: string,
