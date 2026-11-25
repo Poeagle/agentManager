@@ -204,6 +204,16 @@ test('model controls use native capabilities and a docked file stays readable wh
    const longBounds=(await longRow.boundingBox())!;
    expect(Math.abs(shortRow.width-longBounds.width)).toBeLessThan(1);
    expect(Math.abs(shortRow.x-longBounds.x)).toBeLessThan(1);
+   const {contentWidth, overflow} = await longRow.evaluate(row => {
+    const parent = row.parentElement!;
+    const style = getComputedStyle(parent);
+    return {
+     contentWidth: parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+     overflow: row.scrollWidth - row.clientWidth,
+    };
+   });
+   if(width === 1280) expect(Math.abs(longBounds.width - contentWidth / 2)).toBeLessThan(1);
+   expect(overflow).toBeLessThanOrEqual(1);
    const longButton=(await longBatch.boundingBox())!;
    const metadata=(await longRow.locator('.session-chat-message-meta').boundingBox())!;
    expect(metadata.x-longButton.x-longButton.width).toBeLessThanOrEqual(12);
