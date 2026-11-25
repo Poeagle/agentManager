@@ -12,13 +12,17 @@ function TabLabel({ label, activityAt, detail }: { label: string; activityAt: nu
   return <span className="truncate" title={title}>{label}</span>;
 }
 
-export function SessionTabLabel({ session, label, detail, showActivityAge }: { session: Session | undefined; label: string; detail?: string; showActivityAge?: boolean }) {
-  const liveAt = useStreamStore((state) => session ? state.activityAt[session.id] : undefined);
+export function SessionTabLabel({ session, label, detail, activityAt, showActivityAge }: {
+  session: Session | undefined;
+  label: string;
+  detail?: string;
+  activityAt: number | null;
+  showActivityAge?: boolean;
+}) {
   const native = !!session&&agentSupports(session,'runtime') ? session.agent_runtime : undefined;
   const states = {ready:'新会话就绪，等待输入',running:'运行中',idle:'本轮已结束，等待输入',waiting_for_input:'等待用户输入',interrupted:'本轮已中断',failed:'执行失败',unknown:'状态未知'};
   const description = !!session&&agentSupports(session,'runtime')
     ? `${detail || 'Codex'}\nCodex 原生状态：${states[native?.state || 'unknown']}\n${native?.reason || '尚无原生活动记录'}` : detail;
-  const activityAt = session ? sessionActivityMs(session, liveAt) : null;
   return <>
     <TabLabel label={label} detail={description} activityAt={activityAt} />
     {showActivityAge && activityAt !== null && <span className="workspace-session-age" aria-hidden="true">{formatActivityAge(activityAt)}</span>}

@@ -3,6 +3,7 @@ import {sessionAgent,agentNativeId,agentSupports} from '../lib/agents';
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useShallow } from 'zustand/react/shallow';
 import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2, Loader2, List, PanelLeft, Search } from 'lucide-react';
 import { Terminal } from './Terminal';
 import { SessionWorkspacePane } from './SessionWorkspacePane';
@@ -25,6 +26,8 @@ import { ProjectSkillsPanel } from './ProjectSkillsPanel';
 import { ScheduledTasksPanel } from './ScheduledTasksPanel';
 import { LiveSessionSignalDot } from '../lib/session-signal';
 import { SessionTabLabel } from '../lib/session-activity';
+import { sessionActivityMs } from '../lib/session-activity-model';
+import { useStreamStore } from '../lib/websocket';
 import { promoteWarmTerminal, TERMINAL_COLD_DELAY_MS } from '../lib/warm-terminal-pool';
 import {
   reconcileHydratedTerminalInstances, uniqueTabName, nextDefaultTabName, automaticSessionTabName, applySessionTabTasks,
@@ -288,6 +291,16 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       ...terminalInstances.slice(index),
     ];
   }, [harnessOpen, harnessTab, terminalInstances]);
+  const workspaceActivity = useStreamStore(useShallow(state => workspaceTabs.map(tab => {
+    const session = allSessionLookup.get(tab.id);
+    return session ? sessionActivityMs(session, state.activityAt[tab.id]) : null;
+  })));
+  const sortedWorkspaceTabs = useMemo(() => workspaceTabs
+    .map((tab, index) => ({ tab, activityAt: workspaceActivity[index] }))
+    .sort((a, b) => {
+      if (a.activityAt === b.activityAt) return 0;
+      return (b.activityAt ?? -Infinity) - (a.activityAt ?? -Infinity);
+    }), [workspaceTabs, workspaceActivity]);
   useEffect(() => {
     setTerminalInstances(previous => {
       const seen: TerminalInstance[] = [];
@@ -404,6 +417,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   }, [editingTabValue, workspaceTabs, cancelTabRename]);
   const reorderTabs = useCallback((targetId: string) => {
     if (!draggingTabId || draggingTabId === targetId) return;
+    if (workspaceActivity[workspaceTabs.findIndex(tab => tab.id === draggingTabId)] !== null
+      || workspaceActivity[workspaceTabs.findIndex(tab => tab.id === targetId)] !== null) return;
     const next = moveItemByKey(workspaceTabs, draggingTabId, targetId, tab => tab.id);
     const harnessIndex = next.findIndex(tab => tab.id === HARNESS_TAB.id);
     if (harnessIndex !== -1) {
@@ -415,7 +430,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       const ordered = orderItemsByKeys(current, sessionOrder, tab => tab.id);
       return ordered.every((tab, index) => tab === current[index]) ? current : ordered;
     });
-  }, [draggingTabId, workspaceTabs]);
+  }, [draggingTabId, workspaceActivity, workspaceTabs]);
   // Commit when the user mousedowns anywhere outside the rename input.
   useEffect(() => {
     if (editingTabId === null) return;
@@ -1234,13 +1249,13 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const sessionTabList = useRef<HTMLElement>(null);
   const sessionFilter = sessionSearch.trim().toLocaleLowerCase();
   const activeWorkspaceTab = activeMode === 'harness' ? HARNESS_TAB.id : activeMode === 'terminal' ? activeTerminalId : null;
-  const previewTabs = workspaceTabs.filter((tab, index) =>
+  const previewTabs = sortedWorkspaceTabs.filter(({ tab }, index) =>
     index < SESSION_PREVIEW_LIMIT || (active && tab.id === activeWorkspaceTab) || tab.id === editingTabId,
   );
   const remainingSessions = workspaceTabs.length - previewTabs.length;
   const visibleWorkspaceTabs = sessionFilter
-    ? workspaceTabs.filter(tab => (tab.customLabel?.trim() || tab.label).toLocaleLowerCase().includes(sessionFilter))
-    : nestedSessionNavigation && !showAllSessions ? previewTabs : workspaceTabs;
+    ? sortedWorkspaceTabs.filter(({ tab }) => (tab.customLabel?.trim() || tab.label).toLocaleLowerCase().includes(sessionFilter))
+    : nestedSessionNavigation && !showAllSessions ? previewTabs : sortedWorkspaceTabs;
   const { data: scheduledData } = useQuery({
     queryKey: ['scheduled-tasks', projectId],
     queryFn: () => api.scheduledTasks.list(projectId),
@@ -1597,7 +1612,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       {(!nestedSessionNavigation || showSessionSearch) && <form className="workspace-session-search" onSubmit={event => {
         event.preventDefault();
         const match = visibleWorkspaceTabs[0];
-        if (match) selectWorkspaceTab(match.id);
+        if (match) selectWorkspaceTab(match.tab.id);
       }}>
         <input
           type="search"
@@ -1617,7 +1632,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         />
       </form>}
       <nav ref={sessionTabList} aria-label="会话标签" className="workspace-session-list">
-        {visibleWorkspaceTabs.map((inst) => {
+        {visibleWorkspaceTabs.map(({ tab: inst, activityAt }) => {
           const isHarness = inst.id === HARNESS_TAB.id;
           const isActive = (!nestedSessionNavigation || active) && inst.id === activeWorkspaceTab;
           const label = inst.customLabel?.trim() || inst.label;
@@ -1634,7 +1649,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           return (
             <div
               key={inst.id}
-              draggable={editingTabId !== inst.id}
+              draggable={activityAt === null && editingTabId !== inst.id}
               onDragStart={(event) => {
                 event.dataTransfer.effectAllowed = 'move';
                 event.dataTransfer.setData('text/plain', inst.id);
@@ -1648,7 +1663,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
               data-session-id={isHarness ? undefined : inst.id}
               data-active={isActive}
               onDragOver={(event) => {
-                if (!draggingTabId || draggingTabId === inst.id) return;
+                if (activityAt !== null || !draggingTabId || draggingTabId === inst.id) return;
                 event.preventDefault();
                 event.dataTransfer.dropEffect = 'move';
                 setTabDropTargetId(inst.id);
@@ -1713,7 +1728,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                 >
                   {tabIcon}
                   {isHarness ? <span className="truncate">{label}</span>
-                    : <SessionTabLabel session={sigSession} label={label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session || {}).label}`} showActivityAge={nestedSessionNavigation && !scheduledSessionIds.has(inst.id)} />}
+                    : <SessionTabLabel session={sigSession} label={label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session || {}).label}`} activityAt={activityAt} showActivityAge={nestedSessionNavigation && !scheduledSessionIds.has(inst.id)} />}
                   {scheduledSessionIds.has(inst.id) && <span className="workspace-session-scheduled">定时</span>}
                 </button>
               )}
@@ -1959,7 +1974,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       </div>
 
       {active && showTabSwitcher && <SessionTabSwitcher
-        tabs={workspaceTabs.map(tab => ({ id: tab.id, label: tab.customLabel?.trim() || tab.label, scheduled: scheduledSessionIds.has(tab.id) }))}
+        tabs={sortedWorkspaceTabs.map(({ tab }) => ({ id: tab.id, label: tab.customLabel?.trim() || tab.label, scheduled: scheduledSessionIds.has(tab.id) }))}
         activeId={activeWorkspaceTab}
         onSelect={id => {
           setShowTabSwitcher(false);

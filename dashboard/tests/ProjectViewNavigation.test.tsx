@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProjectView } from '../src/components/ProjectView';
 import { api, type Project, type Session } from '../src/lib/api';
+import { useStreamStore } from '../src/lib/websocket';
 
 vi.mock('../src/components/Terminal', () => ({ Terminal: ({ sessionId, onConnectionError }: { sessionId: string; onConnectionError?:(id:string,message:string)=>void }) => <div>Live terminal {sessionId}<button onClick={()=>onConnectionError?.(sessionId,'Session not found or not running')}>模拟连接失败</button></div> }));
 vi.mock('../src/components/SessionWorkspacePane', () => ({SessionWorkspacePane: ({session,renderTerminal}: {session:Session;renderTerminal:(visible:boolean,suspend:boolean,onReady:()=>void)=>React.ReactNode})=><div data-testid="session-pane" data-native-id={session.codex_session_id||''}>{renderTerminal(true,false,()=>{})}</div>}));
@@ -35,6 +36,54 @@ beforeEach(() => {
 });
 
 describe('project workspace navigation', () => {
+  it('shows the most recently active sessions first and updates the order on live activity', async () => {
+    const sessions: Session[] = [
+      { ...oldSession, id: 'unknown-a', task: 'Unknown A' },
+      { ...oldSession, id: 'terminal', task: 'Terminal', cli_type: 'claude', last_activity_at: '2026-10-01T09:00:00Z' },
+      { ...oldSession, id: 'unknown-b', task: 'Unknown B' },
+      {
+        ...oldSession, id: 'native', task: 'Native session',
+        agent_runtime: {
+          source: 'codex_rollout', session_id: 'native-history', state: 'idle',
+          last_activity_at: '2026-10-01T10:00:00Z', observed_at: '2026-10-01T11:00:00Z', reason: 'fixture',
+        },
+      },
+    ];
+    const saved = {
+      terminalInstances: sessions.map(session => ({ id: session.id, label: session.task, customLabel: session.task })),
+      activeTerminalId: 'native',
+    };
+    vi.mocked(api.sessions.list).mockResolvedValue({ sessions });
+    vi.mocked(api.userState.getAll).mockResolvedValue({ state: { 'project:p1': saved } });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(<QueryClientProvider client={client}>
+      <ProjectView currentUserId="u1" projectId="p1" projectPath="/workspace/p1" projectName="P1" sessionNavigationExpanded />
+    </QueryClientProvider>);
+    const expectOrder = (labels: string[]) => {
+      const nav = within(screen.getByRole('navigation', { name: '会话标签' }));
+      expect(nav.getAllByRole('button', { name: /^(Native session|Terminal|Unknown [AB])$/ }))
+        .toEqual(labels.map(name => nav.getByRole('button', { name, exact: true })));
+    };
+    try {
+      await waitFor(() => expectOrder(['Native session', 'Terminal', 'Unknown A', 'Unknown B']));
+      act(() => useStreamStore.getState().setActivity('terminal', Date.parse('2026-10-01T12:00:00Z')));
+      expectOrder(['Terminal', 'Native session', 'Unknown A', 'Unknown B']);
+      await act(async () => {
+        client.setQueryData(['project-sessions', 'p1'], {
+          sessions: sessions.map(session => session.agent_runtime ? {
+            ...session, agent_runtime: { ...session.agent_runtime, last_activity_at: '2026-10-01T13:00:00Z' },
+          } : session),
+        });
+      });
+      await waitFor(() => expectOrder(['Native session', 'Terminal', 'Unknown A', 'Unknown B']));
+      expect(screen.getByRole('button', { name: 'Native session', exact: true })).toHaveAttribute('aria-current', 'true');
+    } finally {
+      view.unmount();
+      client.clear();
+      useStreamStore.setState({ activityAt: {} });
+    }
+  });
+
   it('uses a newer project snapshot to bind a newly launched session despite a stale global cache',async()=>{
     const pending={...oldSession,id:'fresh',status:'pending' as const,codex_session_id:null};
     vi.mocked(api.sessions.list).mockImplementation(async(_status,projectId)=>({sessions:projectId?[{...pending,status:'running',codex_session_id:'bound-native'}]:[pending]}));
