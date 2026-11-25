@@ -280,7 +280,7 @@ Codex 压缩记录中的 `replacement_history` 是模型后续使用的上下文
 | 会话状态与最近助手消息 | 生命周期来自平台会话记录。工作状态使用 Agent 适配器的运行状态和当前终端信号，终端静默仅表示近期未观察到输出。消息预览显示最近可读的助手消息及原始消息时间。 |
 | 会话内存与进程 | Linux 隔离组采集 `memory.current`，通过本组和子组的 `cgroup.procs` 统计不同进程。其他本地会话使用已确认的进程树及 RSS 合计，共享页可能重复计入。汇总标明采样覆盖，缺失值保留为未知。 |
 
-## 标签页协作 Skill
+## Agent 协作 Skill
 
 「平台管理 → 集成 → agent-docs」展示内置 [agent-docs](../server/src/data/agent-skills/agent-docs/SKILL.md) 的目录树。Agent API 读取权限允许查看包中的 Markdown 和脚本。文件按选择加载，正文和参考随服务端构建打包。技能目录由平台管理，不参与外部客户端的全局技能扫描。
 

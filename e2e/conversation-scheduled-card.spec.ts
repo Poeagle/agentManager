@@ -101,10 +101,10 @@ for (const agent of ['codex', 'claude']) {
       const historyDialog = page.getByRole('dialog', { name: '简要压缩详情' });
 
       await page.goto('/');
-      const handoffCard = chat.getByRole('button', { name: /标签页协作 开发 A/ });
+      const handoffCard = chat.getByRole('button', { name: /Agent 协作 开发 A/ });
       await expect(handoffCard).toBeVisible();
       await handoffCard.click();
-      const handoffDialog = page.getByRole('dialog', { name: '标签页协作 · 开发 A' });
+      const handoffDialog = page.getByRole('dialog', { name: 'Agent 协作 · 开发 A' });
       await expect(handoffDialog).toContainText('请验证发行候选版本');
       await expect(handoffDialog).not.toContainText('source_tab_id');
       await page.keyboard.press('Escape');
@@ -120,6 +120,12 @@ for (const agent of ['codex', 'claude']) {
         await expect(brief).toContainText('1 轮');
         await expect(brief).toContainText('部分记录已截取');
         await expect(card).toBeVisible();
+        await expect(handoffCard).toBeVisible();
+        const handoffBounds = (await handoffCard.boundingBox())!;
+        const scheduledBounds = (await card.boundingBox())!;
+        expect(Math.abs(handoffBounds.x + handoffBounds.width - scheduledBounds.x - scheduledBounds.width)).toBeLessThan(2);
+        expect(handoffBounds.x - scheduledBounds.x).toBeGreaterThan(24);
+        expect(await handoffCard.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
         await expect(historyDialog).toHaveCount(0);
         await expect(taskDialog).toHaveCount(0);
         expect((await brief.boundingBox())!.y).toBeLessThan((await card.boundingBox())!.y);

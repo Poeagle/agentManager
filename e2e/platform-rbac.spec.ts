@@ -13,7 +13,7 @@ test('Platform management provides role configuration and enforces a monitoring-
   await nav.getByRole('button', { name: 'agent-docs', exact: true }).click();
   const tree = dialog.getByRole('navigation', { name: 'agent-docs 文件目录' });
   const content = dialog.getByRole('region', { name: '文件内容' });
-  await expect(content.getByRole('heading', { name: 'Agent Manager 标签页协作' })).toBeVisible();
+  await expect(content.getByRole('heading', { name: 'Agent 协作', exact: true })).toBeVisible();
   await expect(tree.getByText('references/', { exact: true })).toBeVisible();
   await expect(tree.getByText('scripts/', { exact: true })).toBeVisible();
   await tree.getByRole('button', { name: 'messages.md', exact: true }).click();

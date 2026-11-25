@@ -162,8 +162,8 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
   app.register(async scoped => {
     scoped.addHook('onRequest', async (req, reply) => {
       const scope = scopeFor(req);
-      if (!scope) return reply.code(401).send({ error: '标签页协作凭据无效' });
-      if (req.method === 'POST' && !agentDocsAllowed(scope.source, 'write')) return reply.code(403).send({ error: '标签页协作写权限不足' });
+      if (!scope) return reply.code(401).send({ error: 'Agent 协作凭据无效' });
+      if (req.method === 'POST' && !agentDocsAllowed(scope.source, 'write')) return reply.code(403).send({ error: 'Agent 协作写权限不足' });
       reply.header('Cache-Control', 'private, no-store');
       scopes.set(req, scope);
     });

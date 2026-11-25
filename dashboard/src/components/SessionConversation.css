@@ -310,6 +310,21 @@
 .session-chat-sourced,.conversation-auto-context {margin:0 0 6px;min-width:0;}
 .session-chat-sourced .conversation-card-trigger strong {color:var(--text-primary);font-weight:500;}
 .session-chat-sourced .conversation-card-trigger time {flex-shrink:0;font-size:11px;color:var(--text-secondary);}
+.session-chat-handoff {
+  width: fit-content;
+  max-width: min(85%, 26rem);
+  margin-left: auto;
+}
+.session-chat-handoff .conversation-card-trigger {
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  border-radius: 12px 12px 4px 12px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary));
+}
+.session-chat-handoff .conversation-card-trigger strong {max-width: min(21ch, 100%);}
+@container (max-width: 759px) {
+  .session-chat-handoff {max-width: 92%;}
+}
 .session-chat-sourced-content {overflow-wrap:anywhere;}
 .session-chat-sourced-content>.conversation-markdown {max-width:none;white-space:pre-line;}
 .session-chat-question-summary summary>svg {flex-shrink:0;color:var(--accent);}

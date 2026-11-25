@@ -1,9 +1,9 @@
 ---
 name: agent-docs
-description: 在 Agent Manager 中查找 Agent 标签页、查看进展、按任务和额度分配执行配置、创建和交接任务、处理多来源请求并精准回传。适用于跨标签页协作。
+description: 在 Agent Manager 中查找 Agent、查看进展、按任务和额度分配执行配置、创建和交接任务、处理多来源请求并精准回传。适用于 Agent 间协作。
 ---
 
-# Agent Manager 标签页协作
+# Agent 协作
 
 用平台提供的标签页身份操作当前用户在当前项目中的标签页。协作权限来自 Agent Manager 的会话授权，任务范围和分工来自用户要求、当前任务和项目约定。
 
@@ -17,7 +17,7 @@ description: 在 Agent Manager 中查找 Agent 标签页、查看进展、按任
 - **查找标签页、看进展，或新建并交付首条任务**：[标签页操作](references/tabs.md)。
 - **发给一个或多个标签页、查看收件箱，或回传进度与结果**：[消息投递](references/messages.md)。目标 ID 未知时，再读标签页操作的查找部分。
 - **按难度、账号额度或时效选择执行配置**：[配置分配](references/allocation.md)。使用现有标签页投递时可以跳过。
-- **选择协作方式、并行验收或批量处理多来源任务**：[跨标签页协作](references/collaboration.md)。
+- **选择协作方式、并行验收或批量处理多来源任务**：[Agent 协作](references/collaboration.md)。
 
 ## 核对结果
 
