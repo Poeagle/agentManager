@@ -449,6 +449,50 @@ test('uses adjacent cached-input counts and ignores a ratio drop caused by new i
   await expect(details.getByRole('table',{name:'缓存命中输入减少明细'})).toContainText('请求间隔 2.484秒');
 });
 
+test('aligns scheduled inputs on the right and the compaction summary on the left', async ({ page }) => {
+  const session = await setup(page, 'codex', 'detached');
+  writeFileSync(session.log, record(0, 'session_meta', { id: session.nativeId }));
+  let emit: ((frame: unknown) => void) | undefined;
+  await page.routeWebSocket('**/conversation/stream*', socket => {
+    emit = frame => socket.send(JSON.stringify(frame));
+  });
+  await page.goto('/');
+  await expect.poll(() => !!emit).toBe(true);
+  emit!({ type: 'snapshot', busy: true, stage: 'tools', messages: [
+    { id: 'ordinary-input', role: 'user', text: '继续检查', timestamp: at(1), sequence: 1 },
+    { id: 'summary', role: 'assistant', presentation: 'compaction_summary', text: '压缩后的上下文', timestamp: at(2), sequence: 2,
+      compaction: { before_tokens: 450080, after_tokens: 51554, duration_ms: 2000 } },
+    { id: 'scheduled-input', role: 'user', text: '执行界面审查', timestamp: at(3), sequence: 3,
+      input_source: { kind: 'scheduled', label: 'UI 审查' } },
+    { id: 'ordinary-output', role: 'assistant', phase: 'final', text: '界面检查完成', timestamp: at(4), sequence: 4 },
+    { id: 'queued-input', role: 'user', text: '执行下一次审查', timestamp: at(5), sequence: 5, queued: true,
+      input_source: { kind: 'scheduled', label: '下一个定时审查任务' } },
+  ] });
+  const summary = session.chat.getByRole('button', { name: /Conversation summary/ });
+  const scheduled = session.chat.getByRole('button', { name: /定时任务.*UI 审查/ });
+  const queued = session.chat.getByRole('button', { name: /定时任务.*下一个定时审查任务/ });
+  const input = session.chat.locator('[data-chat-message-id="ordinary-input"]');
+  const output = session.chat.locator('[data-chat-message-id="ordinary-output"]');
+  await expect(queued).toContainText('已排队');
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 860 });
+    const [left, right, queuedBox, user, assistant] = await Promise.all(
+      [summary, scheduled, queued, input, output].map(locator => locator.boundingBox()),
+    );
+    expect(left!.x).toBeCloseTo(assistant!.x, 0);
+    expect(left!.width).toBeLessThan(assistant!.width * 0.95);
+    for (const box of [right!, queuedBox!]) {
+      expect(box.width).toBeLessThan(assistant!.width * 0.95);
+      expect(box.x + box.width).toBeCloseTo(user!.x + user!.width, 0);
+    }
+  }
+  await scheduled.click();
+  await expect(page.getByRole('dialog', { name: '定时任务 · UI 审查' })).toContainText('执行界面审查');
+  await page.keyboard.press('Escape');
+  await summary.click();
+  await expect(page.getByRole('dialog', { name: 'Conversation summary' })).toContainText('压缩后的上下文');
+});
+
 test('shows one cache drop next to an in-turn compaction and keeps it after reload',async({page})=>{
   const session=await setup(page,'codex','detached');
   const turn='compact-live';

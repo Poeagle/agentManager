@@ -436,7 +436,7 @@ const Bubble = memo(function Bubble({
     const sourceLabel = handoff ? 'Agent 协作' : scheduled ? '定时任务' : '平台消息';
     return <>
       {briefCard}
-      <article className={handoff ? 'session-chat-sourced session-chat-handoff' : 'session-chat-sourced'} data-chat-message-id={message.id}>
+      <article className="session-chat-sourced" data-chat-message-id={message.id}>
         <ConversationDialogCard
           active={active}
           title={`${sourceLabel} · ${message.input_source.label}`}
@@ -444,7 +444,7 @@ const Bubble = memo(function Bubble({
             <>
               {handoff ? <MessagesSquare size={14} /> : <CalendarClock size={14} />}
               <span>{sourceLabel}</span>
-              <strong title={handoff ? message.input_source.label : undefined}>{message.input_source.label}</strong>
+              <strong title={message.input_source.label}>{message.input_source.label}</strong>
               {(scheduled || handoff) && message.timestamp && Number.isFinite(Date.parse(message.timestamp)) && (
                 <time dateTime={message.timestamp} title="发送时间">
                   {formatConversationTimestamp(message.timestamp)}
