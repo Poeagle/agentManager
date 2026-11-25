@@ -460,12 +460,14 @@ test('aligns scheduled inputs on the right and the compaction summary on the lef
   await expect.poll(() => !!emit).toBe(true);
   emit!({ type: 'snapshot', busy: true, stage: 'tools', messages: [
     { id: 'ordinary-input', role: 'user', text: '继续检查', timestamp: at(1), sequence: 1 },
-    { id: 'summary', role: 'assistant', presentation: 'compaction_summary', text: '压缩后的上下文', timestamp: at(2), sequence: 2,
+    { id: 'before-summary', role: 'assistant', phase: 'commentary', text: '压缩前进展', timestamp: at(2), sequence: 2 },
+    { id: 'summary', role: 'assistant', presentation: 'compaction_summary', text: '压缩后的上下文', timestamp: at(3), sequence: 3,
       compaction: { before_tokens: 450080, after_tokens: 51554, duration_ms: 2000 } },
-    { id: 'scheduled-input', role: 'user', text: '执行界面审查', timestamp: at(3), sequence: 3,
+    { id: 'after-summary', role: 'assistant', phase: 'commentary', text: '压缩后进展', timestamp: at(4), sequence: 4 },
+    { id: 'scheduled-input', role: 'user', text: '执行界面审查', timestamp: at(5), sequence: 5,
       input_source: { kind: 'scheduled', label: 'UI 审查' } },
-    { id: 'ordinary-output', role: 'assistant', phase: 'final', text: '界面检查完成', timestamp: at(4), sequence: 4 },
-    { id: 'queued-input', role: 'user', text: '执行下一次审查', timestamp: at(5), sequence: 5, queued: true,
+    { id: 'ordinary-output', role: 'assistant', phase: 'final', text: '界面检查完成', timestamp: at(6), sequence: 6 },
+    { id: 'queued-input', role: 'user', text: '执行下一次审查', timestamp: at(7), sequence: 7, queued: true,
       input_source: { kind: 'scheduled', label: '下一个定时审查任务' } },
   ] });
   const summary = session.chat.getByRole('button', { name: /Conversation summary/ });
@@ -473,6 +475,7 @@ test('aligns scheduled inputs on the right and the compaction summary on the lef
   const queued = session.chat.getByRole('button', { name: /定时任务.*下一个定时审查任务/ });
   const input = session.chat.locator('[data-chat-message-id="ordinary-input"]');
   const output = session.chat.locator('[data-chat-message-id="ordinary-output"]');
+  const progress = session.chat.locator('.session-chat-progress');
   await expect(queued).toContainText('已排队');
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 860 });
@@ -481,6 +484,10 @@ test('aligns scheduled inputs on the right and the compaction summary on the lef
     );
     expect(left!.x).toBeCloseTo(assistant!.x, 0);
     expect(left!.width).toBeLessThan(assistant!.width * 0.95);
+    expect(left!.height).toBeLessThanOrEqual(30);
+    expect(await summary.evaluate(card => card.scrollWidth <= card.clientWidth)).toBe(true);
+    const [before, after] = await Promise.all([progress.nth(0).boundingBox(), progress.nth(1).boundingBox()]);
+    expect(left!.y - before!.y - before!.height).toBeCloseTo(after!.y - left!.y - left!.height, 0);
     for (const box of [right!, queuedBox!]) {
       expect(box.width).toBeLessThan(assistant!.width * 0.95);
       expect(box.x + box.width).toBeCloseTo(user!.x + user!.width, 0);

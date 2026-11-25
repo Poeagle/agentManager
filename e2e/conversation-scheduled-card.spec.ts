@@ -37,7 +37,7 @@ for (const agent of ['codex', 'claude']) {
       };
       const prompt = [
         '# 定时提示正文',
-        '1. **读取记录**',
+        '1. **读取记录**\n\n   - 核对第一项。\n\n   - 核对第二项。\n\n2. 汇总结果。',
         '```mermaid\nsequenceDiagram\n  A->>B: 启动巡检\n```',
         '继续检查定时任务。\n'.repeat(80) + '定时提示末尾',
       ].join('\n\n');
@@ -124,7 +124,8 @@ for (const agent of ['codex', 'claude']) {
         const handoffBounds = (await handoffCard.boundingBox())!;
         const scheduledBounds = (await card.boundingBox())!;
         expect(Math.abs(handoffBounds.x + handoffBounds.width - scheduledBounds.x - scheduledBounds.width)).toBeLessThan(2);
-        expect(handoffBounds.x - scheduledBounds.x).toBeGreaterThan(24);
+        const feedBounds = (await chat.locator('.session-chat-feed').boundingBox())!;
+        expect(Math.max(handoffBounds.width, scheduledBounds.width)).toBeLessThan(feedBounds.width * 0.95);
         expect(await handoffCard.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
         await expect(historyDialog).toHaveCount(0);
         await expect(taskDialog).toHaveCount(0);
@@ -146,7 +147,11 @@ for (const agent of ['codex', 'claude']) {
         await card.click();
         await expect(taskDialog).toBeVisible();
         await expect(taskDialog.getByRole('heading', { name: '定时提示正文' })).toBeVisible();
-        await expect(taskDialog.getByRole('listitem')).toContainText('读取记录');
+        await expect(taskDialog.getByText('读取记录', { exact: true })).toBeVisible();
+        const [firstCheck, secondCheck] = await Promise.all(
+          ['核对第一项。', '核对第二项。'].map(name => taskDialog.getByText(name, { exact: true }).boundingBox()),
+        );
+        expect(secondCheck!.y - firstCheck!.y - firstCheck!.height).toBeLessThan(16);
         const diagram = taskDialog.getByRole('img', { name: 'Mermaid 图表' });
         await expect(diagram).toBeVisible();
         await expect.poll(() => diagram.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
