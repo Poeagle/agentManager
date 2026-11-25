@@ -61,6 +61,7 @@ interface ProjectViewProps {
 }
 
 const SESSION_PREVIEW_LIMIT = 5;
+const SESSION_ORDER_REFRESH_MS = 60_000;
 /** A restored tab can load independently of expensive list/history enrichment. */
 function RestoreSessionRecord({sessionId,projectId,onRestore}:{sessionId:string;projectId:string;onRestore:(session:Session)=>void}) {
   const query=useQuery({queryKey:['session-record',sessionId],queryFn:()=>api.sessions.get(sessionId),retry:false});
@@ -195,7 +196,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   });
   // Keep the complete project record set available for the project sessions
   // view and for naming/restoring older tabs beyond the global history window.
-  const { data: projectHistoryData, isSuccess: projectHistoryLoaded, dataUpdatedAt: projectHistoryUpdatedAt } = useQuery({
+  const { data: projectHistoryData, isSuccess: projectHistoryLoaded, isFetched: projectHistorySettled, dataUpdatedAt: projectHistoryUpdatedAt } = useQuery({
     queryKey: ['project-sessions', projectId],
     queryFn: ({ signal }) => api.sessions.list(undefined, projectId, signal),
     refetchInterval:(query)=>active && query.state.data?.sessions.some(session=>agentSupports(session,'runtime')) ? 5000 : false,
@@ -295,12 +296,37 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     const session = allSessionLookup.get(tab.id);
     return session ? sessionActivityMs(session, state.activityAt[tab.id]) : null;
   })));
+  const [sortActivityById, setSortActivityById] = useState(() => new Map<string, number | null>());
+  const latestActivity = useRef({ tabs: workspaceTabs, times: workspaceActivity });
+  useEffect(() => {
+    latestActivity.current = { tabs: workspaceTabs, times: workspaceActivity };
+    if (!projHydrated || !projectHistorySettled) return;
+    // Capture new tabs as they appear without moving earlier entries.
+    setSortActivityById(previous => {
+      if (previous.size === workspaceTabs.length && workspaceTabs.every(tab => previous.has(tab.id))) return previous;
+      return new Map(workspaceTabs.map((tab, index) => {
+        const captured = previous.get(tab.id);
+        return [tab.id, captured === undefined ? workspaceActivity[index] : captured];
+      }));
+    });
+  }, [projHydrated, projectHistorySettled, workspaceTabs, workspaceActivity]);
+  useEffect(() => {
+    if (!projHydrated || !projectHistorySettled || (!active && !sessionNavigationExpanded)) return;
+    const timer = window.setInterval(() => {
+      const { tabs, times } = latestActivity.current;
+      setSortActivityById(previous => {
+        if (previous.size === tabs.length && tabs.every((tab, index) => previous.get(tab.id) === times[index])) return previous;
+        return new Map(tabs.map((tab, index) => [tab.id, times[index]]));
+      });
+    }, SESSION_ORDER_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [active, projHydrated, projectHistorySettled, sessionNavigationExpanded]);
   const sortedWorkspaceTabs = useMemo(() => workspaceTabs
-    .map((tab, index) => ({ tab, activityAt: workspaceActivity[index] }))
+    .map((tab, index) => ({ tab, index, sortAt: sortActivityById.get(tab.id) ?? null }))
     .sort((a, b) => {
-      if (a.activityAt === b.activityAt) return 0;
-      return (b.activityAt ?? -Infinity) - (a.activityAt ?? -Infinity);
-    }), [workspaceTabs, workspaceActivity]);
+      if (a.sortAt === b.sortAt) return 0;
+      return (b.sortAt ?? -Infinity) - (a.sortAt ?? -Infinity);
+    }), [workspaceTabs, sortActivityById]);
   useEffect(() => {
     setTerminalInstances(previous => {
       const seen: TerminalInstance[] = [];
@@ -417,8 +443,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   }, [editingTabValue, workspaceTabs, cancelTabRename]);
   const reorderTabs = useCallback((targetId: string) => {
     if (!draggingTabId || draggingTabId === targetId) return;
-    if (workspaceActivity[workspaceTabs.findIndex(tab => tab.id === draggingTabId)] !== null
-      || workspaceActivity[workspaceTabs.findIndex(tab => tab.id === targetId)] !== null) return;
+    if (sortedWorkspaceTabs.find(({ tab }) => tab.id === draggingTabId)?.sortAt !== null
+      || sortedWorkspaceTabs.find(({ tab }) => tab.id === targetId)?.sortAt !== null) return;
     const next = moveItemByKey(workspaceTabs, draggingTabId, targetId, tab => tab.id);
     const harnessIndex = next.findIndex(tab => tab.id === HARNESS_TAB.id);
     if (harnessIndex !== -1) {
@@ -430,7 +456,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       const ordered = orderItemsByKeys(current, sessionOrder, tab => tab.id);
       return ordered.every((tab, index) => tab === current[index]) ? current : ordered;
     });
-  }, [draggingTabId, workspaceActivity, workspaceTabs]);
+  }, [draggingTabId, sortedWorkspaceTabs, workspaceTabs]);
   // Commit when the user mousedowns anywhere outside the rename input.
   useEffect(() => {
     if (editingTabId === null) return;
@@ -1632,7 +1658,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         />
       </form>}
       <nav ref={sessionTabList} aria-label="会话标签" className="workspace-session-list">
-        {visibleWorkspaceTabs.map(({ tab: inst, activityAt }) => {
+        {visibleWorkspaceTabs.map(({ tab: inst, index, sortAt }) => {
+          const activityAt = workspaceActivity[index];
           const isHarness = inst.id === HARNESS_TAB.id;
           const isActive = (!nestedSessionNavigation || active) && inst.id === activeWorkspaceTab;
           const label = inst.customLabel?.trim() || inst.label;
@@ -1649,7 +1676,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           return (
             <div
               key={inst.id}
-              draggable={activityAt === null && editingTabId !== inst.id}
+              draggable={sortAt === null && editingTabId !== inst.id}
               onDragStart={(event) => {
                 event.dataTransfer.effectAllowed = 'move';
                 event.dataTransfer.setData('text/plain', inst.id);
@@ -1663,7 +1690,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
               data-session-id={isHarness ? undefined : inst.id}
               data-active={isActive}
               onDragOver={(event) => {
-                if (activityAt !== null || !draggingTabId || draggingTabId === inst.id) return;
+                if (sortAt !== null || !draggingTabId || draggingTabId === inst.id) return;
                 event.preventDefault();
                 event.dataTransfer.dropEffect = 'move';
                 setTabDropTargetId(inst.id);

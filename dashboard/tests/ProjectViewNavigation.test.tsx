@@ -36,7 +36,7 @@ beforeEach(() => {
 });
 
 describe('project workspace navigation', () => {
-  it('shows the most recently active sessions first and updates the order on live activity', async () => {
+  it('sorts by activity when the project opens and refreshes the order once per minute', async () => {
     const sessions: Session[] = [
       { ...oldSession, id: 'unknown-a', task: 'Unknown A' },
       { ...oldSession, id: 'terminal', task: 'Terminal', cli_type: 'claude', last_activity_at: '2026-10-01T09:00:00Z' },
@@ -56,6 +56,7 @@ describe('project workspace navigation', () => {
     vi.mocked(api.sessions.list).mockResolvedValue({ sessions });
     vi.mocked(api.userState.getAll).mockResolvedValue({ state: { 'project:p1': saved } });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const view = render(<QueryClientProvider client={client}>
       <ProjectView currentUserId="u1" projectId="p1" projectPath="/workspace/p1" projectName="P1" sessionNavigationExpanded />
     </QueryClientProvider>);
@@ -66,21 +67,29 @@ describe('project workspace navigation', () => {
     };
     try {
       await waitFor(() => expectOrder(['Native session', 'Terminal', 'Unknown A', 'Unknown B']));
+      const terminalLabel = screen.getByText('Terminal', { exact: true, selector: '.workspace-tab-button span.truncate' });
+      const before = terminalLabel.getAttribute('title');
       act(() => useStreamStore.getState().setActivity('terminal', Date.parse('2026-10-01T12:00:00Z')));
+      expectOrder(['Native session', 'Terminal', 'Unknown A', 'Unknown B']);
+      expect(terminalLabel.getAttribute('title')).not.toBe(before);
+      await act(async () => { await vi.advanceTimersByTimeAsync(59_999); });
+      expectOrder(['Native session', 'Terminal', 'Unknown A', 'Unknown B']);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
       expectOrder(['Terminal', 'Native session', 'Unknown A', 'Unknown B']);
-      await act(async () => {
-        client.setQueryData(['project-sessions', 'p1'], {
-          sessions: sessions.map(session => session.agent_runtime ? {
-            ...session, agent_runtime: { ...session.agent_runtime, last_activity_at: '2026-10-01T13:00:00Z' },
-          } : session),
-        });
-      });
-      await waitFor(() => expectOrder(['Native session', 'Terminal', 'Unknown A', 'Unknown B']));
+      const updated = sessions.map(session => session.agent_runtime ? {
+        ...session, agent_runtime: { ...session.agent_runtime, last_activity_at: '2026-10-01T13:00:00Z' },
+      } : session);
+      vi.mocked(api.sessions.list).mockResolvedValue({ sessions: updated });
+      await act(async () => { await client.invalidateQueries({ queryKey: ['project-sessions', 'p1'] }); });
+      expectOrder(['Terminal', 'Native session', 'Unknown A', 'Unknown B']);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expectOrder(['Native session', 'Terminal', 'Unknown A', 'Unknown B']);
       expect(screen.getByRole('button', { name: 'Native session', exact: true })).toHaveAttribute('aria-current', 'true');
     } finally {
       view.unmount();
       client.clear();
       useStreamStore.setState({ activityAt: {} });
+      vi.useRealTimers();
     }
   });
 
