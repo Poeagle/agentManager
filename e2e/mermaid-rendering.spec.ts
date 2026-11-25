@@ -20,6 +20,7 @@ async function diagramAppearance(image: Locator, selectors = ['g.node rect', 'pa
         border: node.stroke,
         borderWidth: node.strokeWidth,
         shadow: node.filter,
+        corners: [node.getPropertyValue('rx'), node.getPropertyValue('ry')],
         edge: edge.stroke,
         edgeWidth: edge.strokeWidth,
       };
@@ -45,6 +46,7 @@ test('Mermaid renders in chat, platform replies and editable Markdown; source an
     fill: 'rgb(255, 255, 255)',
     border: 'rgb(40, 37, 61)',
     borderWidth: '2px',
+    corners: ['6px', '6px'],
     edge: 'rgb(0, 0, 0)',
     edgeWidth: '2px',
   });
@@ -56,7 +58,7 @@ test('Mermaid renders in chat, platform replies and editable Markdown; source an
  const sequenceSelectors = ['rect.actor', '.messageLine0'];
  const lightSequenceSource = await sequenceImage.getAttribute('src');
  const lightSequence = await diagramAppearance(sequenceImage, sequenceSelectors);
- expect.soft(lightSequence).toMatchObject({ fill: 'rgb(255, 255, 255)', border: 'rgb(40, 37, 61)', borderWidth: '2px' });
+ expect.soft(lightSequence).toMatchObject({ fill: 'rgb(255, 255, 255)', border: 'rgb(40, 37, 61)', borderWidth: '2px', corners: ['6px', '6px'] });
  expect.soft(lightSequence.shadow).toContain('-drop-shadow');
  const lightSource = await chatImage.getAttribute('src');
  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
@@ -66,10 +68,11 @@ test('Mermaid renders in chat, platform replies and editable Markdown; source an
    border: 'rgb(255, 255, 255)',
    borderWidth: '2px',
    edgeWidth: '2px',
+   corners: ['6px', '6px'],
  });
  await expect(sequenceImage).not.toHaveAttribute('src', lightSequenceSource!);
  expect.soft(await diagramAppearance(sequenceImage, sequenceSelectors)).toMatchObject({
-   fill: 'rgb(17, 17, 19)', border: 'rgb(255, 255, 255)', borderWidth: '2px',
+   fill: 'rgb(17, 17, 19)', border: 'rgb(255, 255, 255)', borderWidth: '2px', corners: ['6px', '6px'],
  });
  const darkSource = await chatImage.getAttribute('src');
  await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
@@ -98,7 +101,7 @@ test('Mermaid renders in chat, platform replies and editable Markdown; source an
   const downloaded=page.waitForEvent('download');await preview.getByRole('button',{name:'下载图片',exact:true}).click();const download=await downloaded;
   expect(download.suggestedFilename()).toBe(`Mermaid 图表.${extension}`);
   const bytes=readFileSync((await download.path())!);
-  if(extension==='svg'){expect(bytes.toString()).toContain('<svg');expect(bytes.toString()).toContain('viewBox=');}
+  if(extension==='svg'){expect(bytes.toString()).toContain('<svg');expect(bytes.toString()).toContain('viewBox=');expect(bytes.toString()).toMatch(/<rect[^>]* rx="6"[^>]* ry="6"/);}
   else{
    if(extension==='png')expect([...bytes.subarray(0,8)]).toEqual([137,80,78,71,13,10,26,10]);
    if(extension==='jpg')expect([...bytes.subarray(0,2)]).toEqual([255,216]);

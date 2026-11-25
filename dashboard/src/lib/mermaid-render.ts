@@ -14,6 +14,12 @@ function intrinsicSvg(svg:string) {
   if(root.localName!=='svg'||box.length!==4||!box.every(Number.isFinite)||box[2]<=0||box[3]<=0)throw Error('图表尺寸无效');
   root.setAttribute('width',String(Math.ceil(box[2])));root.setAttribute('height',String(Math.ceil(box[3])));
   for(const key of ['width','height','max-width','max-height'])root.style.removeProperty(key);
+  // Match the Neo sequence participant corners in both preview and SVG export.
+  for(const rect of root.querySelectorAll('g.node > rect.basic.label-container, g.cluster > rect, rect.note')){
+    if(Number(rect.getAttribute('rx'))>0||Number(rect.getAttribute('ry'))>0)continue;
+    rect.setAttribute('rx','6');
+    rect.setAttribute('ry','6');
+  }
   return new XMLSerializer().serializeToString(root);
 }
 export function renderMermaid(source:string,dark:boolean):Promise<string> {
