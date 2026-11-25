@@ -51,6 +51,8 @@ python3 scripts/platform_api.py operation "$request_id"
 
 `POST /tabs/{tab_id}/delete` 对应 `delete-tab`。根据用户或项目授权确认目标，优先用 `list-tabs --include-ended` 核对名称、ID、父级与 `can_delete`。接口处理当前用户在当前项目中有权操作的其他标签页。关闭会结束目标标签正在进行的工作。每次只处理指定标签页。
 
+子标签回传结果后，由父标签验收并决定是否关闭。需要追问、复验，或还有该标签页正在处理的其他请求时，保留标签页继续协作。详情见[多轮跟进与关闭](collaboration.md#多轮跟进与关闭)。
+
 ```sh
 python3 scripts/platform_api.py delete-tab "$target_tab_id" --request-id "$request_id"
 ```
