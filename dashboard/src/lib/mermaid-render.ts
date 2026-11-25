@@ -5,13 +5,63 @@ export function isMermaidCode(source:string,language='') {
   const name=language.toLowerCase();if(name==='mermaid')return true;if(name&&!['text','txt','plaintext'].includes(name))return false;
   return /^(?:(?:flowchart|graph)\s+(?:TD|TB|BT|LR|RL)\b|(?:sequenceDiagram|classDiagram|stateDiagram(?:-v2)?|erDiagram|gantt|pie|mindmap|timeline|gitGraph|journey)\s*(?:$|\n))/i.test(source.trimStart());
 }
+type Point = { x: number; y: number };
+
+function offsetFlowchartLabels(root: SVGSVGElement, container: HTMLElement, viewBox: number[]) {
+  const routes = new Map([...root.querySelectorAll('path.flowchart-link[data-points]')]
+    .map(path => [path.getAttribute('data-id'), path.getAttribute('data-points')!]));
+  if (!routes.size) return;
+
+  const gap = 5;
+  let moved = false;
+  container.append(root);
+  for (const label of root.querySelectorAll<SVGGElement>('g.edgeLabels > g.edgeLabel[transform]')) {
+    const route = routes.get(label.querySelector('g.label')?.getAttribute('data-id') ?? null);
+    if (!route) continue;
+    const points = JSON.parse(atob(route)) as Point[];
+    const position = label.transform.baseVal.getItem(0).matrix;
+    const { e: x, f: y } = position;
+    // Mermaid draws Neo edges with rounded corners between these straight segments.
+    // Use the segment at the label anchor so branches follow their own line.
+    let distance = 6;
+    let offsetX = 0, offsetY = 0;
+    const bounds = label.getBBox();
+    for (let i = 1; i < points.length; i++) {
+      const start = points[i - 1], end = points[i];
+      if (start.y === end.y && x > Math.min(start.x, end.x) && x < Math.max(start.x, end.x)) {
+        const delta = Math.abs(start.y - y);
+        if (delta >= distance) continue;
+        distance = delta;
+        offsetX = 0;
+        offsetY = Math.max(0, start.y + gap - (y + bounds.y));
+      } else if (start.x === end.x && y > Math.min(start.y, end.y) && y < Math.max(start.y, end.y)) {
+        const delta = Math.abs(start.x - x);
+        if (delta >= distance) continue;
+        distance = delta;
+        offsetX = Math.max(0, start.x + gap - (x + bounds.x));
+        offsetY = 0;
+      }
+    }
+    if (offsetX || offsetY) {
+      label.setAttribute('transform', `translate(${x + offsetX}, ${y + offsetY})`);
+      moved = true;
+    }
+  }
+  if (!moved) return;
+  const bounds = root.getBBox();
+  viewBox[2] = Math.max(viewBox[2], bounds.x + bounds.width + gap - viewBox[0]);
+  viewBox[3] = Math.max(viewBox[3], bounds.y + bounds.height + gap - viewBox[1]);
+  root.setAttribute('viewBox', viewBox.join(' '));
+}
+
 /** SVG percentage dimensions behave differently when embedded as an image.
  * Keep the diagram's own viewBox dimensions so a narrow flowchart cannot grow
  * to the width of a document preview. */
-function intrinsicSvg(svg:string) {
+function intrinsicSvg(svg:string, container:HTMLElement, diagramType:string) {
   const document=new DOMParser().parseFromString(svg,'image/svg+xml'),root=document.documentElement;
   const box=(root.getAttribute('viewBox')||'').trim().split(/[\s,]+/).map(Number);
   if(root.localName!=='svg'||box.length!==4||!box.every(Number.isFinite)||box[2]<=0||box[3]<=0)throw Error('图表尺寸无效');
+  if (diagramType === 'flowchart-v2') offsetFlowchartLabels(root as unknown as SVGSVGElement, container, box);
   root.setAttribute('width',String(Math.ceil(box[2])));root.setAttribute('height',String(Math.ceil(box[3])));
   for(const key of ['width','height','max-width','max-height'])root.style.removeProperty(key);
   // Match the Neo sequence participant corners in both preview and SVG export.
@@ -43,7 +93,7 @@ export function renderMermaid(source:string,dark:boolean):Promise<string> {
       fontFamily: 'Arial, sans-serif',
     });
     const container=document.createElement('div');container.style.cssText='position:fixed;left:-100000px;top:0;width:1400px;visibility:hidden;pointer-events:none';container.setAttribute('aria-hidden','true');document.body.append(container);
-    try {const result=await mermaid.render(`octoally-mermaid-${++sequence}`,clean,container);if(result.svg.length>2*1024*1024)throw Error('图表过大，请拆分后查看。');const svg=intrinsicSvg(result.svg);cache.set(key,svg);if(cache.size>12)cache.delete(cache.keys().next().value!);return svg;}
+    try {const result=await mermaid.render(`octoally-mermaid-${++sequence}`,clean,container);if(result.svg.length>2*1024*1024)throw Error('图表过大，请拆分后查看。');const svg=intrinsicSvg(result.svg, container, result.diagramType);cache.set(key,svg);if(cache.size>12)cache.delete(cache.keys().next().value!);return svg;}
     finally{container.remove();}
   });queue=work;return work;
 }

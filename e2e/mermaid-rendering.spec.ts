@@ -34,8 +34,16 @@ test('Mermaid renders in chat, platform replies and editable Markdown; source an
  await page.addInitScript(()=>Object.defineProperty(window,'showSaveFilePicker',{value:undefined,configurable:true}));
  const dir=join(process.cwd(),'dashboard/.test-data/mermaid-proof');mkdirSync(dir,{recursive:true});
  const sequence = '```mermaid\nsequenceDiagram\n actor A as 交易员\n participant B as QITStudio\n A->>B: 启动策略脚本\n Note over B: 读取历史行情\n B-->>A: 展示结果\n```';
+ const branches = `\`\`\`mermaid
+flowchart LR
+ A[组合 A] -->|包含| B[上季末的一笔持仓]
+ B -->|对应证券| C[债券 X]
+ C -->|由其发行| D[甲融资公司]
+ D -->|直接会计并表母公司| E[甲集团母公司]
+ C -->|由其担保| E
+\`\`\``;
  const content='# 数据流程\n\n```mermaid\nflowchart TD\n A[客户端业务对象 / DataFrame / Vector] --> B[类型校验、批处理、序列化]\n B --> C[接收数据]\n C --> D[按分区拆分本批数据]\n D --> E[查找分区位置和副本]\n E --> F[向数据副本执行写入]\n F --> G[事务日志与缓存]\n G --> H[事务提交与版本确认]\n H --> I[向客户端返回成功]\n H --> J[后台排序、合并缓存]\n J --> K[写入 Level File]\n K --> L[更新引擎元数据]\n L --> M[后台合并]\n```\n\n```js\nconst n = 42;\n```';
- writeFileSync(join(dir,'mermaid-harness.tsx'),`import React from 'react';import {createRoot} from 'react-dom/client';import {ConversationMarkdown} from '../../src/components/ConversationMarkdown';import {AiReply} from '../../src/components/AiReply';import {MarkdownVisualEditor} from '../../src/components/MarkdownVisualEditor';import '../../src/components/SessionConversation.css';const content=${JSON.stringify(content)};window.changes=[];createRoot(document.getElementById('root')!).render(<><section id="chat"><ConversationMarkdown content={content} messageId="proof" projectId={null} onNavigate={()=>{}}/></section><section id="sequence"><ConversationMarkdown content={${JSON.stringify(sequence)}} messageId="sequence" projectId={null} onNavigate={()=>{}}/></section><section id="platform"><AiReply content={content}/></section><section id="editor"><MarkdownVisualEditor value={content} onChange={v=>window.changes.push(v)} filesApi={{}} resolveLocalPath={()=>null} onOpenFile={()=>{}}/></section></>);`);
+ writeFileSync(join(dir,'mermaid-harness.tsx'),`import React from 'react';import {createRoot} from 'react-dom/client';import {ConversationMarkdown} from '../../src/components/ConversationMarkdown';import {AiReply} from '../../src/components/AiReply';import {MarkdownVisualEditor} from '../../src/components/MarkdownVisualEditor';import '../../src/components/SessionConversation.css';const content=${JSON.stringify(content)};window.changes=[];createRoot(document.getElementById('root')!).render(<><section id="chat"><ConversationMarkdown content={content} messageId="proof" projectId={null} onNavigate={()=>{}}/></section><section id="branches"><ConversationMarkdown content={${JSON.stringify(branches)}} messageId="branches" projectId={null} onNavigate={()=>{}}/></section><section id="sequence"><ConversationMarkdown content={${JSON.stringify(sequence)}} messageId="sequence" projectId={null} onNavigate={()=>{}}/></section><section id="platform"><AiReply content={content}/></section><section id="editor"><MarkdownVisualEditor value={content} onChange={v=>window.changes.push(v)} filesApi={{}} resolveLocalPath={()=>null} onOpenFile={()=>{}}/></section></>);`);
  await page.route('**/mermaid-proof',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><html data-theme="light"><head><style>body{font-family:Arial;--border:#ddd;--bg-primary:white;--accent:#2563eb;--text-secondary:#555}section{max-width:900px;margin:20px auto}</style></head><script type="module">import RefreshRuntime from "/@react-refresh";RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;</script><body><div id="root"></div><script type="module" src="/@fs'+join(dir,'mermaid-harness.tsx')+'"></script></body></html>'}));
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.goto('/mermaid-proof');
  for(const id of ['chat','platform','editor']){const section=page.locator(`#${id}`);await expect(section.getByRole('img',{name:'Mermaid 图表'})).toBeVisible();expect(await section.getByRole('img',{name:'Mermaid 图表'}).evaluate((img:HTMLImageElement)=>img.naturalWidth)).toBeGreaterThan(50);await expect(section.getByText('const n = 42;',{exact:true})).toBeVisible();}
@@ -53,6 +61,36 @@ test('Mermaid renders in chat, platform replies and editable Markdown; source an
   expect.soft(appearance.shadow).toContain('-drop-shadow');
  }
  const chatImage = page.locator('#chat').getByRole('img', { name: 'Mermaid 图表' });
+ const branchImage = page.locator('#branches').getByRole('img', { name: 'Mermaid 图表' });
+ await expect(branchImage).toBeVisible();
+ const branchLabels = await branchImage.evaluate(async (image: HTMLImageElement) => {
+   const frame = document.createElement('iframe');
+   frame.hidden = true;
+   const loaded = new Promise<void>(resolve => frame.addEventListener('load', () => resolve(), { once: true }));
+   frame.src = image.currentSrc;
+   document.body.append(frame);
+   try {
+     await loaded;
+     const svg = frame.contentDocument!.documentElement as unknown as SVGSVGElement;
+     return [...svg.querySelectorAll<SVGGElement>('g.edgeLabel')].map(label => {
+       const inner = label.querySelector('g.label')!;
+       const edge = svg.querySelector<SVGPathElement>(`path.flowchart-link[data-id="${inner.getAttribute('data-id')}"]`)!;
+       const bounds = label.getBBox();
+       const { e: x, f: y } = label.transform.baseVal.consolidate()!.matrix;
+       const points = Array.from({ length: 101 }, (_, i) => edge.getPointAtLength(edge.getTotalLength() * i / 100));
+       const line = points.reduce((closest, point) => Math.abs(point.x - x) < Math.abs(closest.x - x) ? point : closest);
+       const view = svg.viewBox.baseVal;
+       return { text: label.textContent, gap: y + bounds.y - line.y, visible: y + bounds.y + bounds.height < view.y + view.height };
+     });
+   } finally {
+     frame.remove();
+   }
+ });
+ expect(branchLabels.map(label => label.text)).toEqual(['包含', '对应证券', '由其发行', '直接会计并表母公司', '由其担保']);
+ for (const label of branchLabels) {
+   expect(label.gap, label.text ?? '').toBeGreaterThanOrEqual(3);
+   expect(label.visible).toBe(true);
+ }
  const sequenceImage = page.locator('#sequence').getByRole('img', { name: 'Mermaid 图表' });
  await expect(sequenceImage).toBeVisible();
  const sequenceSelectors = ['rect.actor', '.messageLine0'];
