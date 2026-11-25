@@ -346,7 +346,6 @@ function migrateLegacySchema(): void {
   addColumn('sessions', 'cli_type', "TEXT DEFAULT 'claude'");
   addColumn('sessions', 'codex_session_id', 'TEXT');
   addColumn('sessions', 'created_by_user_id', 'TEXT REFERENCES users(id)');
-  addColumn('sessions', 'parent_session_id', 'TEXT');
   addColumn('sessions', 'mode', "TEXT DEFAULT 'session'");
   addColumn('users', 'max_tabs', 'INTEGER NOT NULL DEFAULT 10');
   addColumn('users', 'can_create_projects', 'INTEGER NOT NULL DEFAULT 0');
@@ -477,6 +476,7 @@ function runMigrations(): void {
 
   const migrate = db.transaction(() => {
     createCurrentSchema();
+    addColumn('sessions', 'parent_session_id', 'TEXT');
     addColumn('auth_sessions', 'login_ip', 'TEXT');
     addColumn('auth_sessions', 'last_ip', 'TEXT');
     addColumn('auth_sessions', 'user_agent', 'TEXT');
@@ -569,7 +569,9 @@ export function initDb(): void {
   try {
     const currentVersion = db.pragma('user_version', { simple: true }) as number;
     const needsSchemaRepair = currentVersion === SCHEMA_VERSION
-      && (!tableColumns('users').has('can_create_projects') || needsAgentIdentityRepair());
+      && (!tableColumns('users').has('can_create_projects')
+        || !tableColumns('sessions').has('parent_session_id')
+        || needsAgentIdentityRepair());
     if (databaseExisted && (currentVersion < SCHEMA_VERSION || needsSchemaRepair)) {
       const backupPath = backupBeforeMigration();
       console.log(`📦 Database backup created before migration: ${backupPath}`);

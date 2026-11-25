@@ -12,6 +12,23 @@ let cleanup: (() => void) | undefined;
 afterEach(() => cleanup?.());
 
 describe('database schema and durable session identity', () => {
+  it('adds tab lineage when opening an existing v30 database and preserves it on restart', () => {
+    const fixture = createTestDatabase();
+    cleanup = fixture.cleanup;
+    getDb().exec(`
+      INSERT INTO sessions(id,task) VALUES ('parent','Keep parent'), ('child','Keep child');
+      ALTER TABLE sessions DROP COLUMN parent_session_id;
+    `);
+    closeDb();
+    initDb();
+    expect(getDb().prepare("SELECT task,parent_session_id FROM sessions WHERE id='child'").get())
+      .toEqual({ task: 'Keep child', parent_session_id: null });
+    getDb().exec("UPDATE sessions SET parent_session_id='parent' WHERE id='child'");
+    closeDb();
+    initDb();
+    expect(getDb().prepare("SELECT parent_session_id FROM sessions WHERE id='child'").get())
+      .toEqual({ parent_session_id: 'parent' });
+  });
   it('adds durable manual notification dismissal to v28 without changing existing notices',()=>{
     const fixture=createTestDatabase();cleanup=fixture.cleanup;
     const user=createUser({username:'dismiss-migration',password:'password1'});
