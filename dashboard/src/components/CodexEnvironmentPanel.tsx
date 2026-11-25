@@ -6,8 +6,8 @@ export function EnvironmentDiagnostic({message}:{message:string}) {
  const [copyState,setCopyState]=useState('');
  useEffect(()=>setCopyState(''),[message]);
  async function copy(){try{await copyConversationText(message);setCopyState('已复制');}catch{setCopyState('复制失败，请手动选择文本复制');}}
- return <><span style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{message}</span>{message.includes('\n')&&<span className="inline-flex items-center gap-2"><button type="button" onClick={()=>void copy()}>复制诊断与命令</button>{copyState&&<span role="status">{copyState}</span>}</span>}</>;
+ return <><span style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{message}</span>{message.includes('\n')&&<span className="mt-2 flex flex-wrap items-center gap-2"><button type="button" className="conversation-action-button conversation-action-button--compact" onClick={()=>void copy()}>复制诊断与命令</button>{copyState&&<span role="status">{copyState}</span>}</span>}</>;
 }
 export function EnvironmentChecks({checks}:{checks:EnvironmentCheck[]}) {
- return <ul aria-label="环境预检结果" className="mt-2 space-y-1 text-sm">{checks.map((check,i)=><li key={i} role={check.ok?'status':'alert'} style={{color:check.ok?'var(--text-secondary)':'var(--danger, #dc2626)'}}>{check.ok?'✓':'✗'} {labels[check.stage]||check.stage}：<EnvironmentDiagnostic message={check.message}/></li>)}</ul>;
+ return <ul aria-label="环境预检结果" className="space-y-1">{checks.map((check,i)=><li key={i} role={check.ok?'status':'alert'} style={{color:check.ok?'var(--text-secondary)':'var(--error)'}}>{check.ok?'✓':'✗'} {labels[check.stage]||check.stage}：<EnvironmentDiagnostic message={check.message}/></li>)}</ul>;
 }

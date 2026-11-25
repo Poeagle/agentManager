@@ -42,10 +42,10 @@ export function ConversationPromptEnhancer({sessionId,active,canEdit,value,onApp
     {preview.rounds!==undefined&&<p className="mt-2 text-xs">已参考最近 {preview.rounds} 轮对话</p>}
     {preview.error&&<p role="alert" className="session-chat-error mt-3">{preview.error}</p>}
     {changed&&<p role="status" className="mt-3 text-sm">输入已变化，请关闭后重新优化，当前草稿已保留。</p>}
-    <footer className="mt-4 flex justify-end gap-3 text-sm">
-      <button type="button" onClick={close}>取消</button>
-      <button type="button" disabled={!preview.result.trim()||preview.loading} onClick={()=>void copyConversationText(preview.result).then(()=>setPreview(current=>current===preview?{...preview,copied:true}:current)).catch(()=>setPreview(current=>current===preview?{...preview,error:'复制失败，请手动选择结果复制。'}:current))}>{preview.copied?'已复制':'复制优化结果'}</button>
-      <button type="button" className="rounded px-3 py-2 text-white disabled:opacity-40" style={{background:'var(--accent)'}} disabled={!canEdit||changed||!preview.result.trim()||preview.loading} onClick={()=>{current.current.onApply(preview.result);close();}}>应用到输入框</button>
+    <footer className="conversation-dialog-actions">
+      <button type="button" className="conversation-action-button" onClick={close}>取消</button>
+      <button type="button" className="conversation-action-button" disabled={!preview.result.trim()||preview.loading} onClick={()=>void copyConversationText(preview.result).then(()=>setPreview(current=>current===preview?{...preview,copied:true}:current)).catch(()=>setPreview(current=>current===preview?{...preview,error:'复制失败，请手动选择结果复制。'}:current))}>{preview.copied?'已复制':'复制优化结果'}</button>
+      <button type="button" className="conversation-action-button conversation-action-button--primary" disabled={!canEdit||changed||!preview.result.trim()||preview.loading} onClick={()=>{current.current.onApply(preview.result);close();}}>应用到输入框</button>
     </footer>
   </Dialog>;
 }

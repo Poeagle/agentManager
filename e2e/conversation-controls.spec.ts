@@ -1,9 +1,37 @@
-import {test,expect} from '@playwright/test';
+import {test,expect,type Locator} from '@playwright/test';
 import {createServer} from 'http';
 import {createRequire} from 'module';
 import {appendFileSync,mkdirSync,writeFileSync} from 'fs';
 import {join} from 'path';
 const require=createRequire(import.meta.url),{WebSocketServer}=require('../server/node_modules/ws'),Database=require('../server/node_modules/better-sqlite3');
+const themes = ['light', 'midnight', 'slate', 'nord', 'dracula', 'solarized'];
+
+async function expectReadableAction(button: Locator, fontSize: number, height: number) {
+ const style = await button.evaluate(element => {
+  const css = getComputedStyle(element);
+  const pixel = document.createElement('canvas').getContext('2d', { willReadFrequently: true })!;
+  const color = (value: string) => {
+   pixel.clearRect(0, 0, 1, 1);
+   pixel.fillStyle = value;
+   pixel.fillRect(0, 0, 1, 1);
+   return Array.from(pixel.getImageData(0, 0, 1, 1).data);
+  };
+  const luminance = (rgb: number[]) => rgb.slice(0, 3).reduce((total, channel, index) => {
+   const value = channel / 255;
+   return total + [0.2126, 0.7152, 0.0722][index] * (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+  }, 0);
+  const foreground = color(css.color);
+  const background = color(css.backgroundColor);
+  const values = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+  return { foreground, background, font: parseFloat(css.fontSize), height: element.getBoundingClientRect().height, contrast: (values[0] + 0.05) / (values[1] + 0.05) };
+ });
+ expect.soft(style.font, 'action font size').toBeGreaterThanOrEqual(fontSize);
+ expect.soft(style.height, 'action height').toBeGreaterThanOrEqual(height);
+ expect.soft(style.background[3], 'action has a visible fill').toBe(255);
+ expect.soft(style.contrast, 'action text contrast').toBeGreaterThanOrEqual(4.5);
+ return style;
+}
+
 test('model controls use native capabilities and a docked file stays readable while feedback is sent',async({page},testInfo)=>{
  const root=join(process.cwd(),'.test-data/e2e'),native='019ff001-1212-7212-8212-121212121212',path=join(root,'conversation-controls');mkdirSync(path,{recursive:true});const directory=join(root,'home/.codex/sessions');mkdirSync(directory,{recursive:true});const log=join(directory,`rollout-${native}.jsonl`);
  const record=(type:string,payload:unknown)=>JSON.stringify({timestamp:new Date().toISOString(),type,payload})+'\n';
@@ -33,9 +61,47 @@ test('model controls use native capabilities and a docked file stays readable wh
   const {project}=await(await page.request.post('/api/projects',{data:{name:'会话控制与侧边预览',path}})).json();const {session}=await(await page.request.post('/api/sessions',{data:{project_id:project.id,project_path:path,mode:'terminal'}})).json();sessionId=session.id;
   const db=new Database(join(root,'agentmanager.db'));try{db.prepare('UPDATE sessions SET cli_type=?,codex_session_id=? WHERE id=?').run('codex',native,session.id);}finally{db.close();}
   await page.request.put('/api/settings',{data:{settings:{statusline_prompted:'true',app_theme:'light'}}});await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:`project-${project.id}`}}});await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'控制验证'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
+  await page.route(`**/api/sessions/${session.id}/environments`, route => route.fulfill({ json: {
+   current: 'native', environments: [
+    { id: 'native', name: '当前账号', kind: 'native', enabled: true, can_control: true },
+    { id: 'account:review', name: 'Review Account', kind: 'account', enabled: true, can_control: true },
+   ],
+  } }));
+  await page.route(`**/api/sessions/${session.id}/environments/*/preflight`, route => route.fulfill({ json: {
+   ok: true, checks: [{ stage: 'codex_authentication', ok: true, message: '已登录' }],
+   models: [{ model: 'model-a', name: 'Model A', efforts: [{ value: 'high' }], defaultEffort: 'high' }],
+  } }));
   await page.goto('/');const modelSelect=page.getByRole('combobox',{name:'选择模型'}),strength=page.getByRole('combobox',{name:'选择推理强度'}),input=page.getByRole('textbox',{name:'发送给当前 Agent 的消息'});await expect(modelSelect).toHaveValue(modelKey('model-a'));await expect(page.getByText('Context 40K | 30%',{exact:true})).toBeVisible();await expect(page.getByLabel('Weekly remaining 75%')).toHaveCount(0);
   await page.getByRole('button',{name:'开启 Fast 模式'}).click();await expect(page.getByRole('button',{name:'关闭 Fast 模式'})).toHaveAttribute('aria-pressed','true');expect(tier).toBe('priority');
   await page.getByRole('button',{name:'关闭 Fast 模式'}).click();await expect(page.getByRole('button',{name:'开启 Fast 模式'})).toHaveAttribute('aria-pressed','false');expect(tier).toBe('default');expect(inputs).toHaveLength(0);
+  await page.getByRole('combobox', { name: '选择 Codex 账号环境' }).selectOption('account:review');
+  const switchDialog = page.getByRole('dialog', { name: '保留上下文切换 Codex 环境' });
+  const preflight = switchDialog.getByRole('button', { name: '预检连接、登录、模型与项目权限' });
+  const cancelSwitch = switchDialog.getByRole('button', { name: '取消', exact: true });
+  const confirmSwitch = switchDialog.getByRole('button', { name: '复制历史并切换' });
+  await expect(confirmSwitch).toBeDisabled();
+  await expectReadableAction(confirmSwitch, 13, 32);
+  await expect.soft(preflight).toBeFocused({ timeout: 1000 });
+  await preflight.click();
+  await expect(confirmSwitch).toBeEnabled();
+  await page.setViewportSize({ width: 360, height: 740 });
+  for (const theme of themes) {
+   await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+   const preflightStyle = await expectReadableAction(preflight, 13, 32);
+   const cancelStyle = await expectReadableAction(cancelSwitch, 13, 32);
+   const confirmStyle = await expectReadableAction(confirmSwitch, 13, 32);
+   expect.soft(preflightStyle.foreground[2]).toBeGreaterThan(preflightStyle.foreground[0]);
+   expect.soft(confirmStyle.background).not.toEqual(cancelStyle.background);
+  }
+  expect(await switchDialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  const cancelBounds = (await cancelSwitch.boundingBox())!;
+  const confirmBounds = (await confirmSwitch.boundingBox())!;
+  expect.soft(cancelBounds.y).toBe(confirmBounds.y);
+  expect.soft(confirmBounds.x - (cancelBounds.x + cancelBounds.width)).toBeGreaterThanOrEqual(8);
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+  await cancelSwitch.click();
+  await expect(switchDialog).toHaveCount(0);
+  await page.setViewportSize({ width: 1280, height: 720 });
   const settings=(await (await page.request.get('/api/settings')).json()).settings;
   const warningPolicy={enabled:true,conditions:{operator:'and',conditions:[{type:'context_percent',value:30}]}};
   expect((await page.request.put('/api/settings',{data:{settings:{conversation_send_guard:JSON.stringify(warningPolicy)}}})).ok()).toBe(true);
@@ -72,7 +138,21 @@ test('model controls use native capabilities and a docked file stays readable wh
   await page.getByRole('button',{name:'压缩',exact:true}).click();await expect.poll(()=>methods.includes('thread/compact/start')).toBe(true);expect(inputs).toHaveLength(0);
   await expect(page.getByText('Compacting context',{exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'压缩中…',exact:true})).toBeDisabled();await expect(page.getByText('已开始压缩，进度会在当前会话中显示。',{exact:true})).toHaveCount(0);await page.screenshot({path:testInfo.outputPath('compaction-running.png')});
   await input.fill('排队消息一');await page.getByRole('button',{name:'发送消息',exact:true}).click();await expect(input).toHaveText('');await input.fill('排队消息二');await page.getByRole('button',{name:'发送消息',exact:true}).click();await expect(page.getByText('排队中',{exact:true})).toHaveCount(2);expect(inputs).toHaveLength(0);expect(queued.map(q=>q.input[0].text)).toEqual(['排队消息一','排队消息二']);
-  await input.fill('撤回这条消息');await page.getByRole('button',{name:'发送消息',exact:true}).click();await expect(page.getByText('排队中',{exact:true})).toHaveCount(3);await page.locator('article').filter({hasText:'撤回这条消息'}).getByRole('button',{name:'取消排队',exact:true}).click();await expect(page.getByText('撤回这条消息',{exact:true})).toHaveCount(0);expect(queued.map(q=>q.input[0].text)).toEqual(['排队消息一','排队消息二']);
+  await input.fill('撤回这条消息');await page.getByRole('button',{name:'发送消息',exact:true}).click();await expect(page.getByText('排队中',{exact:true})).toHaveCount(3);
+  const queuedMessage = page.locator('article').filter({ hasText: '撤回这条消息' });
+  const cancelQueue = queuedMessage.getByRole('button', { name: '取消排队', exact: true });
+  await page.setViewportSize({ width: 360, height: 740 });
+  for (const theme of themes) {
+   await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+   const style = await expectReadableAction(cancelQueue, 12, 26);
+   expect.soft(style.foreground[0]).toBeGreaterThan(style.foreground[2]);
+  }
+  const actionBounds = (await cancelQueue.boundingBox())!;
+  const statusBounds = (await queuedMessage.getByText('排队中', { exact: true }).boundingBox())!;
+  expect.soft(Math.abs(actionBounds.y + actionBounds.height / 2 - statusBounds.y - statusBounds.height / 2)).toBeLessThan(2);
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await cancelQueue.click();await expect(page.getByText('撤回这条消息',{exact:true})).toHaveCount(0);expect(queued.map(q=>q.input[0].text)).toEqual(['排队消息一','排队消息二']);
   await page.reload();await expect(page.getByText('排队中',{exact:true})).toHaveCount(2);await expect(page.getByText('Compacting context',{exact:true})).toBeVisible();await page.screenshot({path:testInfo.outputPath('messages-queued-during-compaction.png')});compacting=false;
   const compactUsage={total_tokens:2400,input_tokens:2000,cached_input_tokens:1900,output_tokens:400,reasoning_output_tokens:200};
   appendFileSync(log,record('compacted',{message:'COMPACTION_PRIVATE_SUMMARY'})+

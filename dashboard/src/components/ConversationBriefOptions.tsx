@@ -27,6 +27,10 @@ export function BriefOptions({sessionId,onCancel,onConfirm}:{sessionId:string;on
   </select></label>
   {environmentId&&loading&&<p role="status">正在检查目标账号…</p>}
   {environmentId&&target?.id===environmentId&&(target.failed||target.result&&!target.result.ok)&&<p role="alert">目标账号不可用，请检查连接和权限。</p>}
-  <footer className="mt-4 flex justify-end gap-3"><button type="button" onClick={onCancel}>取消</button><button type="button" disabled={!validTarget||loading} onClick={()=>onConfirm({...(environmentId?{environmentId}:{}),...(selected?{preference:{model:selected.model,effort:selected.defaultEffort,...selected.provider?{provider:selected.provider}:{}}}:{})})}>开始简要压缩</button></footer>
+  <footer className="conversation-dialog-actions">
+   <button type="button" className="conversation-action-button" onClick={onCancel}>取消</button>
+   <button type="button" className="conversation-action-button conversation-action-button--primary conversation-action-button--danger"
+    disabled={!validTarget||loading} onClick={()=>onConfirm({...(environmentId?{environmentId}:{}),...(selected?{preference:{model:selected.model,effort:selected.defaultEffort,...selected.provider?{provider:selected.provider}:{}}}:{})})}>开始简要压缩</button>
+  </footer>
  </Dialog>;
 }

@@ -87,7 +87,7 @@
 .session-chat-quote-action:focus-visible,.session-chat-quote button:focus-visible {outline:2px solid var(--accent);outline-offset:1px;}
 .session-chat-message-meta {display:flex;align-items:center;gap:10px;min-height:23px;margin-top:5px;color:var(--text-muted);font-size:10px;opacity:1;flex-wrap:wrap;}
 .session-chat-message.user .session-chat-message-meta {justify-content:flex-end;flex:0 0 auto;gap:5px;min-height:16px;line-height:16px;margin:0 0 0 auto;padding:0;font-size:9px;}
-.session-chat-message.user .session-chat-message-meta button {padding:2px;}
+.session-chat-message.user .session-chat-message-meta button:not(.conversation-action-button) {padding:2px;}
 .session-chat-message-meta time {white-space:nowrap;}
 .session-chat-metadata-row {margin-bottom:5px;}
 .session-chat-metadata-row .session-chat-message-meta {margin:0;min-height:22px;line-height:20px;font-size:11px;font-weight:400;gap:4px 12px;font-family:var(--app-font-family);font-variant-numeric:tabular-nums;color:var(--text-secondary);}
@@ -96,8 +96,72 @@
 .session-chat-metadata-row .session-chat-message-meta>.session-chat-quote-action+button {margin-left:0;}
 .session-chat-final-heading {align-items:flex-start;flex-wrap:wrap;gap:4px 8px;}
 .session-chat-final-heading .session-chat-final-meta {flex:1 1 0;min-width:0;margin:0;font-weight:400;}
-.session-chat-message-meta button {display:flex;align-items:center;padding:4px;border-radius:4px;}
-.session-chat-message-meta button:hover {background:var(--bg-tertiary);color:var(--text-primary);}
+.session-chat-message-meta button:not(.conversation-action-button) {display:flex;align-items:center;padding:4px;border-radius:4px;}
+.session-chat-message-meta button:not(.conversation-action-button):hover {background:var(--bg-tertiary);color:var(--text-primary);}
+.session-chat-message.user .session-chat-message-meta:has(.conversation-action-button) {gap:6px 8px;}
+.session-chat-message-meta:has(.conversation-action-button) .session-chat-input-delivery {font-size:11px;}
+
+.conversation-action-button {
+  --action-color: var(--accent);
+  --action-fill: 6%;
+  display: inline-flex;
+  min-height: 32px;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid color-mix(in srgb, var(--action-color) 40%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--action-color) var(--action-fill), var(--bg-primary));
+  color: color-mix(in srgb, var(--action-color) 50%, var(--text-primary));
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.conversation-action-button svg {flex-shrink:0;}
+.conversation-action-button--primary {--action-fill:15%;border-color:var(--action-color);}
+.conversation-action-button--danger {--action-color:var(--error);}
+.conversation-action-button--compact {min-height:26px;padding:3px 8px;font-size:12px;line-height:16px;}
+.conversation-action-button:hover:not(:disabled) {--action-fill:12%;border-color:var(--action-color);}
+.conversation-action-button--primary:hover:not(:disabled) {--action-fill:19%;}
+.conversation-action-button:focus-visible,.conversation-environment-fields select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.conversation-action-button:disabled {
+  background: var(--bg-secondary);
+  border-color: var(--border);
+  color: color-mix(in srgb, var(--text-secondary) 76%, var(--text-primary));
+  cursor: not-allowed;
+}
+.conversation-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.conversation-environment-form {display:grid;gap:10px;font-size:13px;line-height:1.6;overflow-wrap:anywhere;}
+.conversation-environment-form > button {justify-self:start;}
+.conversation-environment-form > .conversation-dialog-actions {margin-top:2px;}
+.conversation-environment-form > [role="alert"] {color:var(--error);}
+.conversation-environment-fields {display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px 12px;}
+.conversation-environment-fields select {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+.conversation-environment-fields select:disabled {cursor:not-allowed;}
 .session-chat-caret {display:inline-block;width:7px;height:16px;margin-left:3px;border-radius:2px;background:var(--accent);vertical-align:text-bottom;animation:chat-pulse 1.1s ease-in-out infinite;}
 .session-chat-thinking {display:flex;align-items:center;gap:9px;color:var(--text-secondary);font-size:13px;padding:0 0 24px;}
 .session-chat-thinking {align-items:flex-start;line-height:20px;}

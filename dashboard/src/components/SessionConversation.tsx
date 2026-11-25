@@ -354,7 +354,9 @@ const Bubble = memo(function Bubble({
         {message.queued && onCancelQueued && (
               <button
                 type="button"
+                className="conversation-action-button conversation-action-button--compact conversation-action-button--danger"
                 disabled={cancelling}
+                aria-busy={cancelling}
                 aria-label="取消排队"
                 title="从原生队列撤回，尚未执行的消息将不会发送"
                 onClick={() => {
