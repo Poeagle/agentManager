@@ -3,7 +3,7 @@ import {appendFileSync,mkdirSync,writeFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {join} from 'node:path';
 
-test('conversation shares its tab row, resizes, previews and navigates rich streamed content',async({page,context},testInfo)=>{
+test('conversation controls share the project toolbar and rich content remains navigable',async({page,context},testInfo)=>{
   const authStatus=await(await page.request.get('/api/auth/status')).json();
   expect((await page.request.post(authStatus.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBeTruthy();
   const root=join(process.cwd(),'.test-data/e2e'),projectPath=join(root,'reading-project');mkdirSync(projectPath,{recursive:true});writeFileSync(join(projectPath,'README.md'),'# 本地文件已打开\n阅读工具测试。\n');
@@ -29,8 +29,8 @@ test('conversation shares its tab row, resizes, previews and navigates rich stre
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${project.id}`)}`,{data:{value:{terminalInstances:[{id:session.id,label:'阅读测试'}],activeTerminalId:session.id,explorerInstances:[],hiddenSessionIds:[]}}});
   await page.goto('/');
   const chat=page.getByRole('region',{name:'会话对话'}).filter({visible:true});await expect(chat.getByRole('heading',{name:'第 4 部分',exact:true})).toBeVisible();
-  const tabs=page.getByLabel('会话标签',{exact:true});const modes=page.getByRole('group',{name:'会话显示方式'});
-  const tabBox=await tabs.boundingBox(),modeBox=await modes.boundingBox();expect(Math.abs(tabBox!.y+tabBox!.height/2-modeBox!.y-modeBox!.height/2)).toBeLessThan(2);await expect(page.locator('.session-pane-toolbar')).toHaveCount(0);
+  const toolbar=page.getByRole('toolbar',{name:'项目工具栏'});const modes=page.getByRole('group',{name:'会话显示方式'});
+  const toolbarBox=await toolbar.boundingBox(),modeBox=await modes.boundingBox();expect(Math.abs(toolbarBox!.y+toolbarBox!.height/2-modeBox!.y-modeBox!.height/2)).toBeLessThan(2);await expect(page.locator('.session-pane-toolbar')).toHaveCount(0);
   const widthHandle=chat.getByRole('separator',{name:'右侧阅读宽度'});const originalWidth=Number(await widthHandle.getAttribute('aria-valuenow'));const box=await widthHandle.boundingBox();
   await page.mouse.move(box!.x+box!.width/2,box!.y+box!.height/2);await page.mouse.down();await page.mouse.move(box!.x+box!.width/2-90,box!.y+box!.height/2,{steps:12});await page.mouse.up();
   const smaller=Number(await widthHandle.getAttribute('aria-valuenow'));expect(smaller).toBeLessThan(originalWidth-100);

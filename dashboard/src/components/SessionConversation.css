@@ -241,8 +241,6 @@
 .conversation-code .tok-number,.conversation-code .tok-bool,.conversation-code .tok-atom {color:color-mix(in srgb,#bd6b21 85%,var(--text-primary));}
 .conversation-code .tok-typeName,.conversation-code .tok-className,.conversation-code .tok-propertyName {color:color-mix(in srgb,#31849f 85%,var(--text-primary));}
 .conversation-code .tok-definition {color:var(--accent);}
-.workspace-subtab-row {display:flex;align-items:center;flex-shrink:0;height:28px;min-height:28px;background:var(--bg-secondary);border-bottom:1px solid var(--border);}
-.workspace-subtab-row>.workspace-tab-strip {flex:1;min-width:0;border-bottom:0!important;}
 .session-pane-controls-slot {display:flex;align-items:center;flex-shrink:0;padding:0 5px;}
 .session-pane-controls-slot:empty {display:none;}
 .session-pane-inline-controls {position:absolute;right:5px;top:2px;z-index:9;}

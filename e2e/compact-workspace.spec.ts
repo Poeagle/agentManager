@@ -21,7 +21,7 @@ test('compact workspace preserves readable labels, activity details and keyboard
   const Database = require('../server/node_modules/better-sqlite3');
   const db = new Database(join(process.cwd(),'.test-data','e2e','agentmanager.db'));
   const labels = ['jira','UI','数据运维','元数据问题修复','设计文档','Agent','日志','英文文档',
-    ...Array.from({ length: 16 }, (_, index) => `并行任务 ${index + 1}`)];
+    ...Array.from({ length: 28 }, (_, index) => `并行任务 ${index + 1}`)];
   const now = new Date().toISOString();
   // Native CLI processes are unnecessary for checking saved workspace navigation.
   try {
@@ -50,9 +50,17 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await expect(sessions.getByRole('button',{name:'jira',exact:true})).toBeVisible();
   expect((await header.boundingBox())!.height).toBe(32);
   expect((await projectTabs.boundingBox())!.height).toBe(28);
-  expect((await sessions.boundingBox())!.height).toBe(28);
-  expect((await page.getByLabel('项目工具栏',{exact:true}).filter({visible:true}).boundingBox())!.width).toBe(36);
-  expect((await sessions.boundingBox())!.y + (await sessions.boundingBox())!.height).toBeLessThanOrEqual(90);
+  const toolbar = page.getByRole('toolbar', { name: '项目工具栏' });
+  const toolBounds = await Promise.all((await toolbar.getByRole('button').all()).map(button => button.boundingBox()));
+  expect(toolBounds).toHaveLength(6);
+  expect(toolBounds.every(box => box?.y === toolBounds[0]?.y)).toBe(true);
+  expect(toolBounds.at(-1)!.x).toBeGreaterThan(toolBounds[0]!.x);
+  const sessionRows = sessions.locator('.workspace-tab');
+  const firstRow = (await sessionRows.nth(0).boundingBox())!;
+  const secondRow = (await sessionRows.nth(1).boundingBox())!;
+  expect(firstRow.x).toBe(secondRow.x);
+  expect(secondRow.y).toBeGreaterThan(firstRow.y);
+  expect(await sessions.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
   expect(await sessions.getByText('jira',{exact:true}).evaluate(element=>getComputedStyle(element.parentElement!).fontSize)).toBe('12px');
   expect(await sessions.locator('.workspace-tab').first().locator('svg').count()).toBe(2); // Agent + close, with a separate status dot.
   await expect(sessions.getByText('jira',{exact:true})).toHaveAttribute('title',/最后活跃：/);
@@ -101,34 +109,43 @@ test('compact workspace preserves readable labels, activity details and keyboard
   }
   await expect(secondProject).toHaveCount(0);
   await expect(sessions.getByRole('button', { name: '界面设计', exact: true })).toBeVisible();
+  const sidebar = page.getByRole('complementary', { name: '会话列表' });
+  const desktopSearch = sidebar.getByRole('searchbox', { name: '搜索会话' });
+  await desktopSearch.fill('并行任务 28');
+  await expect(sessionRows).toHaveCount(1);
+  await desktopSearch.press('Enter');
+  await expect(desktopSearch).toHaveValue('');
+  const destination = sessions.getByRole('button', { name: '并行任务 28', exact: true });
+  await expect(destination.locator('..')).toHaveAttribute('data-active', 'true');
+  await expect(destination).toBeInViewport();
+  await page.getByRole('button', { name: '收起会话列表' }).click();
+  await expect(sidebar).toBeHidden();
+  await page.getByRole('button', { name: '展开会话列表' }).click();
+  await expect(destination).toBeInViewport();
   await page.mouse.move(1200,300);
   await page.screenshot({path:testInfo.outputPath('compact-workspace-desktop.png')});
   await page.setViewportSize({width:390,height:844});
-  await expect(sessions.getByRole('button',{name:'jira',exact:true})).toBeVisible();
+  await expect(sidebar).toBeHidden();
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
-  expect(await sessions.evaluate(element=>element.scrollWidth>element.clientWidth)).toBe(true);
   await page.screenshot({path:testInfo.outputPath('compact-workspace-mobile.png')});
 
   const switcher = page.getByRole('button', { name: '切换会话', exact: true });
   const createSession = page.getByRole('button', { name: '新建会话', exact: true });
   await expect(switcher).toBeInViewport();
   await expect(createSession).toBeInViewport();
-  await expect(sessions.getByRole('button', { name: '并行任务 16', exact: true })).not.toBeInViewport();
   await switcher.click();
   const dialog = page.getByRole('dialog', { name: '切换会话', exact: true });
   const search = dialog.getByRole('searchbox', { name: '搜索会话' });
   await expect(search).toBeFocused();
-  await expect(dialog.getByRole('button', { name: '界面设计', exact: true })).toHaveAttribute('aria-current', 'true');
+  await expect(dialog.getByRole('button', { name: '并行任务 28', exact: true })).toHaveAttribute('aria-current', 'true');
   await search.fill('并行任务 16');
   await search.press('Enter');
   await expect(dialog).toHaveCount(0);
-  const destination = sessions.getByRole('button', { name: '并行任务 16', exact: true });
-  await expect(destination.locator('..')).toHaveAttribute('data-active', 'true');
-  await expect(destination).toBeInViewport();
   await expect(switcher).toBeInViewport();
   await expect(createSession).toBeInViewport();
 
   await switcher.click();
+  await expect(dialog.getByRole('button', { name: '并行任务 16', exact: true })).toHaveAttribute('aria-current', 'true');
   await search.fill('missing-tab');
   await expect(dialog.getByText('没有匹配的会话')).toBeVisible();
   await search.press('Escape');

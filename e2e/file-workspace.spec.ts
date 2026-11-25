@@ -38,7 +38,7 @@ test('file tree stays beside sessions, files have their own row, and document li
   const editor=page.locator('.cm-content').filter({visible:true});await expect(editor).toHaveText('Original draft file');
   await expect(terminal).toHaveCount(0);await editor.fill('Keep this unsaved edit');
   const fileTabs=page.getByLabel('打开的文件标签',{exact:true}),sessionTabs=page.getByLabel('会话标签',{exact:true});
-  const fb=await fileTabs.boundingBox(),sb=await sessionTabs.boundingBox();expect(fb!.y).toBeGreaterThanOrEqual(sb!.y+sb!.height-1);
+  const fb=await fileTabs.boundingBox(),sb=await sessionTabs.boundingBox();expect(fb!.x).toBeGreaterThanOrEqual(sb!.x+sb!.width);
   await sessionTabs.getByRole('button',{name:/工作终端/}).click();await expect(terminal).toHaveCount(1);await expect(terminal).toHaveAttribute('data-workspace-stable','original');await expect(tree).toBeVisible();
   await tree.getByRole('button',{name:'draft.txt',exact:true}).click({button:'right'});await expect(page.getByRole('menu')).toBeVisible();await page.keyboard.press('Escape');
   await treeToggle.click();await expect(tree).not.toBeVisible();await expect(fileTabs).not.toBeVisible();await expect(terminal).toHaveCount(1);
