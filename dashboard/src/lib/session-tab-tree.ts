@@ -31,7 +31,7 @@ export function sessionTabTree<T extends {tab: {id: string}}>(
         stack.push({ row: nested[index], depth: depth + 1 });
       }
     }
-    return rows;
+    return rows.map((row, index) => ({ ...row, hasChildren: (rows[index + 1]?.depth ?? -1) > row.depth }));
   }
   const branches = roots.map(branch);
   for (const row of sortedTabs) {

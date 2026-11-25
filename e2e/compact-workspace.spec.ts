@@ -249,7 +249,7 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await expect(switcher).toBeFocused();
 });
 
-test('keeps a created tab below its parent after refresh and visible when the parent closes', async ({ page }) => {
+test('toggles nested session tabs after refresh and keeps children visible when the parent closes', async ({ page }) => {
   const status = await (await page.request.get('/api/auth/status')).json();
   const login = await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },
@@ -297,9 +297,31 @@ test('keeps a created tab below its parent after refresh and visible when the pa
   expect((await child.boundingBox())!.x).toBeGreaterThan((await parent.boundingBox())!.x);
   expect((await grandchild.boundingBox())!.x).toBeGreaterThan((await child.boundingBox())!.x);
 
+  const parentToggle = parent.getByRole('button', { name: /子会话/ });
+  await expect(parentToggle).toHaveAttribute('aria-expanded', 'true');
+  await parentToggle.click();
+  await expect(parentToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(child).toHaveCount(0);
+  await expect(grandchild).toHaveCount(0);
+  await expect(nav.locator('[data-session-id="lineage-peer"]')).toBeVisible();
+
   await page.reload();
+  await expect(parentToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(child).toHaveCount(0);
+  await parentToggle.focus();
+  await page.keyboard.press('Enter');
   await expect(child).toBeVisible();
+  await expect(child.getByRole('button', { name: '验证子任务', exact: true })).toHaveAttribute('aria-current', 'true');
   expect((await child.boundingBox())!.x).toBeGreaterThan((await parent.boundingBox())!.x);
+
+  const childToggle = child.getByRole('button', { name: /子会话/ });
+  await childToggle.click();
+  await expect(child).toBeVisible();
+  await expect(grandchild).toHaveCount(0);
+  await childToggle.click();
+  await expect(grandchild).toBeVisible();
+
+  await parentToggle.click();
   await parent.getByRole('button', { name: 'Close session' }).click();
   await page.getByRole('button', { name: '停止并关闭', exact: true }).click();
   await expect(parent).toHaveCount(0);

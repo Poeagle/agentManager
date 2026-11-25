@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
-import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2, Loader2, List, PanelLeft, Search, CornerDownRight } from 'lucide-react';
+import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2, Loader2, List, PanelLeft, Search, CornerDownRight, ChevronRight } from 'lucide-react';
 import { Terminal } from './Terminal';
 import { SessionWorkspacePane } from './SessionWorkspacePane';
 import { SessionTabSwitcher } from './SessionTabSwitcher';
@@ -94,6 +94,7 @@ interface HarnessTabState {
 interface PersistedState {
   activeMode: ActiveMode;
   showAllSessions?: boolean;
+  collapsedSessionBranches?: string[];
   fileTreeOpen?: boolean;
   harnessOpen?: boolean;
   harnessTab?: HarnessTabState;
@@ -236,6 +237,9 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     return saved;
   });
   const [showAllSessions, setShowAllSessions] = useState(initialized?.showAllSessions === true);
+  const [collapsedSessionBranches, setCollapsedSessionBranches] = useState(() => new Set(
+    Array.isArray(initialized?.collapsedSessionBranches) ? initialized.collapsedSessionBranches : [],
+  ));
 
   // id → custom terminal-tab name: the cross-device-shareable slice of
   // terminalInstances. Seeded from the local cache, merged with server state on
@@ -798,6 +802,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     persistState(currentUserId, projectId, {
       activeMode,
       showAllSessions,
+      collapsedSessionBranches: [...collapsedSessionBranches],
       harnessOpen,
       harnessTab,
       fileTreeOpen,
@@ -807,7 +812,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       activeTerminalId,
       hiddenSessionIds: [...closedSessionIds.current],
     });
-  }, [currentUserId, projectId, activeMode, showAllSessions, harnessOpen, harnessTab, fileTreeOpen, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion]);
+  }, [currentUserId, projectId, activeMode, showAllSessions, collapsedSessionBranches, harnessOpen, harnessTab, fileTreeOpen, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion]);
 
   // ── Cross-device sync: the terminal tab list uses stable AgentManager
   // session IDs. Persisting it (plus hidden/active IDs) makes the tab-to-native
@@ -1142,6 +1147,8 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     }
     persistState(currentUserId, projectId, {
       activeMode,
+      showAllSessions,
+      collapsedSessionBranches: [...collapsedSessionBranches],
       harnessOpen,
       harnessTab,
       explorerInstances,
@@ -1281,11 +1288,10 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const tabBranches = useMemo(() => sessionTabTree(
     sortedWorkspaceTabs, id => allSessionLookup.get(id)?.parent_session_id,
   ), [sortedWorkspaceTabs, allSessionLookup]);
-  const previewTabs = tabBranches.flatMap((branch, index) =>
-    index < SESSION_PREVIEW_LIMIT || branch.some(({ tab }) => (active && tab.id === activeWorkspaceTab) || tab.id === editingTabId)
-      ? branch : [],
+  const previewBranches = tabBranches.filter((branch, index) =>
+    index < SESSION_PREVIEW_LIMIT || branch.some(({ tab }) => (active && tab.id === activeWorkspaceTab) || tab.id === editingTabId),
   );
-  const remainingSessions = workspaceTabs.length - previewTabs.length;
+  const remainingSessions = workspaceTabs.length - previewBranches.reduce((total, branch) => total + branch.length, 0);
   const visibleWorkspaceTabs = sessionFilter
     ? tabBranches.flatMap(branch => {
       const matching = new Set(branch.filter(({ tab }) =>
@@ -1299,7 +1305,14 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       }
       return branch.filter(({ tab }) => matching.has(tab.id));
     })
-    : nestedSessionNavigation && !showAllSessions ? previewTabs : tabBranches.flat();
+    : (nestedSessionNavigation && !showAllSessions ? previewBranches : tabBranches).flatMap(branch => {
+      let collapsedDepth = Infinity;
+      return branch.filter(({ tab, depth }) => {
+        if (depth > collapsedDepth) return false;
+        collapsedDepth = collapsedSessionBranches.has(tab.id) ? depth : Infinity;
+        return true;
+      });
+    });
   const { data: scheduledData } = useQuery({
     queryKey: ['scheduled-tasks', projectId],
     queryFn: () => api.scheduledTasks.list(projectId),
@@ -1676,11 +1689,14 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         />
       </form>}
       <nav ref={sessionTabList} aria-label="会话标签" className="workspace-session-list">
-        {visibleWorkspaceTabs.map(({ tab: inst, index, sortAt, depth }) => {
+        {visibleWorkspaceTabs.map(({ tab: inst, index, sortAt, depth, hasChildren }) => {
           const activityAt = workspaceActivity[index];
           const isHarness = inst.id === HARNESS_TAB.id;
           const isActive = (!nestedSessionNavigation || active) && inst.id === activeWorkspaceTab;
           const label = inst.customLabel?.trim() || inst.label;
+          const expanded = !collapsedSessionBranches.has(inst.id);
+          const toggleLabel = `${expanded ? '收起' : '展开'} ${label} 的子会话`;
+          const parentLabel = depth ? '由上级标签页创建' : '由其他标签页创建，上级当前未打开';
           const session = sessionLookup.get(inst.id) || allSessionLookup.get(inst.id);
           const account = session?.agent_account_label;
           // Status signal light — a leaf component subscribes to just this
@@ -1727,9 +1743,22 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                 outline: tabDropTargetId === inst.id ? '1px solid var(--accent)' : '1px solid transparent',
               }}
             >
-              {session?.parent_session_id && <span
+              {hasChildren && !sessionFilter ? (
+                <button
+                  type="button"
+                  className="workspace-session-disclosure"
+                  aria-expanded={expanded}
+                  aria-label={toggleLabel}
+                  title={session?.parent_session_id ? `${toggleLabel} · ${parentLabel}` : toggleLabel}
+                  onClick={() => setCollapsedSessionBranches(previous => {
+                    const next = new Set(previous);
+                    if (!next.delete(inst.id)) next.add(inst.id);
+                    return next;
+                  })}
+                ><ChevronRight size={13} aria-hidden="true" /></button>
+              ) : session?.parent_session_id && <span
                 className="workspace-tab-parent-link"
-                title={depth ? '由上级标签页创建' : '由其他标签页创建，上级当前未打开'}
+                title={parentLabel}
               ><CornerDownRight size={12} aria-hidden="true" /></span>}
               {sigSession && (
                 <span className="workspace-tab-signal">

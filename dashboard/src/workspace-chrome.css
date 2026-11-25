@@ -214,7 +214,7 @@
 .workspace-project-row { min-width: 0; height: 28px; gap: 4px; padding-left: 2px; }
 .workspace-project-row .workspace-tab-button { flex: 1; max-width: none; height: 100%; }
 .workspace-project-row .workspace-tab-close { top: 3px; }
-.workspace-project-disclosure {
+:is(.workspace-project-disclosure, .workspace-session-disclosure) {
   display: grid;
   flex: 0 0 20px;
   height: 24px;
@@ -222,8 +222,9 @@
   border-radius: 3px;
   color: var(--text-secondary);
 }
-.workspace-project-disclosure:hover { background: var(--bg-primary); }
-.workspace-project-disclosure[aria-expanded="true"] > svg { transform: rotate(90deg); }
+:is(.workspace-project-disclosure, .workspace-session-disclosure):hover { background: var(--bg-primary); }
+:is(.workspace-project-disclosure, .workspace-session-disclosure)[aria-expanded="true"] > svg { transform: rotate(90deg); }
+.workspace-session-disclosure { flex-basis: 16px; }
 .workspace-session-navigation-host {
   margin: 2px 0 4px 12px;
   padding-left: 6px;
