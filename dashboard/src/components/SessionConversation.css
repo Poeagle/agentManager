@@ -211,15 +211,17 @@
 .session-chat-input-tools>button {display:flex;width:30px;height:30px;align-items:center;justify-content:center;border-radius:50%;background:var(--accent);color:white;}
 .session-chat-input-tools>button:disabled {background:var(--bg-tertiary);color:var(--text-muted);opacity:1;cursor:default;}
 .session-chat-error {color:var(--error);font-size:12px;margin-bottom:7px;}
-.session-chat-error-notice {display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;padding:6px 10px;border:1px solid color-mix(in srgb,var(--error) 40%,var(--border));border-radius:8px;background:color-mix(in srgb,var(--error) 5%,var(--bg-primary));font-size:12px;}
+.session-chat-error-notice {display:flex;align-items:center;gap:8px;white-space:nowrap;padding:6px 10px;border:1px solid color-mix(in srgb,var(--error) 40%,var(--border));border-radius:8px;background:color-mix(in srgb,var(--error) 5%,var(--bg-primary));font-size:12px;}
 .session-chat-error-heading {display:contents;color:var(--error);}
-.session-chat-error-heading time {margin-left:auto;font-size:11px;color:var(--text-secondary);font-variant-numeric:tabular-nums;}
-.session-chat-error-original {flex:1 1 100px;min-width:0;font-family:ui-monospace,monospace;}
-.session-chat-error-original summary {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;}
-.session-chat-error-original p {max-height:160px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0 0;}
-.session-chat-error-notice>p:not(.session-chat-error-original) {margin:0;}
-.session-chat-error-actions {display:flex;flex-wrap:wrap;gap:4px 12px;margin-left:auto;}
-.session-chat-error-actions button {color:var(--accent);text-decoration:underline;text-underline-offset:3px;}
+.session-chat-error-heading time {font-size:11px;color:var(--text-secondary);font-variant-numeric:tabular-nums;}
+.session-chat-error-heading>svg {flex:none;}
+.session-chat-error-heading>strong,.session-chat-error-original,.session-chat-error-hint {min-width:0;overflow:hidden;text-overflow:ellipsis;}
+.session-chat-error-original {flex:1 1 auto;font-family:ui-monospace,monospace;}
+.session-chat-error-hint {flex:0 1 auto;color:var(--text-secondary);}
+.session-chat-error-actions {display:flex;flex:none;gap:4px;margin-left:auto;}
+.session-chat-error-actions button {display:flex;align-items:center;justify-content:center;min-width:24px;min-height:24px;border-radius:4px;color:var(--accent);}
+.session-chat-error-actions button:hover {background:var(--bg-tertiary);}
+@container(max-width:640px) {.session-chat-error-heading time,.session-chat-error-hint {display:none;}}
 .session-chat-error-notice[data-retrying="true"] {border-color:color-mix(in srgb,#b7791f 45%,var(--border));background:color-mix(in srgb,#b7791f 5%,var(--bg-primary));}
 .session-chat-error-notice[data-retrying="true"] .session-chat-error-heading {color:#b7791f;}
 .session-chat-error-notice[data-retry-ended="true"] {border-color:var(--border);background:var(--bg-secondary);}
@@ -565,12 +567,12 @@
 .session-chat-stop:disabled {opacity:.5;cursor:default;}
 .session-chat-stop:focus-visible,.session-chat-send-actions>button:focus-visible {outline:2px solid var(--accent);outline-offset:2px;}
 
-.session-chat-retry-status{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;font-size:13px}
-.session-chat-retry-status p{display:flex;align-items:center;gap:6px;margin:4px 0}
-.session-chat-retry-status button{border:1px solid currentColor;border-radius:5px;background:transparent;padding:3px 8px;color:inherit;font:inherit;cursor:pointer}
-.session-chat-retry-spinner{animation:session-chat-retry-spin 1s linear infinite}
+.session-chat-retry-status{display:flex;align-items:center;min-width:0;gap:6px;color:inherit}
+.session-chat-retry-status p{min-width:0;overflow:hidden;text-overflow:ellipsis;margin:0;font-weight:600}
+.session-chat-retry-status button{flex:none;border:1px solid currentColor;border-radius:5px;background:transparent;padding:3px 8px;color:inherit;font:inherit;cursor:pointer}
+.session-chat-retry-spinner{flex:none;animation:session-chat-retry-spin 1s linear infinite}
 @keyframes session-chat-retry-spin{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){.session-chat-retry-spinner{animation:none}}
+@media(prefers-reduced-motion:reduce){.session-chat-retry-spinner{flex:none;animation:none}}
 
 .session-chat-error-notice[data-recovered="true"]{border-color:color-mix(in srgb,#15803d 40%,var(--border));background:color-mix(in srgb,#15803d 4%,var(--bg-primary))}
 .session-chat-error-notice[data-recovered="true"] .session-chat-error-heading{color:#15803d}

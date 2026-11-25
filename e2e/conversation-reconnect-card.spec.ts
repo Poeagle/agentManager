@@ -25,10 +25,13 @@ test('successive native reconnect notices update one compact card and survive re
   for(let n=2;n<=5;n++){
    appendFileSync(file,row({type:'error',turn_id:'retry-turn',message:`Reconnecting... ${n}/5`,codex_error_info:'response_stream_disconnected',will_retry:true}));
    push({type:'snapshot',messages:Array.from({length:n-1},(_,i)=>message(i+2)),busy:true,stage:'waiting',turn_id:'retry-turn'});
-   const card=page.locator('.session-chat-error-notice');await expect(card).toHaveCount(1);await expect(card).toContainText(`Reconnecting... ${n}/5`);
+   const card=page.locator('.session-chat-error-notice');await expect(card).toHaveCount(1);await expect(card).toContainText(`重连 ${n}/5`);await expect(card.locator('details')).toHaveCount(0);
   }
   const card=page.locator('.session-chat-error-notice');expect((await card.boundingBox())!.height).toBeLessThan(70);
-  await page.reload();await expect(card).toHaveCount(1);await expect(card).toContainText('Reconnecting... 5/5');
-  await page.setViewportSize({width:390,height:844});expect((await card.boundingBox())!.height).toBeLessThan(100);await expect(card.getByRole('button',{name:'复制错误信息'})).toBeVisible();
+  await page.reload();await expect(card).toHaveCount(1);await expect(card).toContainText('重连 5/5');await expect(card.locator('details')).toHaveCount(0);
+  await page.setViewportSize({width:390,height:844});
+  expect((await card.boundingBox())!.height).toBeLessThan(42);
+  await expect(card.getByRole('button',{name:'复制错误信息'})).toBeVisible();
+  expect(await card.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
  }finally{await page.request.delete(`/api/sessions/${session.id}`);await page.request.delete(`/api/projects/${project.id}`);}
 });

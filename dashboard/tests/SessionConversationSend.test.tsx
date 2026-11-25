@@ -776,9 +776,9 @@ describe('conversation send transaction', () => {
     const retryState = { busy: true, stage: 'waiting', turn_id: turn, activities: [earlierTool] };
     const snapshot = (target: Socket, state: object) => act(() => target.emit({ type: 'snapshot', messages: [retry], ...state }));
     snapshot(socket, retryState);
-    expect(await screen.findByRole('alert')).toHaveTextContent('正在自动重试');
+    expect(await screen.findByRole('alert')).toHaveTextContent('正在重连 1/5');
     snapshot(socket, { ...retryState, stage: 'tools' });
-    expect(screen.getByRole('alert')).toHaveTextContent('正在自动重试');
+    expect(screen.getByRole('alert')).toHaveTextContent('正在重连 1/5');
 
     const resumedTool = {
       id: 'resumed-tool', label: 'Run command · resume check', status: 'running', turn_id: turn,
@@ -787,7 +787,7 @@ describe('conversation send transaction', () => {
     const resumed = { ...retryState, stage: 'tools', activities: [earlierTool, resumedTool] };
     act(() => socket.emit({ type: 'patch', upserts: [], deltas: [], state: resumed }));
     expect(await screen.findByText(resumedTool.label)).toBeVisible();
-    expect(screen.getByRole('alert')).toHaveTextContent('重试已结束');
+    expect(screen.getByRole('alert')).toHaveTextContent('重连 1/5 已结束');
 
     socket.readyState = 0;
     act(() => window.dispatchEvent(new Event('online')));
@@ -795,7 +795,7 @@ describe('conversation send transaction', () => {
     expect(replacement).not.toBe(socket);
     snapshot(replacement, resumed);
     expect(await screen.findByText(resumedTool.label)).toBeVisible();
-    expect(screen.getByRole('alert')).toHaveTextContent('重试已结束');
+    expect(screen.getByRole('alert')).toHaveTextContent('重连 1/5 已结束');
 
     act(() => replacement.emit({ type: 'snapshot', ...resumed, messages: [{ ...retry, error: { will_retry: false } }] }));
     expect(screen.getByRole('alert')).toHaveTextContent('本轮执行出错');

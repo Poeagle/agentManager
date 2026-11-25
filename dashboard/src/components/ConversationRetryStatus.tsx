@@ -13,11 +13,12 @@ export function ConversationRetryStatus({retry,onCancel}:{retry:ConversationRetr
   const pending=['waiting','submitting','running'].includes(retry.status);
   const attempt=retry.status==='waiting'?retry.attempt+1:retry.attempt;
   const remaining=Math.max(0,Math.ceil((Date.parse(retry.next_retry_at||'')-now)/1000));
-  const label=retry.status==='waiting'?`${remaining>0?`${remaining} 秒后`:'即将'}自动重试（${attempt}/3）`:retry.status==='submitting'||retry.status==='running'?`正在自动重试（${attempt}/3）`:retry.status==='succeeded'?`已自动恢复（${attempt}/3）`:retry.status==='exhausted'?'自动重试已达上限（3/3），请稍后手动继续或切换模型。':retry.status==='unknown'?'提交结果尚未确认，已停止自动重试。请到原始终端核对后再操作。':`自动重试已停止（已尝试 ${retry.attempt}/3 次）。`;
+  const label=retry.status==='waiting'?`${remaining>0?`${remaining} 秒后`:'即将'}自动重试（${attempt}/3）`:retry.status==='submitting'||retry.status==='running'?`正在自动重试（${attempt}/3）`:retry.status==='succeeded'?`已自动恢复（${attempt}/3）`:retry.status==='exhausted'?'自动重试已达上限（3/3）':retry.status==='unknown'?'提交结果尚未确认，重试已停止':`自动重试已停止（已尝试 ${retry.attempt}/3 次）。`;
+  const reason = retry.status === 'cancelled' && retry.stop_reason ? reasons[retry.stop_reason] : undefined;
   async function cancel(){setCancelling(true);setError('');try{await onCancel?.();}catch(failure){setError(failure instanceof Error?failure.message:'停止失败');}finally{setCancelling(false);}}
   return <div className="session-chat-retry-status" role="status" aria-live="polite">
-    <p>{pending&&<Loader2 size={14} className="session-chat-retry-spinner"/>}{label}</p>
-    {retry.status==='cancelled'&&<p>{retry.stop_reason&&reasons[retry.stop_reason]?`停止原因：${reasons[retry.stop_reason]}`:'该历史记录未保存停止原因。'}</p>}
+    {pending && <Loader2 size={14} className="session-chat-retry-spinner" aria-hidden="true" />}
+    <p title={reason || label}>{label}</p>
     {pending&&onCancel&&<button type="button" disabled={cancelling} onClick={()=>void cancel()}>{cancelling?'正在停止…':'停止自动重试'}</button>}
     {error&&<p role="alert">{error}</p>}
   </div>;

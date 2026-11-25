@@ -194,7 +194,7 @@ describe('chat/raw terminal display',()=>{
     page.messages=[{id:'reply-only',role:'user',text:'Answer text',timestamp:null,question_replies:[{question_id:'missing',question:'Question',answer:'Answer text'}]}];
     mount();expect(await screen.findByText('Answer text')).toBeVisible();expect(document.querySelector('[data-chat-message-id="reply-only"]')).not.toBeNull();
   });
-  it('attaches server retry status to the original failure and updates it after recovery',async()=>{
+  it('shows one server retry status for the latest failure in the plan',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
     vi.stubGlobal('WebSocket',class{onmessage=null;onclose=null;onerror=null;close=vi.fn();constructor(){sockets.push(this);}});
     mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
@@ -202,7 +202,16 @@ describe('chat/raw terminal display',()=>{
     const retry={session_id:'chat',native_id:'native',root_turn_id:'failed',failed_turn_ids:['failed'],attempt:0,max_attempts:3,status:'waiting',next_retry_at:new Date(Date.now()+10000).toISOString()};
     act(()=>{sockets[0].onmessage?.({data:JSON.stringify({type:'retry',retry})});sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:false,stage:'idle',turn_id:'failed',messages:[failure]})});});
     expect(await screen.findByRole('alert')).toHaveTextContent('自动重试（1/3）');expect(screen.getByRole('button',{name:'停止自动重试'})).toBeVisible();
-    act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'retry',retry:{...retry,attempt:1,status:'succeeded',next_retry_at:null}})}));expect(screen.getByRole('alert')).toHaveTextContent('已自动恢复（1/3）');expect(screen.queryByRole('button',{name:'停止自动重试'})).not.toBeInTheDocument();
+    const nextFailure={...failure,id:'retry-failure',turn_id:'retry',text:'Still at capacity.'};
+    act(()=>{
+      sockets[0].onmessage?.({data:JSON.stringify({type:'retry',retry:{...retry,attempt:3,failed_turn_ids:['failed','retry'],status:'exhausted',next_retry_at:null}})});
+      sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:false,stage:'idle',turn_id:'retry',messages:[failure,nextFailure]})});
+    });
+    const statuses=screen.getAllByRole('alert').flatMap(card=>within(card).queryAllByRole('status'));
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).toHaveTextContent('自动重试已达上限');
+    expect(statuses[0].closest('article')).toHaveTextContent(nextFailure.text);
+    expect(screen.queryByRole('button',{name:'停止自动重试'})).not.toBeInTheDocument();
   });
   it('shows native errors with time, stops stale busy/caret indicators and retains the error after switching views',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
@@ -215,6 +224,17 @@ describe('chat/raw terminal display',()=>{
     expect(screen.getByText('Turn failed; resolve the error and retry')).toBeVisible();expect(document.querySelectorAll('.session-chat-caret')).toHaveLength(0);
     fireEvent.click(screen.getByRole('button',{name:'查看原始终端',exact:true}));expect(screen.getByTestId('raw')).toBeVisible();
     fireEvent.click(screen.getByRole('button',{name:'对话',exact:true}));expect(await screen.findAllByRole('alert')).toHaveLength(1);
+  });
+  it.each(['codex','claude'] as const)('shows a single error line and keeps the complete original text available for %s',async(agent)=>{
+    const heading='Request failed';
+    const text=`${heading}\n${heading}\nUpstream returned 503`;
+    page.messages=[page.messages[0],{id:'native-error',role:'assistant',phase:'error',text,turn_id:'failed',timestamp:null,error:{will_retry:false}}];
+    const current={...session,cli_type:agent,native_session_id:'native',agent:{...sessionAgent(session),id:agent}};
+    render(<QueryClientProvider client={client}><SessionConversation session={current} userId="u" active onRaw={()=>{}}/></QueryClientProvider>);
+    const card=await screen.findByRole('alert');
+    expect(card.querySelector('details')).toBeNull();
+    expect(within(card).getAllByText(heading,{exact:true})).toHaveLength(1);
+    expect(within(card).getByText(heading,{exact:true})).toHaveAttribute('title',text);
   });
   it('explains provider balance exhaustion and points to switching providers',async()=>{
     const sockets:Array<{onmessage:((event:{data:string})=>void)|null}>=[];
@@ -259,9 +279,9 @@ describe('chat/raw terminal display',()=>{
     const view=mount();await screen.findByText('检查已完成。');await waitFor(()=>expect(sockets).toHaveLength(1));
     const failure=(n:number)=>({id:`reconnect-${n}`,role:'assistant' as const,phase:'error' as const,text:`Reconnecting... ${n}/5`,turn_id:'turn-1',timestamp:null,error:{code:'response_stream_disconnected',will_retry:true}});
     const send=(messages:unknown[])=>act(()=>sockets[0].onmessage?.({data:JSON.stringify({type:'snapshot',busy:true,stage:'waiting',turn_id:'turn-1',messages})}));
-    send([failure(2)]);const card=screen.getByRole('alert');expect(card).toHaveTextContent('Reconnecting... 2/5');
-    send([failure(2),failure(3),failure(4)]);expect(screen.getAllByRole('alert')).toHaveLength(1);expect(screen.getByRole('alert')).toBe(card);expect(card).toHaveTextContent('Reconnecting... 4/5');expect(card).not.toHaveTextContent('Reconnecting... 2/5');
-    page.messages=[...page.messages,failure(2),failure(3),failure(4)];view.unmount();mount();await screen.findByText('检查已完成。');expect(screen.getAllByRole('alert')).toHaveLength(1);expect(screen.getByRole('alert')).toHaveTextContent('Reconnecting... 4/5');
+    send([failure(2)]);const card=screen.getByRole('alert');expect(card).toHaveTextContent('重连 2/5');expect(card.querySelector('details')).toBeNull();
+    send([failure(2),failure(3),failure(4)]);expect(screen.getAllByRole('alert')).toHaveLength(1);expect(screen.getByRole('alert')).toBe(card);expect(card).toHaveTextContent('重连 4/5');expect(card).not.toHaveTextContent('重连 2/5');
+    page.messages=[...page.messages,failure(2),failure(3),failure(4)];view.unmount();mount();await screen.findByText('检查已完成。');expect(screen.getAllByRole('alert')).toHaveLength(1);expect(screen.getByRole('alert')).toHaveTextContent('重连 4/5');
   });
   it('shows only dialogue by default and switches the same terminal without remounting it',async()=>{
     mount();expect(await screen.findByText('检查已完成。')).toBeVisible();expect(screen.getByText('raw tool result')).not.toBeVisible();

@@ -6,7 +6,7 @@ afterEach(()=>vi.useRealTimers());
 describe('automatic retry status',()=>{
  it('distinguishes a cancelled plan with zero dispatches from exhausted retries and shows the reason',()=>{
   render(<ConversationRetryStatus retry={{...base,status:'cancelled',attempt:0,stop_reason:'final_answer'}}/>);
-  expect(screen.getByRole('status')).toHaveTextContent('已尝试 0/3 次');expect(screen.getByRole('status')).toHaveTextContent('停止原因：该轮已给出最终答复。');expect(screen.getByRole('status')).not.toHaveTextContent('已达上限');
+  expect(screen.getByRole('status')).toHaveTextContent('已尝试 0/3 次');expect(screen.getByTitle('该轮已给出最终答复。')).toBeVisible();expect(screen.getByRole('status')).not.toHaveTextContent('已达上限');
  });
  it('counts down the next attempt and allows stopping it',async()=>{
   vi.useFakeTimers();const cancel=vi.fn().mockResolvedValue(undefined);

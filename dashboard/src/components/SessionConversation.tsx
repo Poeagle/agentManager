@@ -57,6 +57,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  TerminalSquare,
   ArrowDown,
   ArrowUp,
   Check,
@@ -494,7 +495,9 @@ const Bubble = memo(function Bubble({
     !streaming
   )
     return null;
-  if (message.phase === "error")
+  if (message.phase === "error") {
+    const summary = message.text.trim().split(/\r?\n/, 1)[0];
+    const reconnect = message.error?.will_retry && summary.match(/^Reconnecting(?:\.\.\.|…)\s+(\d+\/\d+)$/i);
     return (
       <article
         className="session-chat-message session-chat-error-notice"
@@ -512,23 +515,17 @@ const Bubble = memo(function Bubble({
       >
         <div className="session-chat-error-heading">
           <AlertTriangle size={16} />
-          <strong>
-            {autoRetry
-              ? autoRetry.status === "cancelled"
-                ? "模型繁忙 · 重试已取消"
-                : autoRetry.status === "succeeded"
-                  ? "模型繁忙 · 已恢复"
-                  : autoRetry.status === "exhausted"
-                    ? "模型繁忙 · 重试已达上限"
-                    : autoRetry.status === "unknown"
-                      ? "模型繁忙 · 重试待确认"
-                      : "模型繁忙 · 自动恢复"
-              : message.error?.will_retry
-                ? retrying
-                  ? "执行遇到错误，正在自动重试"
-                  : "重试已结束"
-                : "本轮执行出错"}
-          </strong>
+          {autoRetry ? (
+            <ConversationRetryStatus retry={autoRetry} onCancel={onCancelRetry} />
+          ) : (
+            <strong title={reconnect ? message.text : undefined}>
+              {reconnect
+                ? `${retrying ? "正在重连" : "重连"} ${reconnect[1]}${retrying ? "" : " 已结束"}`
+                : message.error?.will_retry
+                  ? retrying ? "执行遇到错误，正在自动重试" : "重试已结束"
+                  : "本轮执行出错"}
+            </strong>
+          )}
           {message.timestamp && (
             <time
               dateTime={message.timestamp}
@@ -538,11 +535,11 @@ const Bubble = memo(function Bubble({
             </time>
           )}
         </div>
-        <details className="session-chat-error-original"><summary title={message.text}>{message.text}</summary><p>{message.text}</p></details>
-        {autoRetry ? (
-          <ConversationRetryStatus retry={autoRetry} onCancel={onCancelRetry} />
-        ) : !message.error?.will_retry ? (
-          <p>
+        {!reconnect && summary && (
+          <span className="session-chat-error-original" title={message.text}>{summary}</span>
+        )}
+        {!autoRetry && !message.error?.will_retry ? (
+          <span className="session-chat-error-hint">
             {/insufficient_balance|insufficient balance/i.test(message.text)
               ? "当前 Provider 余额不足，本轮已停止。请在 Agent 配置中充值或切换到其他 Provider，然后新开会话。"
               : message.error?.code === "rate_limit"
@@ -560,20 +557,21 @@ const Bubble = memo(function Bubble({
                   : message.error?.code === "model_mismatch"
                     ? "Provider 实际路由到了不同模型。该结果未被当作所选模型，请检查 Provider 的模型映射或上游路由。"
                   : "本轮已停止。请根据错误信息处理后再试。"}
-          </p>
+          </span>
         ) : null}
         <div className="session-chat-error-actions">
           {allowRaw && (
-            <button type="button" onClick={onRaw}>
-              查看原始终端
+            <button type="button" onClick={onRaw} aria-label="查看原始终端" title="查看原始终端">
+              <TerminalSquare size={14} aria-hidden="true" />
             </button>
           )}
-          <button type="button" onClick={() => void copy()}>
-            {copied ? "已复制" : "复制错误信息"}
+          <button type="button" onClick={() => void copy()} aria-label={copied ? "已复制" : "复制错误信息"} title={copied ? "已复制" : "复制错误信息"}>
+            {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
           </button>
         </div>
       </article>
     );
+  }
   return <>
     {briefCard}
     <article
@@ -2426,6 +2424,20 @@ export function SessionConversation({
     if(!answers)continue;
     question.async_questions.forEach((item,index)=>{if(item.id)visibleQuestionAnswers.set(item.id,answers[index]);});
   }
+  const retriesByTurn = new Map(Object.values(autoRetries).flatMap(retry =>
+    retry.failed_turn_ids.map(turnId => [turnId, retry] as const),
+  ));
+  const retriesByMessage = new Map<string, ConversationRetry>();
+  const assignedRetries = new Set<ConversationRetry>();
+  for (let index = groups.length - 1; index >= 0; index--) {
+    const group = groups[index];
+    if (group.kind !== 'message' || group.message.phase !== 'error' || group.message.error?.will_retry) continue;
+    const retry = retriesByTurn.get(group.message.turn_id ?? '');
+    if (retry && !assignedRetries.has(retry)) {
+      retriesByMessage.set(group.message.id, retry);
+      assignedRetries.add(retry);
+    }
+  }
   const bubble = (
     message: ConversationMessage,
     compact = false,
@@ -2456,9 +2468,7 @@ export function SessionConversation({
           !!busy &&
           !!message.error?.will_retry
         }
-        autoRetry={Object.values(autoRetries).find((retry) =>
-          retry.failed_turn_ids.includes(message.turn_id || ""),
-        )}
+        autoRetry={retriesByMessage.get(message.id)}
         onCancelRetry={canSend ? cancelRetry : undefined}
         onCancelQueued={
           canSend &&
