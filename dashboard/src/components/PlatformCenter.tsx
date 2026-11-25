@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { Activity, Bot, KeyRound, Settings, Users, X, FolderKey, Loader2, SlidersHorizontal } from 'lucide-react';
+import { Activity, BookOpen, Bot, KeyRound, Settings, Users, X, FolderKey, Loader2, SlidersHorizontal } from 'lucide-react';
 import type { AuthUser } from '../lib/api';
 import { hasPermission, usePermissions } from '../lib/permissions';
 import { ChangePassword } from './AccountModal';
@@ -12,6 +12,7 @@ import './ManagerUI.css';
 const PlatformAi = lazy(() => import('./PlatformAiPanel').then((module) => ({ default: module.PlatformAiPanel })));
 
 const SettingsPanel = lazy(() => import('./SettingsModal').then((module) => ({ default: module.SettingsModal })));
+const CollaborationSkill = lazy(() => import('./CollaborationSkillPanel').then(module => ({ default: module.CollaborationSkillPanel })));
 const AgentGuide = lazy(() => import('./AgentGuide').then((module) => ({ default: module.AgentGuideModal })));
 const Monitor = lazy(() => import('./AdminMonitorPage').then((module) => ({ default: module.AdminMonitorPage })));
 const SharedResources = lazy(() => import('./SharedResourcesPanel').then(module => ({ default: module.SharedResourcesPanel })));
@@ -26,6 +27,7 @@ const sections = [
   { id: 'agents', label: 'Agent 配置', group: '平台', icon: SlidersHorizontal, permission: 'settings' },
   { id: 'settings', label: '平台设置', group: '平台', icon: Settings, permission: 'settings' },
   { id: 'agent', label: 'Agent API', group: '集成', icon: Bot, permission: 'agent_api' },
+  { id: 'collaboration-skill', label: '协作 Skill', group: '集成', icon: BookOpen, permission: 'agent_api' },
 ] as const;
 export type PlatformSection = typeof sections[number]['id'];
 
@@ -89,6 +91,7 @@ export function PlatformCenter({ currentUser, initialSection = 'account', onClos
                   {current.id === 'agents' && <AgentManagement readOnly={!hasPermission(query.data, 'settings', 'write')} />}
                   {current.id === 'assistant' && query.data && <PlatformAi permissions={query.data} onOpenSession={onOpenSession} />}
                   {current.id === 'agent' && <AgentGuide embedded onClose={onClose} />}
+                  {current.id === 'collaboration-skill' && <CollaborationSkill />}
                   {current.id === 'monitor' && <Monitor onBack={onClose} onOpenSession={onOpenSession} canWrite={hasPermission(query.data, 'monitor', 'write')} canDelete={hasPermission(query.data, 'monitor', 'delete')} canOpenSessions={currentUser.role === 'admin'} />}
                 </Suspense>
               </div>

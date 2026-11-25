@@ -6,6 +6,7 @@ import { existsSync } from 'fs';
 import { unzipSync, type UnzipFileInfo } from 'fflate';
 import { getDb } from '../db/index.js';
 import { userOwnsProject } from '../auth.js';
+import { requirePermission } from '../services/rbac.js';
 
 /* ================================================================
    Skill manager — enumerate / create / delete SKILL.md-format skills
@@ -597,7 +598,23 @@ async function listSkillsIn(loc: SkillLocation) {
   return out;
 }
 
+const collaborationSkillRoot = new URL('../data/agent-skills/agent-manager-collaboration/', import.meta.url);
+const collaborationDocuments = new Map([
+  ['skill', 'SKILL.md'],
+  ['tabs', 'references/tabs.md'],
+  ['messages', 'references/messages.md'],
+  ['allocation', 'references/allocation.md'],
+]);
+
 export const skillsRoutes: FastifyPluginAsync = async (app) => {
+  app.get<{ Params: { document: string } }>('/integrations/collaboration-skill/:document', async (req, reply) => {
+    if (!requirePermission(req, reply, 'agent_api')) return;
+    const file = collaborationDocuments.get(req.params.document);
+    if (!file) return reply.code(404).send({ error: '找不到协作 Skill 文档' });
+    const markdown = await readFile(new URL(file, collaborationSkillRoot), 'utf8');
+    return reply.header('Cache-Control', 'private, no-store').send({ markdown });
+  });
+
   // List a project's skills grouped by location (project + global references).
   app.get<{ Querystring: { project_id?: string } }>('/skills', async (req, reply) => {
     const r = resolveProjectPath(req.user!.id, req.query.project_id);

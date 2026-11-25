@@ -280,6 +280,12 @@ Codex 压缩记录中的 `replacement_history` 是模型后续使用的上下文
 | 会话状态与最近助手消息 | 生命周期来自平台会话记录。工作状态使用 Agent 适配器的运行状态和当前终端信号，终端静默仅表示近期未观察到输出。消息预览显示最近可读的助手消息及原始消息时间。 |
 | 会话内存与进程 | Linux 隔离组采集 `memory.current`，通过本组和子组的 `cgroup.procs` 统计不同进程。其他本地会话使用已确认的进程树及 RSS 合计，共享页可能重复计入。汇总标明采样覆盖，缺失值保留为未知。 |
 
+## 标签页协作 Skill
+
+平台管理的「集成 → 协作 Skill」按页读取内置的 [agent-manager-collaboration](../server/src/data/agent-skills/agent-manager-collaboration/SKILL.md)，需要 Agent API 读取权限。正文和参考随服务端构建打包，存放在平台资源目录。独立启动的客户端继续使用各自的技能发现目录。
+
+这份 Skill 定义了会话协作接口的接入约定。Agent Manager 目前提供文档查看，标签页启动提示、会话凭据签发和协作接口待接入。后续适配需要在启动时提供技能入口，并通过运行时传递 `AGENT_MANAGER_COLLABORATION_URL` 与会话凭据。客户端支持 HTTPS 和本机回环地址。服务端应根据凭据确定所属用户、项目及来源标签页，为每项操作检查权限，并按请求 ID 保留创建及逐目标投递结果。关闭标签页或撤销授权时回收对应的访问权限。
+
 ## DeepSeek Harness 网页接入
 
 项目标签可嵌入已配置的 `dsh web`。Harness 插件按当前项目目录打开原生工作区，
