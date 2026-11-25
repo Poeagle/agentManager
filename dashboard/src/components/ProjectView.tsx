@@ -93,6 +93,7 @@ interface HarnessTabState {
 
 interface PersistedState {
   activeMode: ActiveMode;
+  showAllSessions?: boolean;
   fileTreeOpen?: boolean;
   harnessOpen?: boolean;
   harnessTab?: HarnessTabState;
@@ -234,6 +235,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     }
     return saved;
   });
+  const [showAllSessions, setShowAllSessions] = useState(initialized?.showAllSessions === true);
 
   // id → custom terminal-tab name: the cross-device-shareable slice of
   // terminalInstances. Seeded from the local cache, merged with server state on
@@ -795,6 +797,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   useEffect(() => {
     persistState(currentUserId, projectId, {
       activeMode,
+      showAllSessions,
       harnessOpen,
       harnessTab,
       fileTreeOpen,
@@ -804,7 +807,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       activeTerminalId,
       hiddenSessionIds: [...closedSessionIds.current],
     });
-  }, [currentUserId, projectId, activeMode, harnessOpen, harnessTab, fileTreeOpen, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion]);
+  }, [currentUserId, projectId, activeMode, showAllSessions, harnessOpen, harnessTab, fileTreeOpen, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, closedIdsVersion]);
 
   // ── Cross-device sync: the terminal tab list uses stable AgentManager
   // session IDs. Persisting it (plus hidden/active IDs) makes the tab-to-native
@@ -1267,7 +1270,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const [sessionControlsHost,setSessionControlsHost]=useState<HTMLDivElement|null>(null);
   const [showTabSwitcher, setShowTabSwitcher] = useState(false);
   const [localSessionSidebarOpen, setLocalSessionSidebarOpen] = useState(true);
-  const [showAllSessions, setShowAllSessions] = useState(false);
   const [showSessionSearch, setShowSessionSearch] = useState(false);
   const nestedSessionNavigation = sessionNavigationExpanded !== undefined;
   const sessionSidebarOpen = sessionNavigationExpanded ?? localSessionSidebarOpen;

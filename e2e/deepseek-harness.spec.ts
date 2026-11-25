@@ -158,7 +158,9 @@ test('configures Harness and restores its workspace, custom tab name and order',
     await expect(visibleHarness(page).getByLabel('Project path')).toHaveText(paths[0]);
     expect(received.filter(path => path === paths[0])).toHaveLength(1);
 
-    const strip = page.getByLabel('会话标签', { exact: true }).filter({ visible: true });
+    const projectBranch = (name: string) => page.locator('.workspace-project-item')
+      .filter({ has: page.getByRole('button', { name, exact: true }) });
+    const strip = projectBranch(projects[0]).getByLabel('会话标签', { exact: true });
     const tabButtons = strip.locator('.workspace-tab-button');
     const [codexLabel, claudeLabel] = otherTabs.map(tab => tab.label);
     const harnessLabel = '项目调研';
@@ -199,10 +201,11 @@ test('configures Harness and restores its workspace, custom tab name and order',
 
     await page.reload();
     await expect(visibleHarness(page).getByLabel('Project path')).toHaveText(paths[1]);
-    await page.getByRole('button', { name: '关闭 DeepSeek Harness' }).filter({ visible: true }).click();
+    const closeHarness = projectBranch(projects[1]).getByRole('button', { name: '关闭 DeepSeek Harness' });
+    await closeHarness.click();
     await page.reload();
     await expect(page.locator('iframe[title="DeepSeek Harness"]:visible')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: '关闭 DeepSeek Harness' }).filter({ visible: true })).toHaveCount(0);
+    await expect(closeHarness).toHaveCount(0);
     expect((await (await page.request.get('/api/settings')).json()).settings.deepseek_harness_url).toBe(url);
     const { sessions } = await (await page.request.get('/api/sessions')).json();
     expect(sessions.filter((session: { project_id: string }) => projectIds.includes(session.project_id))

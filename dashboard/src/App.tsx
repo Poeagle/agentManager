@@ -58,6 +58,17 @@ function isActiveSessionStatus(status: string): boolean {
 
 const APP_STATE_KEY_PREFIX = 'agentmanager-app-state-v2';
 const appStateKey = (userId: string) => `${APP_STATE_KEY_PREFIX}:${userId}`;
+const projectExpansionKey = (userId: string) => `agentmanager-project-expansion:${userId}`;
+
+function loadProjectExpansion(userId: string): Map<string, boolean> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(projectExpansionKey(userId)) ?? '{}');
+    if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+      return new Map(Object.entries(saved).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'));
+    }
+  } catch { /* Local layout preferences are optional. */ }
+  return new Map();
+}
 
 function normalizeOrder(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -108,7 +119,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   const [mobileProjectsOpen, setMobileProjectsOpen] = useState(false);
   const [projectToolbarHost, setProjectToolbarHost] = useState<HTMLDivElement | null>(null);
   const [sessionNavigationHosts, setSessionNavigationHosts] = useState(() => new Map<string, HTMLDivElement>());
-  const [projectExpansion, setProjectExpansion] = useState(() => new Map<string, boolean>());
+  const [projectExpansion, setProjectExpansion] = useState(() => loadProjectExpansion(authUser.id));
   const setSessionNavigationHost = useCallback((projectId: string, host: HTMLDivElement | null) => {
     setSessionNavigationHosts(current => {
       if (current.get(projectId) === (host ?? undefined)) return current;
@@ -119,8 +130,13 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     });
   }, []);
   const setProjectExpanded = useCallback((projectId: string, expanded: boolean) => {
-    setProjectExpansion(current => new Map(current).set(projectId, expanded));
+    setProjectExpansion(current => current.get(projectId) === expanded ? current : new Map(current).set(projectId, expanded));
   }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem(projectExpansionKey(authUser.id), JSON.stringify(Object.fromEntries(projectExpansion)));
+    } catch { /* Local layout preferences are optional. */ }
+  }, [authUser.id, projectExpansion]);
   const workspaceLayout = useRef<HTMLDivElement>(null);
   const [notificationDetailOpen,setNotificationDetailOpen]=useState(false);
   const [conversationTarget,setConversationTarget]=useState<{sessionId:string;focus:ConversationFocus}|null>(null);
@@ -227,6 +243,10 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     : 'home';
   const activeProjectId = activeTab === 'home' ? null : activeTab.replace(/^project-/, '');
   const projectExpanded = (projectId: string) => projectExpansion.get(projectId) ?? (projectId === activeProjectId);
+  useEffect(() => {
+    if (!activeProjectId || !serverHydrated) return;
+    setProjectExpansion(current => current.has(activeProjectId) ? current : new Map(current).set(activeProjectId, true));
+  }, [activeProjectId, serverHydrated]);
   const [visitedProjectIds, setVisitedProjectIds] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     // Cold project tabs stay in the strip while their workspace loads on demand.
@@ -333,12 +353,6 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     setActiveTab(`project-${projectId}`);
     setPlatformSection(null);
     setMobileProjectsOpen(false);
-    setProjectExpansion(current => {
-      if (current.get(projectId) !== false) return current;
-      const next = new Map(current);
-      next.delete(projectId);
-      return next;
-    });
   }, []);
 
   const handleOpenProject = useCallback((

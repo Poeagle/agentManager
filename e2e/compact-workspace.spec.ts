@@ -108,8 +108,15 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await expect(sessions.getByRole('button',{name:'UI',exact:true}).locator('..')).toHaveAttribute('data-active','true');
   await sessions.getByRole('button',{name:'UI',exact:true}).dblclick();
   const rename = sessions.getByRole('textbox');
+  const renamed = page.waitForResponse(response => {
+    const request = response.request();
+    return request.method() === 'PUT'
+      && decodeURIComponent(new URL(response.url()).pathname) === `/api/user-state/project:${projects[0].id}`
+      && request.postDataJSON().value?.terminalLabels?.['compact-1'] === '界面设计';
+  });
   await rename.fill('界面设计'); await rename.press('Enter');
   await expect(sessions.getByRole('button',{name:'界面设计',exact:true})).toBeVisible();
+  expect((await renamed).ok()).toBe(true);
   expect([...projectHistoryRequests]).toEqual([projects[0].id]);
   const secondHistory = page.waitForResponse(response => {
     const url = new URL(response.url());
@@ -124,6 +131,12 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await backupSession.click();
   await expect(secondProjectButton).toHaveAttribute('aria-current','page');
   await expect(backupSession).toHaveAttribute('aria-current','true');
+  await expect(firstBranch.getByRole('button',{name:'收起 dolphindb_manager 的会话'})).toHaveAttribute('aria-expanded','true');
+  await expect(sessionRows).toHaveCount(36);
+  await page.reload();
+  await expect(secondProjectButton).toHaveAttribute('aria-current','page');
+  await expect(backupSession).toHaveAttribute('aria-current','true');
+  await expect(sessionRows).toHaveCount(36);
   await secondBranch.getByRole('button',{name:'收起 backuprestore 的会话'}).click();
   await expect(backupSession).toBeHidden();
   await projectTabs.getByRole('button', { name: 'dolphindb_manager', exact: true }).click();
@@ -138,6 +151,8 @@ test('compact workspace preserves readable labels, activity details and keyboard
   });
   try {
     await secondProject.getByRole('button', { name: 'backuprestore', exact: true }).click();
+    await expect(secondBranch.getByRole('button',{name:'展开 backuprestore 的会话'})).toHaveAttribute('aria-expanded','false');
+    await expect(backupSession).toBeHidden();
     await closeProject.click();
     await expect(closeProject).toHaveAttribute('aria-busy', 'true');
     await projectTabs.getByRole('button', { name: 'dolphindb_manager', exact: true }).click();
@@ -164,6 +179,7 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await expect(separator).toHaveAttribute('aria-valuenow', String(savedWidth));
   await page.reload();
   await expect(separator).toHaveAttribute('aria-valuenow', String(savedWidth));
+  await expect(sessionRows).toHaveCount(36);
   const desktopSearch = sidebar.getByRole('searchbox', { name: '搜索会话' });
   await expect(desktopSearch).toBeHidden();
   await sidebar.getByRole('button', { name: '搜索会话', exact: true }).click();
