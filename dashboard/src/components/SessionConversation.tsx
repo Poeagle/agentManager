@@ -455,7 +455,13 @@ const Bubble = memo(function Bubble({
             </>
           }
         >
-          <div className="session-chat-sourced-content">{quoteCard}<ConversationMessageAttachments text={parsed.text} items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile}/>{metadata}</div>
+          <div className="session-chat-sourced-content">
+            {quoteCard}
+            {parsed.text && <ConversationMarkdown content={parsed.text} messageId={message.id}
+              projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile} onNavigate={onNavigate} />}
+            <ConversationMessageAttachments items={parsed.attachments} projectId={projectId} projectPath={projectPath} onOpenFile={onOpenFile} />
+            {metadata}
+          </div>
         </ConversationDialogCard>
       </article>
     </>;

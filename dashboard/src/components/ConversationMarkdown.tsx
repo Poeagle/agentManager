@@ -161,7 +161,7 @@ export const ConversationMarkdown=memo(function ConversationMarkdown({content,me
           return <a href={href} title={title||path} onClick={event=>{event.preventDefault();if(previewFile)previewFile({path,rootPath,projectId:inProject?projectId:null,name:path.split('/').pop()||path});else if(inProject)onOpenFile?.(path);}}>{children}</a>;
         }
         if(href?.startsWith('#'))return <a href={href} onClick={event=>{
-          const scope=event.currentTarget.closest('.session-chat-message');let fragment:string;try{fragment=decodeURIComponent(href.slice(1));}catch{return;}
+          const scope=event.currentTarget.closest('.session-chat-message, .session-chat-sourced-content');let fragment:string;try{fragment=decodeURIComponent(href.slice(1));}catch{return;}
           const target=[...(scope?.querySelectorAll<HTMLElement>('[id]')||[])].find(node=>node.id===fragment || node.id===`user-content-${fragment}` || node.dataset.chatHeading && (node.textContent||'').trim().toLowerCase().replace(/\s+/g,'-')===fragment);
           if(target){event.preventDefault();onNavigate();target.scrollIntoView({block:'start'});}
         }}>{children}</a>;

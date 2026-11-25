@@ -35,7 +35,12 @@ for (const agent of ['codex', 'claude']) {
         older_omitted: false,
         omitted_turns: 0,
       };
-      const prompt = '定时提示正文\n' + '继续检查定时任务。\n'.repeat(80) + '定时提示末尾';
+      const prompt = [
+        '# 定时提示正文',
+        '1. **读取记录**',
+        '```mermaid\nsequenceDiagram\n  A->>B: 启动巡检\n```',
+        '继续检查定时任务。\n'.repeat(80) + '定时提示末尾',
+      ].join('\n\n');
       const text = '以下是上一会话的记录节选，可能不完整，仅供当前需求参考：\n<agentmanager_brief_context>\n' +
         JSON.stringify(context) + '\n</agentmanager_brief_context>\n\n当前需求：\n' + prompt;
       const directory = agent === 'codex' ? join(root, 'home/.codex/sessions')
@@ -134,7 +139,11 @@ for (const agent of ['codex', 'claude']) {
 
         await card.click();
         await expect(taskDialog).toBeVisible();
-        await expect(taskDialog).toContainText('定时提示正文');
+        await expect(taskDialog.getByRole('heading', { name: '定时提示正文' })).toBeVisible();
+        await expect(taskDialog.getByRole('listitem')).toContainText('读取记录');
+        const diagram = taskDialog.getByRole('img', { name: 'Mermaid 图表' });
+        await expect(diagram).toBeVisible();
+        await expect.poll(() => diagram.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
         await expect(taskDialog).not.toContainText('上一轮巡检结论');
         const box = (await taskDialog.boundingBox())!;
         expect(Math.abs(box.x + box.width / 2 - width / 2)).toBeLessThan(2);

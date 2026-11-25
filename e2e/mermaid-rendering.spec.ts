@@ -2,8 +2,8 @@ import {test,expect,type Locator} from '@playwright/test';
 import {mkdirSync,writeFileSync,readFileSync} from 'fs';
 import {join} from 'path';
 
-async function flowchartAppearance(image: Locator) {
-  return image.evaluate(async (img: HTMLImageElement) => {
+async function diagramAppearance(image: Locator, selectors = ['g.node rect', 'path.flowchart-link']) {
+  return image.evaluate(async (img: HTMLImageElement, [nodeSelector, edgeSelector]) => {
     const frame = document.createElement('iframe');
     frame.hidden = true;
     const loaded = new Promise<void>(resolve => frame.addEventListener('load', () => resolve(), { once: true }));
@@ -13,8 +13,8 @@ async function flowchartAppearance(image: Locator) {
       await loaded;
       const svg = frame.contentDocument!;
       const styles = (selector: string) => frame.contentWindow!.getComputedStyle(svg.querySelector(selector)!);
-      const node = styles('g.node rect');
-      const edge = styles('path.flowchart-link');
+      const node = styles(nodeSelector);
+      const edge = styles(edgeSelector);
       return {
         fill: node.fill,
         border: node.stroke,
@@ -26,20 +26,21 @@ async function flowchartAppearance(image: Locator) {
     } finally {
       frame.remove();
     }
-  });
+  }, selectors);
 }
 
 test('Mermaid renders in chat, platform replies and editable Markdown; source and zoom remain available',async({page},info)=>{
  await page.addInitScript(()=>Object.defineProperty(window,'showSaveFilePicker',{value:undefined,configurable:true}));
  const dir=join(process.cwd(),'dashboard/.test-data/mermaid-proof');mkdirSync(dir,{recursive:true});
+ const sequence = '```mermaid\nsequenceDiagram\n actor A as 交易员\n participant B as QITStudio\n A->>B: 启动策略脚本\n Note over B: 读取历史行情\n B-->>A: 展示结果\n```';
  const content='# 数据流程\n\n```mermaid\nflowchart TD\n A[客户端业务对象 / DataFrame / Vector] --> B[类型校验、批处理、序列化]\n B --> C[接收数据]\n C --> D[按分区拆分本批数据]\n D --> E[查找分区位置和副本]\n E --> F[向数据副本执行写入]\n F --> G[事务日志与缓存]\n G --> H[事务提交与版本确认]\n H --> I[向客户端返回成功]\n H --> J[后台排序、合并缓存]\n J --> K[写入 Level File]\n K --> L[更新引擎元数据]\n L --> M[后台合并]\n```\n\n```js\nconst n = 42;\n```';
- writeFileSync(join(dir,'mermaid-harness.tsx'),`import React from 'react';import {createRoot} from 'react-dom/client';import {ConversationMarkdown} from '../../src/components/ConversationMarkdown';import {AiReply} from '../../src/components/AiReply';import {MarkdownVisualEditor} from '../../src/components/MarkdownVisualEditor';import '../../src/components/SessionConversation.css';const content=${JSON.stringify(content)};window.changes=[];createRoot(document.getElementById('root')!).render(<><section id="chat"><ConversationMarkdown content={content} messageId="proof" projectId={null} onNavigate={()=>{}}/></section><section id="platform"><AiReply content={content}/></section><section id="editor"><MarkdownVisualEditor value={content} onChange={v=>window.changes.push(v)} filesApi={{}} resolveLocalPath={()=>null} onOpenFile={()=>{}}/></section></>);`);
+ writeFileSync(join(dir,'mermaid-harness.tsx'),`import React from 'react';import {createRoot} from 'react-dom/client';import {ConversationMarkdown} from '../../src/components/ConversationMarkdown';import {AiReply} from '../../src/components/AiReply';import {MarkdownVisualEditor} from '../../src/components/MarkdownVisualEditor';import '../../src/components/SessionConversation.css';const content=${JSON.stringify(content)};window.changes=[];createRoot(document.getElementById('root')!).render(<><section id="chat"><ConversationMarkdown content={content} messageId="proof" projectId={null} onNavigate={()=>{}}/></section><section id="sequence"><ConversationMarkdown content={${JSON.stringify(sequence)}} messageId="sequence" projectId={null} onNavigate={()=>{}}/></section><section id="platform"><AiReply content={content}/></section><section id="editor"><MarkdownVisualEditor value={content} onChange={v=>window.changes.push(v)} filesApi={{}} resolveLocalPath={()=>null} onOpenFile={()=>{}}/></section></>);`);
  await page.route('**/mermaid-proof',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><html data-theme="light"><head><style>body{font-family:Arial;--border:#ddd;--bg-primary:white;--accent:#2563eb;--text-secondary:#555}section{max-width:900px;margin:20px auto}</style></head><script type="module">import RefreshRuntime from "/@react-refresh";RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;</script><body><div id="root"></div><script type="module" src="/@fs'+join(dir,'mermaid-harness.tsx')+'"></script></body></html>'}));
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.goto('/mermaid-proof');
  for(const id of ['chat','platform','editor']){const section=page.locator(`#${id}`);await expect(section.getByRole('img',{name:'Mermaid 图表'})).toBeVisible();expect(await section.getByRole('img',{name:'Mermaid 图表'}).evaluate((img:HTMLImageElement)=>img.naturalWidth)).toBeGreaterThan(50);await expect(section.getByText('const n = 42;',{exact:true})).toBeVisible();}
  for (const id of ['chat', 'platform', 'editor']) {
   const image = page.locator(`#${id}`).getByRole('img', { name: 'Mermaid 图表' });
-  const appearance = await flowchartAppearance(image);
+  const appearance = await diagramAppearance(image);
   expect.soft(appearance).toMatchObject({
     fill: 'rgb(255, 255, 255)',
     border: 'rgb(40, 37, 61)',
@@ -50,14 +51,25 @@ test('Mermaid renders in chat, platform replies and editable Markdown; source an
   expect.soft(appearance.shadow).toContain('-drop-shadow');
  }
  const chatImage = page.locator('#chat').getByRole('img', { name: 'Mermaid 图表' });
+ const sequenceImage = page.locator('#sequence').getByRole('img', { name: 'Mermaid 图表' });
+ await expect(sequenceImage).toBeVisible();
+ const sequenceSelectors = ['rect.actor', '.messageLine0'];
+ const lightSequenceSource = await sequenceImage.getAttribute('src');
+ const lightSequence = await diagramAppearance(sequenceImage, sequenceSelectors);
+ expect.soft(lightSequence).toMatchObject({ fill: 'rgb(255, 255, 255)', border: 'rgb(40, 37, 61)', borderWidth: '2px' });
+ expect.soft(lightSequence.shadow).toContain('-drop-shadow');
  const lightSource = await chatImage.getAttribute('src');
  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
  await expect(chatImage).not.toHaveAttribute('src', lightSource!);
- expect.soft(await flowchartAppearance(chatImage)).toMatchObject({
+ expect.soft(await diagramAppearance(chatImage)).toMatchObject({
    fill: 'rgb(17, 17, 19)',
    border: 'rgb(255, 255, 255)',
    borderWidth: '2px',
    edgeWidth: '2px',
+ });
+ await expect(sequenceImage).not.toHaveAttribute('src', lightSequenceSource!);
+ expect.soft(await diagramAppearance(sequenceImage, sequenceSelectors)).toMatchObject({
+   fill: 'rgb(17, 17, 19)', border: 'rgb(255, 255, 255)', borderWidth: '2px',
  });
  const darkSource = await chatImage.getAttribute('src');
  await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; });

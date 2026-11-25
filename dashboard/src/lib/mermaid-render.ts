@@ -31,9 +31,9 @@ export function renderMermaid(source:string,dark:boolean):Promise<string> {
       suppressErrorRendering: true,
       maxTextSize: 40000,
       maxEdges: 300,
-      theme: dark ? 'dark' : 'default',
+      theme: dark ? 'redux-dark' : 'redux',
+      look: 'neo',
       htmlLabels: false,
-      flowchart: { htmlLabels: false, theme: dark ? 'redux-dark' : 'redux', look: 'neo' },
       fontFamily: 'Arial, sans-serif',
     });
     const container=document.createElement('div');container.style.cssText='position:fixed;left:-100000px;top:0;width:1400px;visibility:hidden;pointer-events:none';container.setAttribute('aria-hidden','true');document.body.append(container);
