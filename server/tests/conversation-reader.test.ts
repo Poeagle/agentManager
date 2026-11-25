@@ -116,6 +116,26 @@ describe('public conversation pages',()=>{
     expect(page.json().messages[0].text).toBe(notice);expect(page.body).not.toContain('PRIVATE');
     expect((await readConversation(binding,{after:initial.messages[0].id})).messages.map(message=>message.text)).toEqual(['Start up','What would you like me to do?']);
   });
+  it.each(['combined','separate','skill only','reversed'])('restores startup notices in native order from %s developer text', async (shape) => {
+    const notice = '<octoally_shared_resources>\n凭据文件：/work/.env\n通过本地程序按需读取凭据。\n</octoally_shared_resources>';
+    const index = 'You are in an Agent Manager tab. The platform skill agent-docs covers finding tabs, delegating work, reading progress and returning results. Load /work/agent-docs/SKILL.md only when this task calls for collaboration. The platform supplies the scoped tab credential to the included client automatically.';
+    const input = shape === 'reversed' ? [index, notice] : shape === 'skill only' ? [index] : [notice, index];
+    const blocks = shape === 'separate' ? input : [input.join('\n\n')];
+    const displayIndex = `<octoally_agent_docs>\n${index}\n</octoally_agent_docs>`;
+    const expected = input.map(text => text === index ? displayIndex : text).join('\n\n');
+    const rules = '# AGENTS.md instructions for /work\n\n<INSTRUCTIONS>Project rules</INSTRUCTIONS>\n<environment_context>fixture</environment_context>';
+    writeFileSync(file, line('response_item', { type: 'message', id: 'startup-developer', role: 'developer', content: [
+      ...blocks.map(text => ({ type: 'input_text', text })),
+      { type: 'input_text', text: `private settings quoted this example:\n${index}` },
+      { type: 'input_text', text: '<octoally_agent_docs>\nprivate lookalike\n</octoally_agent_docs>' },
+    ] }) + line('response_item', { type: 'message', id: 'startup-rules', role: 'user', content: [{ type: 'input_text', text: rules }] })
+      + line('response_item', { type: 'message', id: 'question', role: 'user', content: [{ type: 'input_text', text: 'Start up' }] }, '2026-10-29T10:00:01Z')
+      + final('Ready', '2026-10-29T10:00:02Z'));
+    const response = await app.inject({ url: '/api/sessions/chat/conversation', headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().messages.map((message: { text: string }) => message.text)).toEqual([expected, rules, 'Start up', 'Ready']);
+    expect(response.body).not.toContain('private');
+  });
   it('returns Codex compaction summaries with an explicit presentation marker',async()=>{
     const summary='Another language model summarized the session.\n\n## Current Goal\nFix duplicate messages.';
     const before=line('event_msg',{type:'token_count',info:{last_token_usage:{total_tokens:141965}}});

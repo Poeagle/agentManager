@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { conversationAsyncQuestions, conversationQuestionReply } from '../../conversation-interactions.js';
 import { conversationErrorMessage } from '../../conversation-error.js';
 import { conversationImagePaths } from '../../conversation-attachments.js';
+import { displayablePlatformDeveloperContext } from '../../../shared/conversation-context.js';
 import type { AgentHistoryRecord } from '../types.js';
 import { decodeCodexText } from './text.js';
 import { codexCompactionSummaryBody } from './compaction.js';
@@ -159,14 +160,11 @@ export function parseCodexMessage(line: Buffer, questionCallId?: string, context
         const asyncProgress = nativeAsyncItem?.delivery === 'async';
         const asyncQuestions = conversationAsyncQuestions(questionCallId ? { ...nativeAsyncItem, id: questionCallId } : nativeAsyncItem);
         const asyncMessage = asyncQuestions ? { role: 'assistant' as const, phase: 'final' as const, text: (typeof nativeAsyncItem.message === 'string' ? nativeAsyncItem.message : (nativeAsyncItem.content || []).filter((part: any) => ['Text', 'output_text'].includes(part.type) && typeof part.text === 'string').map((part: any) => part.text).join('\n')).slice(0, 128 * 1024) || asyncQuestions.map(q => q.title).join('\n'), timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null } : null;
-        // Show only our explicit, credential-free resource notice. Other developer
-        // instructions remain outside the public transcript. This is presentation
-        // only: no user message is submitted to the native thread.
-        // thread/start can coalesce developerInstructions with permissions and
-        // other private instructions as separate blocks in one native message.
-        // Select only the platform's complete wrapper, never join those blocks.
+        // Codex may combine launch instructions in one block or emit several blocks.
+        // Keep the order of public notices without forwarding private developer context.
         const developerText = entry.type === 'response_item' && entry.payload?.type === 'message' && entry.payload.role === 'developer'
-            ? (entry.payload.content || []).filter((part: any) => part.type === 'input_text' && typeof part.text === 'string').map((part: any) => part.text.trim()).find((text: string) => /^<octoally_shared_resources>\n[\s\S]*\n<\/octoally_shared_resources>$/.test(text)) : undefined;
+            ? (entry.payload.content || []).flatMap((part: any) => part.type === 'input_text' && typeof part.text === 'string'
+                ? [displayablePlatformDeveloperContext(part.text)] : []).filter(Boolean).join('\n\n') : undefined;
         const shared = developerText
             ? { role: 'user' as const, phase: 'user' as const, text: developerText, timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null } : null;
         const extracted = shared || failure || asyncMessage || decodeCodexText([entry], 128 * 1024).find(message => message.role === 'user' || message.role === 'assistant');

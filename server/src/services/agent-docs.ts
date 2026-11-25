@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import { userCanUseSessionTool } from '../auth.js';
 import { isRetiredEnvironment } from './agents/environment-access.js';
 import { userHasPermission } from './rbac.js';
+import { agentDocsLaunchInstructions } from '../shared/conversation-context.js';
 import type { AgentSession } from './agents/types.js';
 
 export const agentDocsRoot = new URL('../data/agent-skills/agent-docs/', import.meta.url);
@@ -61,7 +62,7 @@ export function agentDocsLaunch(session: AgentSession) {
   const ipv6Only = config.host.includes(':') && config.host !== '::';
   const host = ipv6Only ? '[::1]' : '127.0.0.1';
   return {
-    instructions: `You are in an Agent Manager tab. The platform skill agent-docs covers finding tabs, delegating work, reading progress and returning results. Load ${root}SKILL.md only when this task calls for collaboration. The platform supplies the scoped tab credential to the included client automatically.`,
+    instructions: agentDocsLaunchInstructions(`${root}SKILL.md`),
     environment: {
       AGENT_MANAGER_COLLABORATION_URL: `http://${host}:${config.port}${agentDocsApiPath}`,
       AGENT_MANAGER_COLLABORATION_SESSION: `ad1.${session.id}.${signature(session)}`,

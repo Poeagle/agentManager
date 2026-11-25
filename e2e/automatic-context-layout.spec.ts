@@ -30,11 +30,13 @@ test('keeps automatic context and scheduled input cards equally compact with roo
     '</INSTRUCTIONS>',
     '<environment_context><cwd>/project</cwd></environment_context>',
   ].join('\n\n');
-  const message = (id: string, text: string) => JSON.stringify({
+  const message = (id: string, text: string, role = 'user') => JSON.stringify({
     type: 'response_item',
     timestamp: '2026-11-23T08:40:42Z',
-    payload: { type: 'message', id, role: 'user', content: [{ type: 'input_text', text }] },
+    payload: { type: 'message', id, role, content: [{ type: 'input_text', text }] },
   });
+  const resourceNotice = '<octoally_shared_resources>\n凭据文件：/project/.env\n使用说明。\n</octoally_shared_resources>';
+  const skillIndex = 'You are in an Agent Manager tab. The platform skill agent-docs covers finding tabs, delegating work, reading progress and returning results. Load /project/agent-docs/SKILL.md only when this task calls for collaboration. The platform supplies the scoped tab credential to the included client automatically.';
   const scheduledInput = {
     type: 'event_msg',
     timestamp: '2026-11-23T08:40:43Z',
@@ -50,7 +52,7 @@ test('keeps automatic context and scheduled input cards equally compact with roo
     },
   };
   writeFileSync(join(logDirectory, `rollout-layout-${native}.jsonl`), [
-    message('resources', '<octoally_shared_resources>\n凭据文件：/project/.env\n使用说明。\n</octoally_shared_resources>'),
+    message('platform-context', `${resourceNotice}\n\n${skillIndex}`, 'developer'),
     message('rules', rules),
     JSON.stringify(scheduledInput),
   ].join('\n') + '\n');
@@ -78,9 +80,17 @@ test('keeps automatic context and scheduled input cards equally compact with roo
     const chat = page.getByRole('region', { name: '会话对话' }).filter({ visible: true });
     const title = '自动信息 · 项目规则 · 运行环境';
     const rulesCard = chat.getByRole('button', { name: new RegExp(title) });
-    const resourcesCard = chat.getByRole('button', { name: /自动信息 · 共享资源/ });
+    const platformTitle = '自动信息 · 共享资源 · agent-docs';
+    const resourcesCard = chat.getByRole('button', { name: new RegExp(platformTitle) });
     const scheduledCard = chat.getByRole('button', { name: /定时任务 每日会话布局与详情弹窗巡检/ });
     const dialog = page.getByRole('dialog', { name: title });
+
+    await resourcesCard.click();
+    const platformDialog = page.getByRole('dialog', { name: platformTitle });
+    const sections = platformDialog.getByRole('heading', { level: 2 });
+    await expect(sections).toHaveText(['共享资源', 'agent-docs']);
+    await expect(platformDialog).toContainText('/project/agent-docs/SKILL.md');
+    await page.keyboard.press('Escape');
 
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 680 });
