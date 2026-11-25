@@ -90,7 +90,7 @@ function ProjectForm({
   const [claudeMd, setClaudeMd] = useState('');
   const [agentsMd, setAgentsMd] = useState('');
   const [settingsJson, setSettingsJson] = useState('');
-  const [showBrowser, setShowBrowser] = useState(false);
+  const [browserPath, setBrowserPath] = useState<string | null>(null);
   const [claudeMdPreview, setClaudeMdPreview] = useState(false);
   const [agentsMdPreview, setAgentsMdPreview] = useState(false);
   const [error, setError] = useState('');
@@ -213,7 +213,7 @@ function ProjectForm({
   const handleFolderSelect = (selectedPath: string, folderName: string) => {
     setPath(selectedPath);
     if (!name || name === prevFolderName(path)) setName(folderName);
-    setShowBrowser(false);
+    setBrowserPath(null);
   };
 
   const filesLoading = mode === 'edit' && (!!projectPath) && (claudeMdQuery.isLoading || agentsMdQuery.isLoading || settingsQuery.isLoading);
@@ -269,10 +269,10 @@ function ProjectForm({
             {/* Folder Path — add mode only */}
             {mode === 'add' && (
               <div>
-                <label className="block text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Folder Path</label>
+                <label htmlFor="project-folder-path" className="block text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>项目路径</label>
                 <div className="flex gap-2">
                   <input
-                    aria-label="项目路径"
+                    id="project-folder-path"
                     value={path}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -280,30 +280,41 @@ function ProjectForm({
                       setPath(val);
                       if (!name || name === prevFolderName(path)) setName(folderName);
                     }}
-                    placeholder="/home/user/projects/myapp"
-                    className="flex-1 px-4 py-2.5 rounded-lg border text-sm outline-none font-mono"
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter' || e.nativeEvent.isComposing) return;
+                      e.preventDefault();
+                      setBrowserPath(path.trim() ? path : '');
+                    }}
+                    placeholder="输入或粘贴服务器目录路径"
+                    spellCheck={false}
+                    className="min-w-0 flex-1 px-4 py-2.5 rounded-lg border text-sm outline-none font-mono"
                     style={inputStyle}
                   />
                   <button
-                    onClick={() => setShowBrowser(!showBrowser)}
-                    className="px-3 py-2.5 rounded-lg border text-sm flex items-center gap-1.5"
+                    type="button"
+                    aria-expanded={browserPath !== null}
+                    onClick={() => {
+                      const start = path.trim() ? path : '';
+                      setBrowserPath(browserPath === start ? null : start);
+                    }}
+                    className="shrink-0 px-3 py-2.5 rounded-lg border text-sm flex items-center gap-1.5"
                     style={{
-                      background: showBrowser ? 'var(--accent)' : 'var(--bg-tertiary)',
+                      background: browserPath !== null ? 'var(--accent)' : 'var(--bg-tertiary)',
                       borderColor: 'var(--border)',
-                      color: showBrowser ? 'white' : 'var(--text-secondary)',
+                      color: browserPath !== null ? 'white' : 'var(--text-secondary)',
                     }}
                   >
-                    <FolderOpen className="w-4 h-4" />
-                    Browse
+                    <FolderOpen aria-hidden="true" className="w-4 h-4" />
+                    浏览目录
                   </button>
                 </div>
               </div>
             )}
 
             {/* Folder Browser */}
-            {mode === 'add' && showBrowser && (
+            {mode === 'add' && browserPath !== null && (
               <div>
-                <FolderBrowser onSelect={handleFolderSelect} />
+                <FolderBrowser navigation={{ path: browserPath, onChange: setBrowserPath }} onSelect={handleFolderSelect} />
               </div>
             )}
 

@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import { mkdirSync, readFileSync } from 'fs';
+import { mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { authHook, createSession, createUser, findUserById, type User } from '../src/auth.js';
@@ -71,6 +71,45 @@ it('allows an administrator to grant creation and browsing without changing the 
 it('keeps administrators allowed and validates the permission value', async () => {
   for (const value of ['true', 1, null]) expect((await grant(value)).statusCode).toBe(400);
   expect((await createProject(adminCookie)).statusCode).toBe(200);
+});
+
+it('browses directory aliases and registers the canonical directory only once', async () => {
+  const alias = join(projectPath, 'directory-link');
+  const target = join(dirname(projectPath), 'destination');
+  const nested = join(target, 'nested-link');
+  const file = join(projectPath, 'file');
+  mkdirSync(target);
+  writeFileSync(file, 'fixture');
+  symlinkSync(target, alias);
+  symlinkSync(projectPath, nested);
+  symlinkSync(file, join(projectPath, 'file-link'));
+  symlinkSync(join(projectPath, 'missing'), join(projectPath, 'broken-link'));
+  symlinkSync('loop', join(projectPath, 'loop'));
+
+  const browsePath = (path: string) => app.inject({
+    url: `/api/browse?path=${encodeURIComponent(path)}`,
+    headers: { cookie: memberCookie },
+  });
+  expect((await grant(true)).statusCode).toBe(200);
+  expect((await browsePath(projectPath)).json().dirs).toEqual([
+    { name: 'directory-link', path: alias, hasChildren: true },
+  ]);
+  expect((await browsePath(alias)).json()).toMatchObject({
+    path: alias, parent: projectPath, folderName: 'directory-link',
+    dirs: [{ name: 'nested-link', path: join(alias, 'nested-link'), hasChildren: true }],
+  });
+  for (const invalidPath of ['file-link', 'broken-link', 'loop']) {
+    expect((await browsePath(join(projectPath, invalidPath))).statusCode).toBe(404);
+  }
+
+  const register = (path: string) => app.inject({
+    method: 'POST', url: '/api/projects', headers: { cookie: memberCookie },
+    payload: { name: 'Directory alias', path },
+  });
+  const project = await register(alias);
+  expect(project.statusCode).toBe(200);
+  expect(project.json().project.path).toBe(realpathSync(target));
+  expect((await register(target)).statusCode).toBe(409);
 });
 
 it('does not persist, return or export the removed browser configuration', async () => {

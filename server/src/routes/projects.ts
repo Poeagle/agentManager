@@ -2,7 +2,8 @@ import {agentDescriptors} from '../services/agents/index.js';
 import {FastifyPluginAsync} from 'fastify';
 import {getDb} from '../db/index.js';
 import {nanoid} from 'nanoid';
-import {readdir,mkdir,readFile,realpath,rename,rm,stat,writeFile} from 'fs/promises';
+import {constants,type Dirent} from 'node:fs';
+import {access,readdir,mkdir,readFile,realpath,rename,rm,stat,writeFile} from 'fs/promises';
 import {dirname,join,resolve,basename} from 'path';
 import {homedir} from 'os';
 
@@ -53,6 +54,21 @@ async function canonicalProjectDirectory(input: string): Promise<string> {
   const info = await stat(canonical);
   if (!info.isDirectory()) throw new Error('Project path is not a directory');
   return canonical;
+}
+
+async function isBrowsableDirectory(parent: string, entry: Dirent): Promise<boolean> {
+  if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === '__pycache__') return false;
+  if (entry.isDirectory()) return true;
+  if (!entry.isSymbolicLink()) return false;
+
+  const path = join(parent, entry.name);
+  try {
+    if (!(await stat(path)).isDirectory()) return false;
+    await access(path, constants.R_OK | constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Export current DB projects to the config file (for portability across DB resets) */
@@ -431,22 +447,29 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     Querystring: { path?: string };
   }>('/browse', async (req, reply) => {
     if (!userCanCreateProjects(req.user!.id)) return reply.status(403).send({ error: '没有添加项目权限，请联系管理员' });
-    const dirPath = resolve(req.query.path || homedir());
+    const requestedPath = req.query.path;
+    if (requestedPath !== undefined && (typeof requestedPath !== 'string' || requestedPath.includes('\0'))) {
+      return reply.status(400).send({ error: 'Invalid directory path' });
+    }
+    const dirPath = resolve(requestedPath || homedir());
 
     try {
       const entries = await readdir(dirPath, { withFileTypes: true });
       const dirs: { name: string; path: string; hasChildren: boolean }[] = [];
 
       for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        if (entry.name.startsWith('.')) continue;
-        if (entry.name === 'node_modules' || entry.name === '__pycache__') continue;
+        if (!(await isBrowsableDirectory(dirPath, entry))) continue;
 
         const fullPath = join(dirPath, entry.name);
         let hasChildren = false;
         try {
-          const sub = await readdir(fullPath, { withFileTypes: true });
-          hasChildren = sub.some(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules');
+          const children = await readdir(fullPath, { withFileTypes: true });
+          for (const child of children) {
+            if (await isBrowsableDirectory(fullPath, child)) {
+              hasChildren = true;
+              break;
+            }
+          }
         } catch {
           // Can't read subdirectory
         }
@@ -462,9 +485,12 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
         folderName: basename(dirPath),
         dirs,
       };
-    } catch (err: any) {
-      if (err.code === 'ENOENT') return reply.status(404).send({ error: 'Directory not found' });
-      if (err.code === 'EACCES') return reply.status(403).send({ error: 'Permission denied' });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'ELOOP') {
+        return reply.status(404).send({ error: 'Directory not found' });
+      }
+      if (code === 'EACCES' || code === 'EPERM') return reply.status(403).send({ error: 'Permission denied' });
       return reply.status(500).send({ error: 'Failed to browse directory' });
     }
   });

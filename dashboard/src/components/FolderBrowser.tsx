@@ -3,8 +3,15 @@ import {useQuery} from '@tanstack/react-query';
 import {ArrowUp,ChevronRight,FolderOpen,Loader2} from 'lucide-react';
 import {api,type BrowseResult} from '../lib/api';
 
-export function FolderBrowser({onSelect,browse=api.projects.browse,cacheKey='browse'}:{onSelect:(path:string,name:string)=>void;browse?:(path?:string)=>Promise<BrowseResult>;cacheKey?:string}){
- const [path,setPath]=useState<string|undefined>();
+export function FolderBrowser({onSelect,browse=api.projects.browse,cacheKey='browse',navigation}:{
+ onSelect:(path:string,name:string)=>void;
+ browse?:(path?:string)=>Promise<BrowseResult>;
+ cacheKey?:string;
+ navigation?:{path:string;onChange:(path:string)=>void};
+}){
+ const [localPath,setLocalPath]=useState<string|undefined>();
+ const path=(navigation?.path ?? localPath) || undefined;
+ const setPath=navigation?.onChange ?? setLocalPath;
  const query=useQuery({queryKey:[cacheKey,path],queryFn:()=>browse(path),retry:false});const data=query.data;
  return <div className="rounded-lg border overflow-hidden" style={{borderColor:'var(--border)',background:'var(--bg-primary)'}}>
   <div className="flex items-center gap-2 px-3 py-2 text-xs border-b" style={{borderColor:'var(--border)',background:'var(--bg-tertiary)',color:'var(--text-secondary)'}}>
