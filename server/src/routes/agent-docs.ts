@@ -3,7 +3,7 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { findUserById, userCanUseToolForProject } from '../auth.js';
 import { getDb } from '../db/index.js';
-import { agentDocsAllowed, agentDocsFollowUpLimit, verifyAgentDocsToken, withAgentDocsHandoff } from '../services/agent-docs.js';
+import { agentDocsAllowed, verifyAgentDocsToken, withAgentDocsHandoff } from '../services/agent-docs.js';
 import { agentDescriptors, agentForSession, getAgent } from '../services/agents/index.js';
 import { nativeConversationId } from '../services/session-identity.js';
 import { sessionPresenter } from '../services/session-labels.js';
@@ -13,7 +13,7 @@ import { getTracker } from '../services/session-state.js';
 import { consumePendingSpawn, getSession, spawnSession, waitForSessionLifecycle, type Session } from '../services/session-manager.js';
 import { platformApi, PlatformApiError } from '../services/platform-ai/tools.js';
 
-const LIMITS = { page_size: 50, targets: 8, follow_up_queue: agentDocsFollowUpLimit, message_bytes: 48 * 1024, operation_retention_seconds: 7 * 24 * 60 * 60 };
+const LIMITS = { page_size: 50, targets: 8, pending_submissions: 20, message_bytes: 48 * 1024, operation_retention_seconds: 7 * 24 * 60 * 60 };
 const tabId = z.string().regex(/^[\w-]{1,100}$/);
 const message = z.string().trim().min(1).refine(text => Buffer.byteLength(text) <= LIMITS.message_bytes);
 const create = z.object({
@@ -95,7 +95,7 @@ const deliveryTails = new Map<string, { tail: Promise<unknown>; depth: number }>
 
 async function deliver(app: Parameters<typeof platformApi>[0], scope: Scope, id: string, text: string, requestId: string, replyTo?: string, intent?: string) {
   const queue = deliveryTails.get(id) || { tail: Promise.resolve(), depth: 0 };
-  if (queue.depth >= LIMITS.follow_up_queue) return { tab_id: id, status: 'rejected', reason: '目标会话当前有太多待投递消息' };
+  if (queue.depth >= LIMITS.pending_submissions) return { tab_id: id, status: 'rejected', reason: '目标会话当前有太多待投递消息' };
   queue.depth++;
   const next = queue.tail.catch(() => {}).then(() => deliverOrdered(app, scope, id, text, requestId, replyTo, intent));
   queue.tail = next;
@@ -127,7 +127,7 @@ async function deliverOrdered(app: Parameters<typeof platformApi>[0], scope: Sco
     const response = await withAgentDocsHandoff({ targetId: id, userId: scope.userId, clientId: messageId, label }, () =>
       platformApi(app, scope.userId, 'POST', `/api/sessions/${encodeURIComponent(id)}/input`, {
         input: forwarded, source: 'conversation', client_id: messageId, expected_native_id: native,
-        expected_environment_id: target.agent_environment_id || 'native', after_current_turn: true,
+        expected_environment_id: target.agent_environment_id || 'native',
       }));
     status = response.status === 'queued' ? 'queued' : 'submitted';
   } catch (error) {
@@ -175,7 +175,7 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
       const user = findUserById(scope.userId);
       const operations = ['list-tabs', 'read-tab', 'inbox', 'read-message', 'execution-options', 'operation'];
       if (agentDocsAllowed(scope.source, 'write')) operations.push('create-tab', 'send-message');
-      return { version: '1.0.0', source_tab_id: scope.source.id, project_id: scope.projectId,
+      return { version: '1.1.0', source_tab_id: scope.source.id, project_id: scope.projectId,
         user: { id: user?.id, display_name: user?.display_name || user?.username }, operations, limits: LIMITS };
     });
 
@@ -191,7 +191,7 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
         if (!target) return [];
         return [{ tab_id: row.id, name: present(target).tab_name, agent_id: agentForSession(target).descriptor.id,
           state: getTracker(row.id)?.state.processState || target.status,
-          can_receive: !!nativeConversationId(target) && !!agentForSession(target).input.supportsFollowUp && target.id !== scope.source.id && ['running','detached','released'].includes(target.status) }];
+          can_receive: !!nativeConversationId(target) && !!agentForSession(target).input.supportsImmediate && target.id !== scope.source.id && ['running','detached','released'].includes(target.status) }];
       });
       return { tabs, next_cursor: rows.length > LIMITS.page_size ? String(rows[LIMITS.page_size - 1].cursor) : null };
     });

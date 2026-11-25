@@ -76,6 +76,7 @@ export const codexAdapter: AgentAdapter = {
     input: {
         supportsClientIdentity: true,
         supportsFollowUp: true,
+        supportsImmediate: true,
         hasQueuedFollowUp: async context => inCodexThread(requireNative(context),async()=>
             (await import('./queue.js')).hasOwnedCodexQueuedInput(requireNative(context))),
         cancelQueued: async(context,clientId)=>inCodexThread(requireNative(context),async()=>(await import('./queue.js')).cancelCodexQueuedInput(requireNative(context),clientId)),
@@ -97,9 +98,8 @@ export const codexAdapter: AgentAdapter = {
                 }
                 assertSessionEnvironment(current, context.actorUserId);
             };
-            const submit = () => inCodexThread(threadId, () => options?.afterCurrentTurn
-                ? stream.submitStreamingCodexInput(threadId, text, clientId, attachments, confirmReconnect, true, options.followUpLimit)
-                : stream.submitStreamingCodexInput(threadId, text, clientId, attachments, confirmReconnect));
+            const submit = () => inCodexThread(threadId, () =>
+                stream.submitStreamingCodexInput(threadId, text, clientId, attachments, confirmReconnect, options?.afterCurrentTurn, options?.immediate));
             let result = process.env.AGENTMANAGER_CODEX_STREAM_SOCKET ? await submit() : false;
             if (!result && !options?.afterCurrentTurn && session.id && await manager.ensureCodexConversationStreaming(session.id))
                 result = await submit();

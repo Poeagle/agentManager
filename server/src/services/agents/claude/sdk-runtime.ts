@@ -8,7 +8,7 @@ import {
 import { readFile } from "fs/promises";
 import { extname } from "path";
 import { randomUUID } from "crypto";
-import { AgentQueueOccupiedError } from "../submission.js";
+import { AgentQueueOccupiedError, AgentSubmissionError } from "../submission.js";
 import { conversationMessageId } from "../../conversation-reader.js";
 import {
   formatConversationInput,
@@ -353,9 +353,9 @@ class ClaudeRuntime {
     attachments: ConversationAttachment[] = [],
     userId?: string,
     afterCurrentTurn = false,
-    followUpLimit = 1,
+    immediate = false,
   ): Promise<boolean | "queued"> {
-    if (afterCurrentTurn && (followUpLimit === 1 ? this.hasQueuedFollowUp() : this.pending.length >= followUpLimit)) throw new AgentQueueOccupiedError();
+    if (afterCurrentTurn && this.hasQueuedFollowUp()) throw new AgentQueueOccupiedError();
     const uuid = clientId &&
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId)
       ? clientId
@@ -381,6 +381,7 @@ class ClaudeRuntime {
         // Fall through to the queue path without creating a second identity.
       }
       if (!accepted) {
+        if (immediate) throw new AgentSubmissionError('目标会话当前无法插入消息，本次未发送','rejected');
         this.pending.unshift(pending);
         this.upsert({
           id: conversationMessageId("", "user", pending.userId),
@@ -415,6 +416,7 @@ class ClaudeRuntime {
       return true;
     }
     if (this.busy || this.running) {
+      if (immediate) throw new AgentSubmissionError('目标会话当前无法插入消息，本次未发送','rejected');
       this.pending.push(pending);
       this.upsert({
         id: conversationMessageId("", "user", pending.userId),

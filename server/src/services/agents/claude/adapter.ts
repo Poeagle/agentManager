@@ -126,6 +126,7 @@ export const claudeAdapter: AgentDefinition = {
     supportsClientIdentity: true,
     supportsInitialClientIdentity: true,
     supportsFollowUp: true,
+    supportsImmediate: true,
     hasQueuedFollowUp: async context => !!(await import("./sdk-runtime.js"))
       .claudeRuntime(requireNative(context))?.hasQueuedFollowUp(),
     messageId: clientId => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId) ? conversationMessageId('', 'user', clientId) : undefined,
@@ -139,7 +140,7 @@ export const claudeAdapter: AgentDefinition = {
     submit: async (context, text, clientId, attachments, options) => {
       if (options?.afterCurrentTurn) {
         const runtime = (await import("./sdk-runtime.js")).claudeRuntime(requireNative(context));
-        return runtime?.submit(text, clientId, attachments, undefined, true, options.followUpLimit) ?? false;
+        return runtime?.submit(text, clientId, attachments, undefined, true) ?? false;
       }
       let provider = (
         await import("./providers.js")
@@ -169,7 +170,7 @@ export const claudeAdapter: AgentDefinition = {
         userId ??= randomUUID();
         rememberConversationInputMessage(context.session.id, requireNative(context), clientId, conversationMessageId('', 'user', userId));
       }
-      return runtime.submit(text, clientId, attachments, userId);
+      return runtime.submit(text, clientId, attachments, userId, false, options?.immediate);
     },
     afterTerminalSubmit: async () => {},
   },

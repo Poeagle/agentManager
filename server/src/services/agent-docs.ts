@@ -11,7 +11,6 @@ import { agentDocsLaunchInstructions } from '../shared/conversation-context.js';
 import type { AgentSession } from './agents/types.js';
 
 export const agentDocsRoot = new URL('../data/agent-skills/agent-docs/', import.meta.url);
-export const agentDocsFollowUpLimit = 20;
 export const agentDocsApiPath = '/api/agent-docs';
 export const agentDocsLiveStates = ['running', 'pending', 'launching', 'detached', 'released'];
 const audience = 'agent-docs:tab:v1';

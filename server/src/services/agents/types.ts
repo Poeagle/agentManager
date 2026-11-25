@@ -694,6 +694,8 @@ export interface AgentInputPort {
   supportsInitialClientIdentity?: boolean;
   /** This adapter can submit a follow-up without interrupting or steering the active turn. */
   supportsFollowUp?: boolean;
+  /** Can submit immediately or reject without placing input in a queue. */
+  supportsImmediate?: boolean;
   /** Whether the current conversation has pending follow-ups that must finish before rotation. */
   hasQueuedFollowUp?(context: AgentContext): Promise<boolean>;
   /** When supported, map a platform client ID to the durable native message ID. */
@@ -705,7 +707,7 @@ export interface AgentInputPort {
     text: string,
     clientId?: string,
     attachments?: ConversationAttachment[],
-    options?: {afterCurrentTurn?: boolean; followUpLimit?: number},
+    options?: {afterCurrentTurn?: boolean; immediate?: boolean},
   ): Promise<boolean | "queued">;
   afterTerminalSubmit(context: AgentContext): Promise<void>;
 }

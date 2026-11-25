@@ -57,7 +57,7 @@ python3 scripts/platform_api.py send-message
 | 状态 | 含义 |
 |---|---|
 | `accepted` | 收到 Agent 接收回执。 |
-| `queued` | 原生 Agent 已接受排队，进入该标签页现有工作的后面。 |
+| `queued` | 旧版投递回执，等待既有 Agent 队列发送。新版协作消息在运行中即时插入，无法及时接收时返回 `rejected`。 |
 | `submitted` | 已交给运行时，尚无 Agent 接收回执。 |
 | `rejected` | 已确认未交付。查看该目标的原因。 |
 | `unknown` | 交付结果待确认。保留原请求 ID。 |

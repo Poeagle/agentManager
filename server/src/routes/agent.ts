@@ -1,4 +1,4 @@
-import {agentDocsHandoff,agentDocsFollowUpLimit} from '../services/agent-docs.js';
+import {agentDocsHandoff} from '../services/agent-docs.js';
 import {inspectSendGuard,checkSendGuardSubmission} from '../services/conversation-send-guard.js';
 import {validateBatch,rememberBatch} from '../services/conversation-batches.js';
 import {conversationQuestionReply} from '../services/conversation-question-reply.js';
@@ -113,7 +113,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.36.1',
+    version:'3.36.2',
     updatedAt:'2026-11-25',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -563,7 +563,7 @@ export function getAgentApiContract() {
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox/:id',description:'Read the full body of one accepted or queued handoff addressed to the source tab.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/execution-options',description:'List project-authorized environments and launch settings. Optional agent_id and include_quota=true.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs',description:'Create and launch one tab in the source project. Body: request_id, name, execution and optional initial_message. The platform checks launch settings before sending the first task.'},
-      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text after the target’s current work. Body: request_id, text, optional intent, and either target_tab_ids or reply_to; reply_to resolves the original source server-side.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text immediately, steering running work or starting input on an idle tab. A target that cannot accept immediate delivery rejects it. Body: request_id, text, optional intent, and either target_tab_ids or reply_to. The server resolves reply_to to the original sender.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/operations/:id',description:'Read settled or partial receipts for a request_id owned by the source tab.'},
       {
         category: 'Agents', method: 'GET', path: '/api/codex/environments',
@@ -982,10 +982,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         if(afterCurrentTurn&&!adapter.input.supportsFollowUp)
           throw new AgentSubmissionError('目标 Agent 未提供排队接口','rejected');
         if(handoff) {
+          if(!adapter.input.supportsImmediate)throw new AgentSubmissionError('目标 Agent 不支持即时协作消息','rejected');
           rememberInputSource(id,handoff.clientId,{kind:'agent_handoff',label:handoff.label});
           if(message_id)bindInputSourceMessage(id,handoff.clientId,message_id);
         }
-        const native=await adapter.input.submit(context,input,identity,attachments,afterCurrentTurn?{afterCurrentTurn,followUpLimit:handoff?agentDocsFollowUpLimit:undefined}:undefined);
+        const native=await adapter.input.submit(context,input,identity,attachments,handoff?{immediate:true}:afterCurrentTurn?{afterCurrentTurn}:undefined);
         if(native){
           if(native==='queued')beginSessionAction(context,'queue',{message_id,client_id:identity})('accepted');
           rememberFirstSessionTask(id,conversationQuestionReply(input)?.text??input);
@@ -993,6 +994,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         }
         if(adapter.descriptor.sessionHost==='managed')throw Object.assign(Error('Agent 服务未接受输入，消息尚未提交'),{submission:'rejected'});
       }
+      if(handoff)throw new AgentSubmissionError('目标会话的即时输入尚未就绪，消息未发送','rejected');
       if(afterCurrentTurn)throw new AgentSubmissionError('原生队列不可用，消息尚未提交','rejected');
       if(nativeCandidate&&!await attachExistingSession(id))throw new AgentSubmissionError('消息尚未发送：终端连接未就绪，请重连后重试','rejected');
       if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);

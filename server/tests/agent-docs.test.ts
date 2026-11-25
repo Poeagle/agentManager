@@ -79,8 +79,8 @@ it('inherits the creator and restricts the credential to Agent Docs, the same pr
   expect((await app.inject({ url: endpoint, headers })).statusCode).toBe(401);
 });
 
-it('queues several sources in receipt order, displays trusted metadata, and routes each reply to its original sender', async () => {
-  const claude = vi.spyOn(getAgent('claude').input, 'submit').mockResolvedValue('queued');
+it('delivers several sources immediately in receipt order and routes each reply to its original sender', async () => {
+  const claude = vi.spyOn(getAgent('claude').input, 'submit').mockResolvedValue(true);
   const codex = vi.spyOn(getAgent('codex').input, 'submit').mockResolvedValue(true);
   const post = async (id: string, data: Record<string, unknown>) =>
     (await app.inject({ method: 'POST', url: base + '/messages', headers: header(id), payload: data })).json();
@@ -89,13 +89,13 @@ it('queues several sources in receipt order, displays trusted metadata, and rout
   const first = { request_id: 'request-a', target_tab_ids: ['test', 'different-owner'], text: '验收功能 A' };
   const dispatch = await post('dev-one', first);
   expect(dispatch).toMatchObject({ request_id: 'request-a', state: 'settled', result: { results: [
-    { tab_id: 'test', status: 'queued', message_id: expect.any(String) },
+    { tab_id: 'test', status: 'submitted', message_id: expect.any(String) },
     { tab_id: 'different-owner', status: 'rejected' },
   ] } });
   expect(await post('dev-one', first)).toEqual(dispatch);
   await post('dev-two', { request_id: 'request-b', target_tab_ids: ['test'], text: '验收功能 B' });
   expect(claude).toHaveBeenCalledTimes(2);
-  expect(claude.mock.calls.every(call => call[4]?.afterCurrentTurn && call[4].followUpLimit === 20)).toBe(true);
+  expect(claude.mock.calls.every(call => call[4]?.immediate && !call[4].afterCurrentTurn)).toBe(true);
   const received = await list();
   expect(received).toMatchObject([{ source_tab_id: 'dev-one', preview: '验收功能 A' }, { source_tab_id: 'dev-two', preview: '验收功能 B' }]);
   const [a, b] = received.map((row: { message_id: string }) => row.message_id);
@@ -113,9 +113,10 @@ it('queues several sources in receipt order, displays trusted metadata, and rout
   expect(replyB).toMatchObject({ result: { results: [{ tab_id: 'dev-two', status: 'submitted' }] } });
   expect(await list()).toMatchObject([{ result_replied: false }, { result_replied: true }]);
   expect(codex).toHaveBeenCalledTimes(1);
+  expect(codex.mock.calls[0][4]).toEqual({ immediate: true });
   expect(codex.mock.calls[0][1]).toContain(`reply_to=${b}`);
   expect(await post('test', { request_id: 'result-a', reply_to: a, text: 'A 发现问题' }))
-    .toMatchObject({ result: { results: [{ tab_id: 'dev-one', status: 'queued' }] } });
+    .toMatchObject({ result: { results: [{ tab_id: 'dev-one', status: 'submitted' }] } });
   expect((await app.inject({ url: base + '/operations/request-a', headers: header('dev-one') })).json()).toEqual(dispatch);
 });
 

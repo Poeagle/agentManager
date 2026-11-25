@@ -110,9 +110,18 @@ describe('native Codex conversation streaming',()=>{
     turnStartFailure='Thread is busy compacting context';expect(await submitStreamingCodexInput('thread','one','race-client')).toBe('queued');expect(queueEntries).toHaveLength(1);
     turnStartFailure='Model access rejected';await expect(submitStreamingCodexInput('thread','two','rejected-client')).rejects.toThrow('Model access rejected');expect(queueEntries).toHaveLength(1);
   });
-  it('steers running work immediately using a summary, without hydrating large tool output or queueing',async()=>{
+  it('rejects an immediate input that cannot steer during compaction without queueing it', async () => {
+    active = true;
+    baselineItems = [{ id: 'compact', type: 'contextCompaction' }];
+    await expect(submitStreamingCodexInput('thread', 'Urgent handoff', 'handoff-now', [], undefined, false, true))
+      .rejects.toMatchObject({ submission: 'rejected' });
+    expect(requests).toContain('turn/steer');
+    expect(requests).not.toContain('thread/queue/add');
+    expect(queueEntries).toHaveLength(0);
+  });
+  it.each([false, true])('steers running work using a summary without queueing (immediate=%s)',async(immediate)=>{
     active=true;baselineItems=[{type:'userMessage',id:'old',clientId:'previous',content:[]},{type:'commandExecution',id:'huge',aggregatedOutput:'x'.repeat(3*1024*1024)}];
-    expect(await submitStreamingCodexInput('thread','insert now','steer-client')).toBe(true);
+    expect(await submitStreamingCodexInput('thread','insert now','steer-client',[],undefined,false,immediate)).toBe(true);
     expect(requestParams.find(p=>p.method==='thread/turns/list')?.params.itemsView).toBe('summary');
     expect(requestParams.find(p=>p.method==='turn/steer')?.params).toMatchObject({expectedTurnId:'turn',clientUserMessageId:'steer-client',input:[{text:'insert now'}]});
     expect(requests).not.toContain('thread/queue/add');expect(requests).not.toContain('turn/start');

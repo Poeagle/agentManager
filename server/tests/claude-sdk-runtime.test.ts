@@ -627,6 +627,14 @@ describe('Claude Agent SDK runtime',()=>{
     await expect(runtime.cancelQueued('client-cancel')).rejects.toThrow('等待队列');
     internal.input=originalInput;
   });
+  it('rejects an immediate message when a busy Claude session has no active input stream', async () => {
+    const runtime = ensureClaudeRuntime(session, '/tmp');
+    (runtime as any).busy = true;
+    await expect(runtime.submit('Urgent handoff', 'handoff-now', [], undefined, false, true))
+      .rejects.toMatchObject({ submission: 'rejected' });
+    expect(runtime.snapshot().messages).toHaveLength(0);
+    expect(runtime.hasQueuedFollowUp()).toBe(false);
+  });
   it('exposes the completed native turn so the dashboard can clear its busy state',async()=>{
     sdk.messages=[
       {type:'result',subtype:'success',uuid:assistant,session_id:session},
