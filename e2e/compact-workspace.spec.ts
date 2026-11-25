@@ -268,6 +268,7 @@ test('toggles nested session tabs after refresh and keeps children visible when 
     { id: 'lineage-parent', label: '委派者', parent: null },
     { id: 'lineage-child', label: '验证子任务', parent: 'lineage-parent' },
     { id: 'lineage-grandchild', label: '回归子任务', parent: 'lineage-child' },
+    { id: 'lineage-sibling', label: '文档子任务', parent: 'lineage-parent' },
     { id: 'lineage-peer', label: '独立会话', parent: null },
   ];
   try {
@@ -290,6 +291,15 @@ test('toggles nested session tabs after refresh and keeps children visible when 
   const parent = nav.locator('[data-session-id="lineage-parent"]');
   const child = nav.locator('[data-session-id="lineage-child"]');
   const grandchild = nav.locator('[data-session-id="lineage-grandchild"]');
+  const sibling = nav.locator('[data-session-id="lineage-sibling"]');
+  const peer = nav.locator('[data-session-id="lineage-peer"]');
+  async function expectAligned(first: typeof parent, second: typeof parent) {
+    for (const selector of ['.workspace-tab-signal', '.workspace-tab-icon']) {
+      const firstBox = (await first.locator(selector).boundingBox())!;
+      const secondBox = (await second.locator(selector).boundingBox())!;
+      expect(Math.abs(firstBox.x - secondBox.x)).toBeLessThan(1);
+    }
+  }
   await expect(parent).toBeVisible();
   await expect(child).toHaveAttribute('data-parent-session-id', 'lineage-parent');
   await expect(grandchild).toHaveAttribute('data-parent-session-id', 'lineage-child');
@@ -297,13 +307,17 @@ test('toggles nested session tabs after refresh and keeps children visible when 
   expect((await child.boundingBox())!.x).toBeGreaterThan((await parent.boundingBox())!.x);
   expect((await grandchild.boundingBox())!.x).toBeGreaterThan((await child.boundingBox())!.x);
 
+  await expectAligned(parent, peer);
+  await expectAligned(child, sibling);
+
   const parentToggle = parent.getByRole('button', { name: /子会话/ });
   await expect(parentToggle).toHaveAttribute('aria-expanded', 'true');
   await parentToggle.click();
   await expect(parentToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(child).toHaveCount(0);
   await expect(grandchild).toHaveCount(0);
-  await expect(nav.locator('[data-session-id="lineage-peer"]')).toBeVisible();
+  await expect(peer).toBeVisible();
+  await expectAligned(parent, peer);
 
   await page.reload();
   await expect(parentToggle).toHaveAttribute('aria-expanded', 'false');
@@ -327,4 +341,10 @@ test('toggles nested session tabs after refresh and keeps children visible when 
   await expect(parent).toHaveCount(0);
   await expect(child.getByTitle('由其他标签页创建，上级当前未打开')).toBeVisible();
   await expect(grandchild).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: '项目导航', exact: true }).click();
+  await expect(child).toBeVisible();
+  await expect(peer).toBeVisible();
+  await expectAligned(child, peer);
 });

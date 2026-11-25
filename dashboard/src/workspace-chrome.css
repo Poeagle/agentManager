@@ -74,7 +74,7 @@
 .workspace-tab-standalone { padding: 0 7px; }
 .workspace-tab-signal { display: flex; align-items: center; flex-shrink: 0; }
 .workspace-tab-icon { opacity: .65; }
-.workspace-tab-parent-link { display: flex; flex: none; color: var(--text-secondary); }
+.workspace-tab-parent-link { display: grid; place-items: center; color: var(--text-secondary); }
 .workspace-tab[data-active="true"] .workspace-tab-icon { opacity: 1; }
 .workspace-subtab-action {
   display: grid;
@@ -224,7 +224,7 @@
 }
 :is(.workspace-project-disclosure, .workspace-session-disclosure):hover { background: var(--bg-primary); }
 :is(.workspace-project-disclosure, .workspace-session-disclosure)[aria-expanded="true"] > svg { transform: rotate(90deg); }
-.workspace-session-disclosure { flex-basis: 16px; }
+.workspace-session-disclosure, .workspace-tab-parent-link { flex: 0 0 16px; }
 .workspace-session-navigation-host {
   margin: 2px 0 4px 12px;
   padding-left: 6px;

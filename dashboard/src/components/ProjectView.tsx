@@ -1288,6 +1288,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const tabBranches = useMemo(() => sessionTabTree(
     sortedWorkspaceTabs, id => allSessionLookup.get(id)?.parent_session_id,
   ), [sortedWorkspaceTabs, allSessionLookup]);
+  const showTreeMarkers = sortedWorkspaceTabs.some(({ tab }) => allSessionLookup.get(tab.id)?.parent_session_id);
   const previewBranches = tabBranches.filter((branch, index) =>
     index < SESSION_PREVIEW_LIMIT || branch.some(({ tab }) => (active && tab.id === activeWorkspaceTab) || tab.id === editingTabId),
   );
@@ -1756,10 +1757,11 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                     return next;
                   })}
                 ><ChevronRight size={13} aria-hidden="true" /></button>
-              ) : session?.parent_session_id && <span
+              ) : showTreeMarkers && <span
                 className="workspace-tab-parent-link"
-                title={parentLabel}
-              ><CornerDownRight size={12} aria-hidden="true" /></span>}
+                title={session?.parent_session_id ? parentLabel : undefined}
+                aria-hidden="true"
+              >{session?.parent_session_id && <CornerDownRight size={12} />}</span>}
               {sigSession && (
                 <span className="workspace-tab-signal">
                   <LiveSessionSignalDot session={sigSession} active={isActive} />
