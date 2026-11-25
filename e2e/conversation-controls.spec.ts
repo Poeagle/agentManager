@@ -189,13 +189,36 @@ test('model controls use native capabilities and a docked file stays readable wh
   await input.fill('批量发送后自动收起');await input.press('Enter');await expect(divider).toHaveAttribute('aria-valuenow',String(wider));
   await batch.getByRole('button',{name:'发送批量内容',exact:true}).click();await expect.poll(()=>inputs.length).toBe(4);await expect(batch).toHaveCount(0);await expect(mode).toHaveValue('batch');
   const sentBatch=page.getByRole('button',{name:/批量消息.*批量发送后自动收起/});
+  const longBatchText='长批量消息摘要需要使用时间戳前的全部可用空间。'.repeat(24);
+  await input.fill(longBatchText);await input.press('Enter');
+  await input.fill('补充第二条');await input.press('Enter');
+  await batch.getByRole('button',{name:'发送批量内容',exact:true}).click();
+  await expect.poll(()=>inputs.length).toBe(5);
+  const longBatch=page.getByRole('button',{name:/^批量消息.*长批量消息摘要/});
   for(const width of [1280,390]){
    await page.setViewportSize({width,height:844});
    await expect(sentBatch).toBeVisible();
+   await expect(longBatch).toBeVisible();
+   const shortRow=(await sentBatch.locator('xpath=ancestor::article').boundingBox())!;
+   const longRow=longBatch.locator('xpath=ancestor::article');
+   const longBounds=(await longRow.boundingBox())!;
+   expect(Math.abs(shortRow.width-longBounds.width)).toBeLessThan(1);
+   expect(Math.abs(shortRow.x-longBounds.x)).toBeLessThan(1);
+   const longButton=(await longBatch.boundingBox())!;
+   const metadata=(await longRow.locator('.session-chat-message-meta').boundingBox())!;
+   expect(metadata.x-longButton.x-longButton.width).toBeLessThanOrEqual(12);
    const title=(await sentBatch.getByText('批量消息',{exact:false}).boundingBox())!;
    const preview=(await sentBatch.getByText('批量发送后自动收起',{exact:true}).boundingBox())!;
    expect(Math.abs(title.y + title.height/2 - preview.y - preview.height/2)).toBeLessThan(2);
    expect(preview.width).toBeGreaterThan(20);
+   await longRow.scrollIntoViewIfNeeded();
+   const first=(await sentBatch.locator('xpath=ancestor::article').boundingBox())!;
+   const last=(await longRow.boundingBox())!;
+   if(first.y>=0&&last.y+last.height<=844){
+    await page.screenshot({path:testInfo.outputPath(`batch-equal-width-${width}.png`),clip:{
+     x:first.x-6,y:first.y-6,width:first.width+12,height:last.y+last.height-first.y+12,
+    }});
+   }
   }
   await sentBatch.click();
   const sentDetails=page.getByRole('dialog',{name:'批量消息 · 1 条'});
@@ -240,6 +263,6 @@ test('model controls use native capabilities and a docked file stays readable wh
   await expect(page.getByRole('link',{name:'查看审查报告'})).toHaveCount(0);
   await expect(input).toHaveText('新会话中的未发送草稿');
   await expect(page.getByRole('button',{name:'新开',exact:true})).toBeVisible();
-  expect(inputs).toHaveLength(4);
+  expect(inputs).toHaveLength(5);
  }finally {try{if(sessionId)await page.request.delete(`/api/sessions/${sessionId}`,{timeout:5000}).catch(()=>{});}finally{for(const client of wss.clients)client.terminate();await new Promise<void>(r=>wss.close(()=>r()));await new Promise<void>(r=>server.close(()=>r()));}}
 });
