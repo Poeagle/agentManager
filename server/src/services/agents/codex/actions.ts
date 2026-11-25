@@ -19,7 +19,7 @@ export async function compactCodexConversation(threadId:string) {
 
 /** Persist an otherwise empty thread without generating a reply. The native
  * client cannot resume an empty thread until its rollout has been flushed. */
-export async function prepareFreshCodexConversation(threadId:string,cwd:string,sharedInstructions?:string,preference?:ModelPreference,environmentEngine?:CodexEngine) {
+export async function prepareFreshCodexConversation(threadId:string,cwd:string,sharedInstructions?:string,preference?:ModelPreference,environmentEngine?:CodexEngine,toolEnvironment?:Record<string,string>) {
   return withCodexConnection(async request=>{
     const current=await request('thread/read',{threadId});
     if(!current.thread)throw Error('原生会话不存在，历史已保留');
@@ -50,7 +50,7 @@ export async function prepareFreshCodexConversation(threadId:string,cwd:string,s
       ...(sharedInstructions?{developerInstructions:sharedInstructions}:{}),
       approvalPolicy:settings.approvalPolicy,sandbox,...settings.approvalsReviewer?{approvalsReviewer:settings.approvalsReviewer}:{},...serviceTier?{serviceTier}:{},
       ...(settings.runtimeWorkspaceRoots?{runtimeWorkspaceRoots:settings.runtimeWorkspaceRoots}:{}),
-      config:{...((chosen?.effort||current.thread.reasoningEffort)?{model_reasoning_effort:chosen?.effort||current.thread.reasoningEffort}:{}),
+      config:{...toolEnvironment?{shell_environment_policy:{set:toolEnvironment}}:{},...((chosen?.effort||current.thread.reasoningEffort)?{model_reasoning_effort:chosen?.effort||current.thread.reasoningEffort}:{}),
         ...(sandbox==='workspace-write'?{sandbox_workspace_write:{writable_roots:settings.sandbox.writableRoots||[],network_access:settings.sandbox.networkAccess===true,exclude_tmpdir_env_var:settings.sandbox.excludeTmpdirEnvVar===true,exclude_slash_tmp:settings.sandbox.excludeSlashTmp===true}}:{})},
     });
     const id=result.thread?.id;

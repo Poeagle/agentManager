@@ -52,7 +52,7 @@ export const PLATFORM_TOOLS: ModelTool[] = [
 
 export function platformCatalog(app?: FastifyInstance) {
   const excluded = new Set(['/api/auth/login', '/api/sessions', '/api/sessions/:id/execute', '/api/sessions/:id/input', '/api/sessions/:id/agent']);
-  const endpoints = getAgentApiContract().endpoints.filter(endpoint => endpoint.method !== 'WS' && !('public' in endpoint && endpoint.public) && !(excluded.has(endpoint.path) && endpoint.method !== 'GET'));
+  const endpoints = getAgentApiContract().endpoints.filter(endpoint => endpoint.method !== 'WS' && !endpoint.path.startsWith('/api/agent-docs/') && !('public' in endpoint && endpoint.public) && !(excluded.has(endpoint.path) && endpoint.method !== 'GET'));
   const documented = [
     ...endpoints.map(endpoint => ({ ...endpoint, path: endpoint.path.split('?')[0], endpoint_id: `${endpoint.method} ${endpoint.path.split('?')[0]}` })),
     ...[

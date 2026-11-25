@@ -98,10 +98,14 @@ export async function persistIdleCodexThread(request:CodexRequest,id:string):Pro
 
 /** Create the thread without a model turn when no initial task was supplied.
  * The terminal attaches to the same native identity. */
-export async function createStreamingCodexThread(cwd:string,task:string,sharedInstructions?:string,preference?:import('../types.js').ModelPreference|null,initialClientId?:string):Promise<string> {
+export async function createStreamingCodexThread(cwd:string,task:string,sharedInstructions?:string,preference?:import('../types.js').ModelPreference|null,initialClientId?:string,toolEnvironment?:Record<string,string>):Promise<string> {
   return withCodexConnection(async request=>{
     if (!preference) await (await import('./controls.js')).assertCodexLaunchModel(request);
-    const result=await request('thread/start',{cwd,approvalPolicy:'never',sandbox:'danger-full-access',...(sharedInstructions?{developerInstructions:sharedInstructions}:{}),...(preference?{model:preference.model,...preference.provider?{modelProvider:preference.provider}:{},config:{model_reasoning_effort:preference.effort},...preference.service_tier?{serviceTier:preference.service_tier}:{}}:{})});
+    const config={...preference?{model_reasoning_effort:preference.effort}:{},
+      ...toolEnvironment?{shell_environment_policy:{set:toolEnvironment}}:{}};
+    const result=await request('thread/start',{cwd,approvalPolicy:'never',sandbox:'danger-full-access',...(sharedInstructions?{developerInstructions:sharedInstructions}:{}),
+      ...Object.keys(config).length?{config}:{},
+      ...(preference?{model:preference.model,...preference.provider?{modelProvider:preference.provider}:{},...preference.service_tier?{serviceTier:preference.service_tier}:{}}:{})});
     const id=result.thread?.id;
     if(typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Codex 未返回原生会话标识');
     if(!task.trim()){
@@ -172,8 +176,8 @@ export async function stopStreamingCodexTurn(threadId:string,turnId:string):Prom
  * menus, focus, and transport suspension. Embedded CLIs retain their PTY path. */
 type SubmissionResult=boolean|'queued';
 const acceptedInputs=new Map<string,{promise:Promise<SubmissionResult>;fingerprint:string}>();
-export function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[] = [], confirmReconnect?: () => void, afterCurrentTurn = false):Promise<SubmissionResult> {
-  const identity=clientId||randomUUID(),key=JSON.stringify([currentCodexEngine().socket,threadId,identity]),fingerprint=JSON.stringify([text,attachments,afterCurrentTurn]);
+export function submitStreamingCodexInput(threadId:string,text:string,clientId?:string,attachments:ConversationAttachment[] = [], confirmReconnect?: () => void, afterCurrentTurn = false, followUpLimit = 1):Promise<SubmissionResult> {
+  const identity=clientId||randomUUID(),key=JSON.stringify([currentCodexEngine().socket,threadId,identity]),fingerprint=JSON.stringify([text,attachments,afterCurrentTurn,followUpLimit]);
   const existing=acceptedInputs.get(key);if(existing)return existing.fingerprint===fingerprint?existing.promise:Promise.reject(new CodexRpcError('Client input identity has different contents'));
   let dispatched=false;
   const attempt = (confirmTarget?: () => void) => withCodexConnection(async request => {
@@ -190,7 +194,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
     const queue=async()=>{
       const existing=await readCodexQueue(request,threadId);
       if(existing.data?.some((entry:any)=>entry.clientUserMessageId===identity))return 'queued' as const;
-      if(afterCurrentTurn && existing.data.length > 0)throw new AgentQueueOccupiedError();
+      if(afterCurrentTurn && existing.data.length >= followUpLimit)throw new AgentQueueOccupiedError();
       if(existing.data.length >= 100)throw new AgentSubmissionError('目标会话队列已满，本次消息未发送','rejected');
       confirmTarget?.();
       ownCodexQueuedInput(threadId,identity);

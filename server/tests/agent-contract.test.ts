@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.35.0');
+    expect(contract.version).toBe('3.36.0');
     for (const path of ['/api/sessions','/api/sessions/:id']) {
       expect(contract.endpoints.find(endpoint=>endpoint.method==='GET'&&endpoint.path===path)?.description).toContain('record_deletion');
     }
@@ -44,6 +44,10 @@ describe('Agent API contract', () => {
 
     expect(keys).toEqual(expect.arrayContaining([
       'GET /api/agent/capabilities',
+      'GET /api/agent-docs/capabilities',
+      'GET /api/agent-docs/inbox',
+      'POST /api/agent-docs/messages',
+      'POST /api/agent-docs/tabs',
       'GET /api/projects',
       'POST /api/files/upload-directory',
       'POST /api/files/upload',

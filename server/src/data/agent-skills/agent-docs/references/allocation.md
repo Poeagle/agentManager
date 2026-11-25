@@ -15,7 +15,8 @@ python3 scripts/platform_api.py execution-options --agent-id codex --include-quo
 配置字段示例。下面的 shell 变量应来自同一次发现结果。可选字段无确认值时使用空值。
 
 ```sh
-request_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+# request_id 使用执行命令前已生成并记录的 ID。
+: "${request_id:?先生成并记录本次请求 ID}"
 python3 - "$request_id" "$agent_id" "$environment_id" "$model_id" "$reasoning_effort" "$service_tier" <<'PYTHON' |
 import json, sys
 request_id, *values = sys.argv[1:]

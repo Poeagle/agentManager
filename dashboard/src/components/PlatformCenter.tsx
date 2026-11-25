@@ -27,7 +27,7 @@ const sections = [
   { id: 'agents', label: 'Agent 配置', group: '平台', icon: SlidersHorizontal, permission: 'settings' },
   { id: 'settings', label: '平台设置', group: '平台', icon: Settings, permission: 'settings' },
   { id: 'agent', label: 'Agent API', group: '集成', icon: Bot, permission: 'agent_api' },
-  { id: 'collaboration-skill', label: '协作 Skill', group: '集成', icon: BookOpen, permission: 'agent_api' },
+  { id: 'collaboration-skill', label: 'agent-docs', group: '集成', icon: BookOpen, permission: 'agent_api' },
 ] as const;
 export type PlatformSection = typeof sections[number]['id'];
 

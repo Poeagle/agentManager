@@ -26,6 +26,7 @@ for (const agent of ['codex', 'claude']) {
     try {
       const native = randomUUID();
       const client = randomUUID();
+      const handoff = randomUUID();
       const timestamp = '2026-11-01T16:23:45.500Z';
       const context = {
         version: 1,
@@ -47,8 +48,14 @@ for (const agent of ['codex', 'claude']) {
           },
         },
       } : { type: 'user', uuid: randomUUID(), timestamp, message: { role: 'user', content: text } };
+      const incoming = `[Agent Manager handoff · source_tab_id=development · message_id=${handoff}]\n请验证发行候选版本`;
+      const handoffRow = agent === 'codex' ? {
+        type: 'event_msg', timestamp, payload: { type: 'item_completed', turn_id: 'handoff-turn', item: {
+          type: 'UserMessage', id: 'handoff-item', client_id: handoff, content: [{ type: 'text', text: incoming }],
+        } },
+      } : { type: 'user', uuid: handoff, timestamp, message: { role: 'user', content: incoming } };
       writeFileSync(join(directory, agent === 'codex' ? `rollout-card-${native}.jsonl` : `${native}.jsonl`),
-        JSON.stringify(row) + '\n');
+        JSON.stringify(row) + '\n' + JSON.stringify(handoffRow) + '\n');
 
       const Database = createRequire(import.meta.url)('../server/node_modules/better-sqlite3');
       const db = new Database(join(root, 'agentmanager.db'));
@@ -63,6 +70,10 @@ for (const agent of ['codex', 'claude']) {
         expect(message?.id).toBeTruthy();
         db.prepare('INSERT INTO conversation_input_sources(session_id,client_id,kind,label,message_id) VALUES(?,?,?,?,?)')
           .run(session.id, client, 'scheduled', '每日巡检', agent === 'claude' ? message.id : null);
+        const received = messages.find((item: { role: string; text: string }) => item.role === 'user' && item.text === incoming);
+        expect(received?.id).toBeTruthy();
+        db.prepare('INSERT INTO conversation_input_sources(session_id,client_id,kind,label,message_id) VALUES(?,?,?,?,?)')
+          .run(session.id, handoff, 'agent_handoff', '开发 A', received.id);
       } finally {
         db.close();
       }
@@ -85,6 +96,15 @@ for (const agent of ['codex', 'claude']) {
       const historyDialog = page.getByRole('dialog', { name: '简要压缩详情' });
 
       await page.goto('/');
+      const handoffCard = chat.getByRole('button', { name: /标签页协作 开发 A/ });
+      await expect(handoffCard).toBeVisible();
+      await handoffCard.click();
+      const handoffDialog = page.getByRole('dialog', { name: '标签页协作 · 开发 A' });
+      await expect(handoffDialog).toContainText('请验证发行候选版本');
+      await expect(handoffDialog).not.toContainText('source_tab_id');
+      await page.keyboard.press('Escape');
+      await page.reload();
+      await expect(handoffCard).toBeVisible();
       for (const { width, height, minimumGap } of [
         { width: 1440, height: 900, minimumGap: 48 },
         { width: 390, height: 600, minimumGap: 32 },

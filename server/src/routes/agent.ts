@@ -1,3 +1,4 @@
+import {agentDocsHandoff,agentDocsFollowUpLimit} from '../services/agent-docs.js';
 import {inspectSendGuard,checkSendGuardSubmission} from '../services/conversation-send-guard.js';
 import {validateBatch,rememberBatch} from '../services/conversation-batches.js';
 import {conversationQuestionReply} from '../services/conversation-question-reply.js';
@@ -12,7 +13,7 @@ import {agentForSession,agentDescriptors,getAgent} from '../services/agents/inde
 import {readAgentModelCatalog} from '../services/agents/model-catalog.js';
 import {sessionAgentContext,readAgentRuntime,presentAgentSession} from '../services/agents/session.js';
 import {nativeConversationId} from '../services/session-identity.js';
-import {rememberConversationInput,linkConversationInputs,boundConversationInputs} from '../services/conversation-input-links.js';
+import {rememberConversationInput,linkConversationInputs,boundConversationInputs,rememberInputSource,bindInputSourceMessage} from '../services/conversation-input-links.js';
 import {FastifyPluginAsync} from 'fastify';
 import {createRequire} from 'module';
 const require = createRequire(import.meta.url);
@@ -112,8 +113,8 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.35.0',
-    updatedAt:'2026-11-23',
+    version:'3.36.0',
+    updatedAt:'2026-11-25',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
     authentication: {
@@ -123,6 +124,7 @@ export function getAgentApiContract() {
       capabilitiesEndpoint: '/api/agent/capabilities',
       login: 'Use a platform API Key for supported HTTP routes, or POST /api/auth/login with { username, password } and store the returned cookie privately.',
       usage: 'For supported HTTP routes send Authorization: Bearer <API Key> or the session cookie. WebSocket handshakes require a browser session cookie; API Keys do not support WebSocket access.',
+      tabCollaboration: 'Agent Docs routes require the tab credential delivered privately to a platform-launched Agent. The skill client applies it automatically. The platform resolves the tab creator and project on each request.',
       errors: { 401: 'Missing, expired, or invalid login session.' },
       security: 'Keep API Keys, passwords and cookies in a private credential store. API Key grants and the account’s current permissions are both checked for each request.',
     },
@@ -280,6 +282,8 @@ export function getAgentApiContract() {
         request: {
           project_id: { type: 'string', required: false, recommended: true, description: 'ID returned by GET /api/projects.' },
           project_path: { type: 'string', required: true, description: 'Must match the registered project path.' },
+          tab_name: {type:'string',required:false,description:'Initial visible name for a Session tab.'},
+          launch_preference: {type:'object',required:false,description:'Optional model_id, reasoning_effort and service_tier. Validated by the selected Agent and environment before launch.'},
           task: { type: 'string', required: false, description: 'Optional initial message for Session mode. Omit or leave blank to open an idle session without sending input; ignored for terminal mode.' },
           mode: { type: 'session | terminal', required: false, default: 'session' },
           cli_type: { type:'registered Agent ID', required: false, default: 'claude', description: 'Used by Session mode.' },
@@ -381,6 +385,7 @@ export function getAgentApiContract() {
         description: 'Submit a follow-up immediately, including while busy or another execute request is waiting. Uses bracketed paste plus Enter, like typing in the dashboard. Does not cancel the current operation, reset output, or wait for an agent reply. Session ownership and project write access are required.',
         request: {
           input: {type:'string',required:true,description:'Text, at most 64 KiB; may be empty when attachments are present.'},
+          after_current_turn: {type:'boolean',required:false,description:'Use true with conversation source to dispatch through the native queue without falling back to terminal text. A busy target without queue capacity rejects the input.'},
           source: {type:'string',required:false,description:'Use conversation to submit directly to the bound native engine when available. Codex may reconnect once before dispatch. A lost receipt after dispatch remains unknown without automatic replay.'},
           client_id: {type:'string',required:false,description:'Client correlation ID for matching the native user-message echo. IDs already reserved by platform submissions are rejected with 409.'},
           expected_environment_id:{type:'string',required:false,description:'Expected Agent environment ID; defaults on existing sessions are native. A changed environment is rejected with 409 submission=rejected.'},
@@ -551,6 +556,15 @@ export function getAgentApiContract() {
         category: 'Scheduled tasks', method: 'GET', path: '/api/scheduled-tasks/codex-models?project_id=:projectId&environment_id=:environmentId',
         description: 'Read the selected authorized Codex Engine model catalog for a permitted project.',
       },
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/capabilities',description:'With a launch-issued tab credential, return the source tab, owner, project, callable operations and limits.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs',description:'List the creator’s live Agent tabs in the same project. Optional cursor from next_cursor.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs/:id',description:'Read state and recent public conversation text for an accessible tab.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox',description:'Read the current tab’s handoffs in receipt order with verified source, message id, reply reference and optional next_cursor.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox/:id',description:'Read the full body of one accepted or queued handoff addressed to the source tab.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/execution-options',description:'List project-authorized environments and launch settings. Optional agent_id and include_quota=true.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs',description:'Create and launch one tab in the source project. Body: request_id, name, execution and optional initial_message. The platform checks launch settings before sending the first task.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text after the target’s current work. Body: request_id, text, optional intent, and either target_tab_ids or reply_to; reply_to resolves the original source server-side.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/operations/:id',description:'Read settled or partial receipts for a request_id owned by the source tab.'},
       {
         category: 'Agents', method: 'GET', path: '/api/codex/environments',
         description: 'List Codex Engines available to the current account. API Key requests also require platform settings read permission.',
@@ -893,17 +907,22 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'发送检查失败'});}
   });
 
-  app.post<{Params:{id:string};Body:{input?:unknown;source?:unknown;client_id?:unknown;expected_native_id?:unknown;expected_environment_id?:unknown;attachments?:unknown;batch?:unknown;guard_token?:unknown}}>('/sessions/:id/input', async (req, reply) => {
+  app.post<{Params:{id:string};Body:{input?:unknown;source?:unknown;client_id?:unknown;expected_native_id?:unknown;expected_environment_id?:unknown;attachments?:unknown;batch?:unknown;guard_token?:unknown;after_current_turn?:unknown}}>('/sessions/:id/input', async (req, reply) => {
     const {id} = req.params;
     if (!canAccessAgentSession(req.user!.id,id)) return reply.code(404).send({error:'Session not found'});
     const input = req.body?.input;
     if (typeof input !== 'string' || (!input.trim() && !(Array.isArray(req.body?.attachments) && req.body.attachments.length)) || Buffer.byteLength(input) > MAX_EXECUTE_INPUT_BYTES) return reply.code(400).send({error:'input must be text of at most 64 KiB, with text or at least one attachment'});
+    const afterCurrentTurn=req.body?.after_current_turn===true;
+    if((req.body?.after_current_turn!==undefined && typeof req.body.after_current_turn!=='boolean')
+      ||(afterCurrentTurn&&req.body?.source!=='conversation'))
+      return reply.code(400).send({error:'after_current_turn requires conversation source',submission:'rejected'});
     const expectedNative=req.body?.expected_native_id,expectedEnvironment=req.body?.expected_environment_id;
     if(expectedEnvironment!==undefined&&(typeof expectedEnvironment!=='string'||!expectedEnvironment||expectedEnvironment.length>2048))return reply.code(400).send({error:'Invalid expected_environment_id',submission:'rejected'});
     if(typeof expectedEnvironment==='string'&&(getSession(id)?.agent_environment_id||'native')!==expectedEnvironment)return reply.code(409).send({error:'标签页已更换账号，请引用最新通知',submission:'rejected'});
     if(expectedNative!==undefined&&(typeof expectedNative!=='string'||!expectedNative||expectedNative.length>2048))return reply.code(400).send({error:'Invalid expected_native_id',submission:'rejected'});
     if(typeof expectedNative==='string'&&nativeConversationId(getSession(id)!)!==expectedNative)return reply.code(409).send({error:'标签页已更换对话，请引用最新通知',submission:'rejected'});
     const clientId=req.body?.client_id;
+    const handoff=agentDocsHandoff(id,req.user!.id,clientId);
     if(clientId!==undefined && (typeof clientId!=='string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(clientId))) return reply.code(400).send({error:'Invalid client_id'});
     if(typeof clientId==='string'&&getDb().prepare('SELECT 1 FROM conversation_input_sources WHERE session_id=? AND client_id=?').get(id,clientId))return reply.code(409).send({error:'该输入标识已用于平台消息',submission:'rejected'});
     let attachments;try{attachments=await validateConversationAttachments(id,req.body?.attachments);}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'附件不可用'});}
@@ -960,7 +979,13 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         const identity=typeof clientId==='string'?clientId:attachments.length?attachmentClientId:undefined;
         const message_id=identity?adapter.input.messageId?.(identity):undefined;
         recordInput=beginSessionAction(context,'input',{message_id,client_id:identity});
-        const native=await adapter.input.submit(context,input,identity,attachments);
+        if(afterCurrentTurn&&!adapter.input.supportsFollowUp)
+          throw new AgentSubmissionError('目标 Agent 未提供排队接口','rejected');
+        if(handoff) {
+          rememberInputSource(id,handoff.clientId,{kind:'agent_handoff',label:handoff.label});
+          if(message_id)bindInputSourceMessage(id,handoff.clientId,message_id);
+        }
+        const native=await adapter.input.submit(context,input,identity,attachments,afterCurrentTurn?{afterCurrentTurn,followUpLimit:handoff?agentDocsFollowUpLimit:undefined}:undefined);
         if(native){
           if(native==='queued')beginSessionAction(context,'queue',{message_id,client_id:identity})('accepted');
           rememberFirstSessionTask(id,conversationQuestionReply(input)?.text??input);
@@ -968,6 +993,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         }
         if(adapter.descriptor.sessionHost==='managed')throw Object.assign(Error('Agent 服务未接受输入，消息尚未提交'),{submission:'rejected'});
       }
+      if(afterCurrentTurn)throw new AgentSubmissionError('原生队列不可用，消息尚未提交','rejected');
       if(nativeCandidate&&!await attachExistingSession(id))throw new AgentSubmissionError('消息尚未发送：终端连接未就绪，请重连后重试','rejected');
       if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);
       if(req.body?.source==='conversation'&&typeof clientId==='string'&&session){
@@ -990,6 +1016,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(202).send({id,status:status==='queued'?'queued':'submitted'});
     } catch(error) {
       recordInput?.((error as {submission?:string})?.submission==='rejected'?'failed':'unknown');
+      if(handoff&&(error as {submission?:string})?.submission==='rejected')
+        getDb().prepare('DELETE FROM conversation_input_sources WHERE session_id=? AND client_id=?').run(id,handoff.clientId);
       if(error instanceof Error&&(error as Error&{submission?:string}).submission==='rejected')return reply.code(409).send({error:error.message,submission:'rejected',...(error as Error&{send_guard?:unknown}).send_guard?{send_guard:(error as Error&{send_guard?:unknown}).send_guard}:{}});
       req.log.warn({session_id:id,submission:'unknown'},'Agent input dispatched without a confirmed receipt');
       return reply.code(503).send({error:'消息接收结果暂未确认，连接恢复后会自动核对；请勿重复提交',submission:'unknown'});

@@ -1,3 +1,5 @@
+import { claudeCollaborationOptions, validateClaudeCollaborationLaunch } from "./collaboration.js";
+import { readModelPreference } from "../model-preferences.js";
 import { purgeClaudeHistory } from "./identity.js";
 import { extractClaudePromptContext } from "./prompt-context.js";
 import { decodeClaudeText } from "./text.js";
@@ -137,7 +139,7 @@ export const claudeAdapter: AgentDefinition = {
     submit: async (context, text, clientId, attachments, options) => {
       if (options?.afterCurrentTurn) {
         const runtime = (await import("./sdk-runtime.js")).claudeRuntime(requireNative(context));
-        return runtime?.submit(text, clientId, attachments, undefined, true) ?? false;
+        return runtime?.submit(text, clientId, attachments, undefined, true, options.followUpLimit) ?? false;
       }
       let provider = (
         await import("./providers.js")
@@ -226,7 +228,8 @@ export const claudeAdapter: AgentDefinition = {
       const nativeId=randomUUID();
       let provider=(await import("./providers.js")).claudeRuntimeProvider(context.session,context.environmentAccess);
       if(!provider&&!context.session.agent_environment_id)provider=(await import("./providers.js")).claudeNativeRuntimeProvider(context.environmentAccess);
-      const runtime=(await import("./sdk-runtime.js")).ensureClaudeRuntime(nativeId,context.projectPath,instructions,provider?{model:runtimeModel(provider,preference),effort:""}:preference,false,provider);
+      const runtime=(await import("./sdk-runtime.js")).ensureClaudeRuntime(nativeId,context.projectPath,[instructions,context.platformToolInstructions].filter(Boolean).join("\n\n")||undefined,
+        provider?{model:runtimeModel(provider,preference),effort:""}:preference,false,provider,context.platformToolEnvironment);
       if(preference)
         (await import("./controls.js")).saveClaudeSessionModelPreference(
           {...context,nativeId},
@@ -264,6 +267,9 @@ export const claudeAdapter: AgentDefinition = {
     },
   },
   launch: {
+    supportsPlatformTools: true,
+    collaborationOptions: claudeCollaborationOptions,
+    validateCollaborationLaunch: validateClaudeCollaborationLaunch,
     supportsInitialClientId: true,
     prepare: async (context, task, instructions, resume, initialClientId) => {
       const nativeId = resume ? context.nativeId || undefined : randomUUID();
@@ -274,26 +280,29 @@ export const claudeAdapter: AgentDefinition = {
       ).claudeRuntimeProvider(context.session, context.environmentAccess);
       if (!provider && !context.session.agent_environment_id)
         provider = (await import("./providers.js")).claudeNativeRuntimeProvider(context.environmentAccess);
+      const requested = !resume && context.session.created_by_user_id && context.session.id
+        ? readModelPreference(context.session.created_by_user_id, context.session.id) : null;
       const selectedPreference=provider
         ? {
             model: runtimeModel(
               provider,
-              readClaudeSessionModelPreference({...context,nativeId}) ??
+              requested ?? readClaudeSessionModelPreference({...context,nativeId}) ??
                 managedModelPreference("claude"),
               !!resume,
             ),
             effort: "",
           }
-        : readClaudeSessionModelPreference({...context,nativeId}) ??
+        : requested ?? readClaudeSessionModelPreference({...context,nativeId}) ??
           managedModelPreference("claude") ??
           undefined;
       const runtime = (await import("./sdk-runtime.js")).ensureClaudeRuntime(
         nativeId,
         context.projectPath,
-        instructions,
+        [instructions, context.platformToolInstructions].filter(Boolean).join("\n\n") || undefined,
         selectedPreference,
         !!resume,
         provider,
+        context.platformToolEnvironment,
       );
       const userId = !resume && task.trim() && initialClientId ? randomUUID() : undefined;
       if(selectedPreference)

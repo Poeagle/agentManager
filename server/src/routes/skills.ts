@@ -7,6 +7,7 @@ import { unzipSync, type UnzipFileInfo } from 'fflate';
 import { getDb } from '../db/index.js';
 import { userOwnsProject } from '../auth.js';
 import { requirePermission } from '../services/rbac.js';
+import { agentDocsRoot } from '../services/agent-docs.js';
 
 /* ================================================================
    Skill manager — enumerate / create / delete SKILL.md-format skills
@@ -598,21 +599,27 @@ async function listSkillsIn(loc: SkillLocation) {
   return out;
 }
 
-const collaborationSkillRoot = new URL('../data/agent-skills/agent-manager-collaboration/', import.meta.url);
-const collaborationDocuments = new Map([
-  ['skill', 'SKILL.md'],
-  ['tabs', 'references/tabs.md'],
-  ['messages', 'references/messages.md'],
-  ['allocation', 'references/allocation.md'],
-]);
+
+
+async function agentDocsFiles(directory = agentDocsRoot, prefix = ''): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  return (await Promise.all(entries.filter(entry => !entry.name.startsWith('.') && entry.name !== '__pycache__').map(entry => {
+    const path = prefix + entry.name;
+    if (entry.isDirectory()) return agentDocsFiles(new URL(encodeURIComponent(entry.name) + '/', directory), path + '/');
+    return entry.isFile() ? [path] : [];
+  }))).flat().sort();
+}
 
 export const skillsRoutes: FastifyPluginAsync = async (app) => {
-  app.get<{ Params: { document: string } }>('/integrations/collaboration-skill/:document', async (req, reply) => {
+  app.get<{ Querystring: { file?: string } }>('/integrations/agent-docs', async (req, reply) => {
     if (!requirePermission(req, reply, 'agent_api')) return;
-    const file = collaborationDocuments.get(req.params.document);
-    if (!file) return reply.code(404).send({ error: '找不到协作 Skill 文档' });
-    const markdown = await readFile(new URL(file, collaborationSkillRoot), 'utf8');
-    return reply.header('Cache-Control', 'private, no-store').send({ markdown });
+    const files = await agentDocsFiles();
+    reply.header('Cache-Control', 'private, no-store');
+    const { file } = req.query;
+    if (file === undefined) return { root: 'agent-docs', files };
+    if (!files.includes(file)) return reply.code(404).send({ error: '找不到 Skill 文件' });
+    const path = file.split('/').map(encodeURIComponent).join('/');
+    return { file, content: await readFile(new URL(path, agentDocsRoot), 'utf8') };
   });
 
   // List a project's skills grouped by location (project + global references).

@@ -22,6 +22,7 @@ import {inaccessibleProjectPaths,isAdmin} from '../auth.js';
 import {tmuxCursorRestoreSequence} from '../lib/terminal-cursor.js';
 import {tmuxClientArgs} from '../lib/terminal-environment.js';
 import {withSharedResourceInstructions} from './cli-command.js';
+import {agentDocsLaunch} from './agent-docs.js';
 import {sharedResourceLaunch} from './shared-resources/store.js';
 
 import {snapshotConversation,activateFreshConversation,restoreConversationSnapshot} from './conversation-history.js';
@@ -1617,7 +1618,10 @@ async function spawnSessionUnlocked(sessionId: string, projectPath: string, task
   if (activeSessions.has(sessionId)||isManagedAgentActive(sessionId)) return;
   const creator = getDb().prepare('SELECT created_by_user_id FROM sessions WHERE id = ?').get(sessionId) as { created_by_user_id: string | null } | undefined;
   const adapter=getAgent(cliType),shared=adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(creator?.created_by_user_id,projectPath):null;
-  const context=sessionAgentContext({...getSession(sessionId)!,cli_type:cliType,agent_id:cliType},{projectPath,sharedAccess:!creator?.created_by_user_id||isAdmin(creator.created_by_user_id)});
+  const session={...getSession(sessionId)!,cli_type:cliType,agent_id:cliType};
+  const docs=adapter.launch.supportsPlatformTools?agentDocsLaunch(session):undefined;
+  const context=sessionAgentContext(session,{projectPath,sharedAccess:!creator?.created_by_user_id||isAdmin(creator.created_by_user_id),
+    platformToolInstructions:docs?.instructions,platformToolEnvironment:docs?.environment});
   const canPreserveInitialIdentity=!!initialClientId&&!!adapter.input.supportsInitialClientIdentity;
   const launch=await adapter.launch.prepare(context,task,shared?.instructions,false,canPreserveInitialIdentity?initialClientId:undefined),streamSocket=launch.streamSocket;
   const boundInitialMessageId=launch.initialMessageId??(canPreserveInitialIdentity?adapter.input.messageId?.(initialClientId):undefined);
@@ -2760,7 +2764,9 @@ async function resumeCrashedSessionUnlocked(staleSession: Session, projectPath: 
   const sessionCliType=agentForSession(staleSession).descriptor.id;
   const nativeSessionId=nativeConversationId(staleSession);if(!nativeSessionId)throw Error(`No native conversation id is stored for ${sessionId}`);
   const adapter=agentForSession(staleSession),shared=adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(staleSession.created_by_user_id,projectPath):null;
-  const context=sessionAgentContext(staleSession,{projectPath,sharedAccess:!staleSession.created_by_user_id||isAdmin(staleSession.created_by_user_id)});
+  const docs=adapter.launch.supportsPlatformTools?agentDocsLaunch(staleSession):undefined;
+  const context=sessionAgentContext(staleSession,{projectPath,sharedAccess:!staleSession.created_by_user_id||isAdmin(staleSession.created_by_user_id),
+    platformToolInstructions:docs?.instructions,platformToolEnvironment:docs?.environment});
   const launch=await adapter.launch.prepare(context,'',shared?.instructions,true),streamSocket=launch.streamSocket;
   const task = staleSession.task;
 
@@ -3001,9 +3007,11 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
         preference=await adapter.controls.validate(context,preference);
       }
       const instructions=adapter.descriptor.capabilities.sharedResources?sharedResourceLaunch(session.created_by_user_id, project.path)?.instructions:undefined;
+      const docs=adapter.launch.supportsPlatformTools?agentDocsLaunch(session):undefined;
+      const launchContext={...context,projectPath:project.path,platformToolInstructions:docs?.instructions,platformToolEnvironment:docs?.environment};
       const prepared=replacement?await replacement.prepare({...context,projectPath:project.path}):environmentChange
-        ?await adapter.lifecycle.prepareFreshInEnvironment!({...context,projectPath:project.path},targetEnvironmentId!,instructions,preference)
-        :await adapter.lifecycle.prepareFresh({...context,projectPath:project.path},instructions,preference);
+        ?await adapter.lifecycle.prepareFreshInEnvironment!(launchContext,targetEnvironmentId!,instructions,preference)
+        :await adapter.lifecycle.prepareFresh(launchContext,instructions,preference);
       const existingIdentity=getDb().prepare(`SELECT 1 FROM sessions WHERE COALESCE(agent_id,cli_type)=?
         AND COALESCE(native_session_id,codex_session_id,claude_session_id)=? LIMIT 1`).get(adapter.descriptor.id,prepared);
       if(!prepared||prepared===context.nativeId||existingIdentity)throw Error('新会话未返回独立的原生标识');

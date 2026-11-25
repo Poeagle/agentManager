@@ -21,3 +21,15 @@ export function removeSessionTabs(sessionId:string,scope?:{userId:string;project
   broadcastEphemeral({session_id:sessionId,project_id:projectId,type:'user.tab_state',data:{targetUserId:row.user_id,projectId,sessionId,action:'delete'}});
  }
 }
+
+/** Store platform-created names using the same state that presents browser tabs. */
+export function rememberNewTabName(sessionId: string, userId: string, projectId: string, name: string) {
+ const db = getDb(), key = `project:${projectId}`;
+ const row = db.prepare('SELECT value FROM user_ui_state WHERE user_id=? AND key=?').get(userId, key) as {value:string}|undefined;
+ let state: Record<string, unknown> = {};
+ try { state = JSON.parse(row?.value || '{}') || {}; } catch { /* Recover invalid UI state. */ }
+ state.terminalLabels = {...(state.terminalLabels as Record<string,string> | undefined), [sessionId]: name};
+ db.prepare("INSERT INTO user_ui_state(user_id,key,value,updated_at) VALUES(?,?,?,datetime('now')) ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at")
+  .run(userId,key,JSON.stringify(state));
+ broadcastEphemeral({session_id:sessionId,project_id:projectId,type:'user.tab_state',data:{targetUserId:userId,projectId,sessionId,action:'rename',name}});
+}

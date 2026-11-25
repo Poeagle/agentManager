@@ -261,6 +261,7 @@ export interface AgentManagementPort {
   writeConfigFile?(file: AgentConfigFileInput): Promise<AgentConfigFileResult>;
 }
 export interface AgentSession {
+  mode?: string | null;
   agent_environment_id?: string | null;
   id?: string;
   agent_id?: string | null;
@@ -283,6 +284,9 @@ export interface AgentContext {
   actorUserId?: string;
   force?: boolean;
   verifyProcess?: boolean;
+  /** Private shell environment for platform-owned collaboration tools. */
+  platformToolEnvironment?: Record<string, string>;
+  platformToolInstructions?: string;
   environmentAccess?: (environmentId: string) => boolean;
 }
 export interface AgentAsyncQuestion {
@@ -695,13 +699,13 @@ export interface AgentInputPort {
   /** When supported, map a platform client ID to the durable native message ID. */
   messageId?(clientId: string): string | undefined;
   cancelQueued?(context: AgentContext, clientId: string): Promise<void>;
-  /** afterCurrentTurn uses an empty follow-up queue or rejects with AgentQueueOccupiedError. */
+  /** Normal follow-ups reserve an empty queue. Platform handoffs can append within a bounded queue. */
   submit(
     context: AgentContext,
     text: string,
     clientId?: string,
     attachments?: ConversationAttachment[],
-    options?: {afterCurrentTurn?: boolean},
+    options?: {afterCurrentTurn?: boolean; followUpLimit?: number},
   ): Promise<boolean | "queued">;
   afterTerminalSubmit(context: AgentContext): Promise<void>;
 }
@@ -767,7 +771,25 @@ export interface AgentLaunchPlan {
   bindingPath?: string;
   preSpawnFiles?: Set<string>;
 }
+export interface AgentCollaborationSelection {
+  agent_id: string;
+  environment_id?: string;
+  model_id?: string;
+  reasoning_effort?: string;
+  service_tier?: string;
+}
+export interface AgentCollaborationEnvironment {
+  agent_id: string;
+  environment_id: string;
+  name: string;
+  models: Array<{model_id: string; reasoning_efforts: string[]; service_tiers: string[]; default_reasoning_effort?: string}>;
+  quota?: unknown;
+  status?: string;
+}
 export interface AgentLaunchPort {
+  supportsPlatformTools?: boolean;
+  collaborationOptions?(userId: string, projectId: string, includeQuota: boolean): Promise<AgentCollaborationEnvironment[]>;
+  validateCollaborationLaunch?(userId: string, projectId: string, selection: AgentCollaborationSelection): Promise<{preference?: ModelPreference; error?: string}>;
   /** Fresh launch preserves a platform-generated UUID for its first user message. */
   supportsInitialClientId?: boolean;
   prepare(

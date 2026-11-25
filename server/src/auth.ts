@@ -357,6 +357,8 @@ export async function authHook(req: FastifyRequest, reply: FastifyReply) {
   if (req.method === 'OPTIONS') return; // let CORS preflight through
   const path = req.url.split('?')[0];
   if (!path.startsWith('/api/')) return; // static assets, SPA, etc.
+  // The dedicated Agent Docs router authenticates a launch-issued tab capability.
+  if (req.routeOptions.url?.startsWith('/api/agent-docs/')) return;
 
   // Claude Code hooks POST events with no session cookie — allow ingest.
   // (Reads of /api/events still require login + owner filtering in the route.)

@@ -39,6 +39,16 @@ beforeEach(async()=>{
 afterEach(async()=>{stop?.();stop=undefined;for(const client of wss.clients) client.terminate();await new Promise<void>(resolve=>wss.close(()=>resolve()));await new Promise<void>(resolve=>server.close(()=>resolve()));vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});});
 const send=(method:string,params:unknown)=>peer.send(JSON.stringify({method,params}));
 describe('native Codex conversation streaming',()=>{
+  it('passes only the new thread shell its tab credential and retains model settings',async()=>{
+    await createStreamingCodexThread('/project','initial','Discover agent-docs',{model:'chosen',effort:'high'},undefined,{
+      AGENT_MANAGER_COLLABORATION_SESSION:'private-fixture',
+    });
+    const started=requestParams.find(entry=>entry.method==='thread/start')!.params;
+    expect(started).toMatchObject({developerInstructions:'Discover agent-docs',config:{
+      model_reasoning_effort:'high',shell_environment_policy:{set:{AGENT_MANAGER_COLLABORATION_SESSION:'private-fixture'}},
+    }});
+    expect(JSON.stringify(submissions)).not.toContain('private-fixture');
+  });
   it('streams bounded tool previews with their progress boundary, without inserting tool output into messages',async()=>{
     stop=observeCodexConversation('thread',frame=>frames.push(frame));
     await vi.waitFor(()=>expect(requests).toContain('thread/turns/list'));

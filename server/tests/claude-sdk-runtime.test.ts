@@ -30,6 +30,17 @@ const stream=(event:any)=>({type:'stream_event',uuid:`019ff001-1212-7212-8212-${
 afterEach(()=>{releaseClaudeRuntime(session);sdk.queries=[];sdk.messages=[];sdk.interrupts=0;sdk.launchError=undefined;uuid=0;vi.unstubAllEnvs();});
 
 describe('Claude Agent SDK runtime',()=>{
+  it('passes a tab credential only through the SDK process environment',async()=>{
+    const runtime=ensureClaudeRuntime(session,'/tmp','Discover agent-docs on demand',undefined,false,null,{
+      AGENT_MANAGER_COLLABORATION_URL:'http://127.0.0.1:1/api/agent-docs',
+      AGENT_MANAGER_COLLABORATION_SESSION:'private-fixture',
+    });
+    await runtime.submit('normal task');
+    await vi.waitFor(()=>expect(sdk.queries).toHaveLength(1));
+    expect(sdk.queries[0].options.env.AGENT_MANAGER_COLLABORATION_SESSION).toBe('private-fixture');
+    expect(JSON.stringify(sdk.queries[0].options.systemPrompt)).not.toContain('private-fixture');
+    expect(sdk.queries[0].options.systemPrompt.append).toContain('agent-docs');
+  });
   it('classifies insufficient balance and unavailable models as terminal errors',async()=>{
     sdk.messages=[
       {type:'result',subtype:'error_during_execution',uuid:assistant,session_id:session,errors:['API Error: 402 {"error":{"message":"insufficient balance","type":"insufficient_balance"}}']},

@@ -1,3 +1,4 @@
+import { saveModelPreference } from '../services/agents/model-preferences.js';
 import {canUseSessionEnvironment,assertEnvironmentUse} from '../services/agents/environment-access.js';
 import {detachManagedAgents,observeAgentConversation} from '../services/agents/host.js';
 import {agentForSession,getAgent} from '../services/agents/index.js';
@@ -30,7 +31,7 @@ import {readConversationPreview,humanSessionTask} from '../services/conversation
 import {personalQuestionRuntime,setIgnoredQuestions} from '../services/question-attention.js';
 import {watchSessionRuntime,stopSessionRuntimeWatches} from '../services/session-runtime-watch.js';
 import {createSessionRecordDeletionWorker,sessionRecordDeletionState} from '../services/session-record-deletion.js';
-import {removeSessionTabs} from '../services/session-tabs.js';
+import {removeSessionTabs,rememberNewTabName} from '../services/session-tabs.js';
 import {broadcastEphemeral} from '../services/event-store.js';
 import {requirePermission,userHasPermission} from '../services/rbac.js';
 import {attachExistingSession} from '../services/session-attachment.js';
@@ -585,6 +586,8 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       cli_type?: string;
       environment_id?: string;
       client_id?: string;
+      tab_name?: string;
+      launch_preference?: { model_id?: string; reasoning_effort?: string; service_tier?: string };
     };
   }>('/sessions', async (req, reply) => {
     const { project_path, task, project_id, mode, cli_type, client_id } = req.body as any;
@@ -630,8 +633,24 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
 
     if (task !== undefined && typeof task !== 'string') return reply.status(400).send({ error: 'task must be a string' });
     const initialTask = task ?? '';
+    const {tab_name: tabName, launch_preference: requested} = req.body;
+    if(tabName!==undefined && (typeof tabName!=='string'||!tabName.trim()||tabName.length>120))
+      return reply.code(400).send({error:'无效的标签页名称'});
+    let launchPreference;
+    if(requested!==undefined){
+      if(!requested||typeof requested!=='object'||Array.isArray(requested)||
+          Object.entries(requested).some(([key,value])=>!['model_id','reasoning_effort','service_tier'].includes(key)||typeof value!=='string'||value.length>160))
+        return reply.code(400).send({error:'无效的启动配置'});
+      const validate=getAgent(cliType).launch.validateCollaborationLaunch;
+      if(!validate)return reply.code(409).send({error:'当前 Agent 不支持指定启动配置'});
+      const checked=await validate(req.user!.id,resolvedProjectId,{agent_id:cliType,environment_id:environmentId as string|undefined,...requested});
+      if(!checked.preference)return reply.code(409).send({error:checked.error||'启动配置不可用'});
+      launchPreference=checked.preference;
+    }
 
     const session = sessionManager.createSession(canonicalProjectPath, initialTask, resolvedProjectId, cliType, req.user!.id, 'session');
+    if(tabName)rememberNewTabName(session.id,req.user!.id,resolvedProjectId,tabName.trim());
+    if(launchPreference)saveModelPreference(req.user!.id,session.id,launchPreference);
     // The first managed Claude input predates its JSONL file. Preserve the
     // browser identity now so durable history can merge its echo immediately.
     if(client_id&&initialTask.trim()&&cliType==='claude'&&getAgent(cliType).input.supportsInitialClientIdentity) {

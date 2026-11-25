@@ -22,6 +22,7 @@ export function installPlatformApiRegistry(app: FastifyInstance): void {
       let restriction: string | undefined;
       if (route.websocket || /\/(?:stream|terminal)$/.test(path)) restriction = 'WebSocket protocol; use session tools for agent control';
       else if (/\/sessions\/:id\/(?:output|rendered-output)$/.test(path)) restriction = 'Use the clean session display or completed-turn API instead of terminal replay data';
+      else if (path.startsWith('/api/agent-docs/')) restriction = 'Requires the scoped credential of a launched Agent tab';
       else if (/^\/api\/auth\//.test(path)) restriction = 'Login and credential management require direct user interaction';
       else if (/^\/api\/platform-ai\/(?:config|channels|bindings|notification-targets|callbacks|messages|attachments)/.test(path)) restriction = 'AI/channel credentials, identity bindings and ingress are managed directly in the platform';
       else if (/^\/api\/platform-ai\/(?:conversations|tools)/.test(path)) restriction = 'Use conversation context or platform_capabilities to avoid recursive requests';

@@ -213,6 +213,7 @@ class ClaudeRuntime {
     preference?: ModelPreference,
     resume = false,
     provider: ClaudeProviderRuntime | null = null,
+    private platformToolEnvironment?: Record<string, string>,
   ) {
     this.model = preference?.model || undefined;
     this.resumeOnNextQuery = resume;
@@ -352,8 +353,9 @@ class ClaudeRuntime {
     attachments: ConversationAttachment[] = [],
     userId?: string,
     afterCurrentTurn = false,
+    followUpLimit = 1,
   ): Promise<boolean | "queued"> {
-    if (afterCurrentTurn && this.hasQueuedFollowUp()) throw new AgentQueueOccupiedError();
+    if (afterCurrentTurn && (followUpLimit === 1 ? this.hasQueuedFollowUp() : this.pending.length >= followUpLimit)) throw new AgentQueueOccupiedError();
     const uuid = clientId &&
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientId)
       ? clientId
@@ -1212,7 +1214,9 @@ class ClaudeRuntime {
         settingSources: ["user", "project", "local"],
         tools: { type: "preset", preset: "claude_code" },
         persistSession: true,
-        ...(providerEnvironment ? { env: providerEnvironment } : {}),
+        ...(providerEnvironment || this.platformToolEnvironment
+          ? { env: { ...(providerEnvironment || process.env), ...this.platformToolEnvironment } }
+          : {}),
         ...(this.provider?.adaptiveThinking
           ? { thinking: { type: "adaptive" as const } }
           : {}),
@@ -1464,10 +1468,11 @@ export function ensureClaudeRuntime(
   preference?: ModelPreference,
   resume = false,
   provider: ClaudeProviderRuntime | null = null,
+  platformToolEnvironment?: Record<string, string>,
 ) {
   let runtime = runtimes.get(id);
   if (!runtime) {
-    runtime = new ClaudeRuntime(id, cwd, instructions, preference, resume, provider);
+    runtime = new ClaudeRuntime(id, cwd, instructions, preference, resume, provider, platformToolEnvironment);
     runtimes.set(id, runtime);
   } else {
     runtime.configure(provider, preference);

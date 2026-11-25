@@ -22,6 +22,12 @@ def parse_args():
     commands.add_parser("capabilities")
     tabs = commands.add_parser("list-tabs")
     tabs.add_argument("--cursor")
+    read = commands.add_parser("read-tab")
+    read.add_argument("tab_id")
+    inbox = commands.add_parser("inbox")
+    inbox.add_argument("--cursor")
+    incoming = commands.add_parser("read-message")
+    incoming.add_argument("message_id")
     options = commands.add_parser("execution-options")
     options.add_argument("--agent-id")
     options.add_argument("--include-quota", action="store_true")
@@ -34,7 +40,7 @@ def parse_args():
 
 def platform_connection():
     url = os.environ.get("AGENT_MANAGER_COLLABORATION_URL", "")
-    token = os.environ.get("AGENT_MANAGER_COLLABORATION_TOKEN", "")
+    token = os.environ.get("AGENT_MANAGER_COLLABORATION_SESSION", "")
     if not url or not token:
         raise ValueError("当前运行时未提供 Agent Manager 协作连接")
     if any(char.isspace() for char in url) or any(ord(char) < 33 or ord(char) > 126 for char in token):
@@ -52,8 +58,8 @@ def make_request(args):
     query = {}
     if command == "capabilities":
         route = "/capabilities"
-    elif command == "list-tabs":
-        route = "/tabs"
+    elif command in ("list-tabs", "inbox"):
+        route = "/tabs" if command == "list-tabs" else "/inbox"
         if args.cursor:
             query["cursor"] = args.cursor
     elif command == "execution-options":
@@ -62,6 +68,14 @@ def make_request(args):
             query["agent_id"] = args.agent_id
         if args.include_quota:
             query["include_quota"] = "true"
+    elif command == "read-tab":
+        if not args.tab_id or args.tab_id in (".", ".."):
+            raise ValueError("需要有效的 tab_id")
+        route = "/tabs/" + quote(args.tab_id, safe="")
+    elif command == "read-message":
+        if not args.message_id or args.message_id in (".", ".."):
+            raise ValueError("需要有效的 message_id")
+        route = "/inbox/" + quote(args.message_id, safe="")
     elif command == "operation":
         if not args.request_id or args.request_id in (".", ".."):
             raise ValueError("需要有效的 request_id")

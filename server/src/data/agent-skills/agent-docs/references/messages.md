@@ -1,0 +1,73 @@
+# 发送消息与回传
+
+## 投递
+
+执行写命令前先生成并记录请求 ID。可以单独运行 `python3 -c 'import uuid; print(uuid.uuid4())'` 生成，然后将确认过的值传到执行命令的环境。这样即使发送命令没有返回，也能查询原请求。
+
+`POST /messages` 对应 `send-message`。使用 [查找标签页](tabs.md#查找现有标签页) 返回的目标 ID。请求必填 `request_id`、非空且去重的 `target_tab_ids` 和 `text`。平台根据会话授权附上 `source_tab_id` 和唯一的 `message_id`，并将消息作为普通会话输入交付。接收方在会话卡片里看到来源标签页和正文。
+
+```sh
+# request_id 使用执行命令前已生成并记录的 ID。
+: "${request_id:?先生成并记录本次请求 ID}"
+python3 - "$request_id" "$ui_tab_id" "$docs_tab_id" <<'PYTHON' |
+import json, sys
+request_id, *targets = sys.argv[1:]
+print(json.dumps({
+    "request_id": request_id,
+    "target_tab_ids": targets,
+    "text": "功能已完成并通过自验。请按各自职责核对改动，回传结论、证据和待处理项。",
+}, ensure_ascii=False))
+PYTHON
+python3 scripts/platform_api.py send-message
+```
+
+不同目标需要不同内容时，分别发送并使用不同请求 ID。带其他 Agent 文件内容或日志时，只包含当前任务需要的证据。
+
+## 查看收件箱并回传
+
+`GET /inbox` 对应 `inbox`，按收件顺序返回近期协作消息。每条包含 `message_id`、`source_tab_id`、`source_label`、正文预览、投递状态和可选的原消息引用。要比较多个请求的范围时，按需用 `read-message` 读取已进入当前标签页队列的完整正文。标记为待确认的记录用于核对投递状态，等收到完整来信再开展任务。多项测试可以依次执行，也可以合并共同步骤。要为每个原消息分别保留结果和证据。
+
+```sh
+python3 scripts/platform_api.py inbox
+python3 scripts/platform_api.py read-message "$original_message_id"
+```
+
+回复时使用 `send-message` 的 `reply_to`，填当前标签页收到的原 `message_id`。回传调用省略 `target_tab_ids`，平台根据原消息确认并选择发送方。API 会拒绝引用其他标签页的来信。每项结果各用一次写请求。可用 `intent: "progress"` 表明进展，或用 `intent: "result"` 标记交付结论。保留工单号或其他交付物标识，方便对方汇总。
+
+```sh
+# reply_request_id 使用回传前已生成并记录的新 ID。
+: "${reply_request_id:?先生成并记录本次回传请求 ID}"
+python3 - "$reply_request_id" "$original_message_id" <<'PYTHON' |
+import json, sys
+request_id, original_message_id = sys.argv[1:]
+print(json.dumps({
+    "request_id": request_id,
+    "reply_to": original_message_id,
+    "intent": "result",
+    "text": "DBM-1234 验收通过。检查了窄屏与键盘操作，证据见本项目验收记录。",
+}, ensure_ascii=False))
+PYTHON
+python3 scripts/platform_api.py send-message
+```
+
+## 解释每个目标的状态
+
+批量响应的 `result.results` 按目标列出 `tab_id` 和 `status`。进入投递流程后附上 `message_id`，拒绝时可附原因。
+
+| 状态 | 含义 |
+|---|---|
+| `accepted` | 收到 Agent 接收回执。 |
+| `queued` | 原生 Agent 已接受排队，进入该标签页现有工作的后面。 |
+| `submitted` | 已交给运行时，尚无 Agent 接收回执。 |
+| `rejected` | 已确认未交付。查看该目标的原因。 |
+| `unknown` | 交付结果待确认。保留原请求 ID。 |
+
+收到权限、发送保护或目标会话变化错误时，按错误处理并重新确认目标。整批请求失败或超时时，也优先核对原操作。
+
+## 核对操作
+
+`GET /operations/{request_id}` 对应 `operation`。响应包含 `request_id`、操作状态 `pending` 或 `settled`，以及当前可确认的创建或逐目标投递结果。读取次数和保留窗口以能力响应为准。查本次回传使用本次已记录的请求 ID，填写 `reply_to` 使用收到的原消息 ID。查不到记录时保留不确定状态，避免再次创建或发送。
+
+```sh
+python3 scripts/platform_api.py operation "$request_id"
+```

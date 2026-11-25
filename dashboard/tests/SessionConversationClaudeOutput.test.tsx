@@ -71,6 +71,16 @@ it.each(['claude','codex'] as const)('shows the recorded send time on a live %s 
   expect(card.querySelector('time')).toBeVisible();
   expect(screen.getByRole('button',{name:/定时任务\s*旧版UI审查/}).querySelector('time')).toBeNull();
 });
+it.each(['claude','codex'] as const)('shows a sourced handoff using the platform message card in %s',async agent=>{
+  await renderSnapshot({
+    ...session,cli_type:agent,claude_session_id:agent==='claude'?'native':null,codex_session_id:agent==='codex'?'native':null,
+  },[{id:'handoff',role:'user',text:'请验证 DBM-1234',timestamp:'2026-11-25T00:00:00Z',queued:true,
+    input_source:{kind:'agent_handoff',label:'DBM-1234 开发'}}]);
+  const card=await screen.findByRole('button',{name:/标签页协作.*DBM-1234 开发/});
+  expect(card).toHaveTextContent('已排队');
+  fireEvent.click(card);
+  expect(screen.getByRole('dialog',{name:'标签页协作 · DBM-1234 开发'})).toHaveTextContent('请验证 DBM-1234');
+});
 it.each(['claude','codex'] as const)('leaves live Progress when %s publishes a settled Final',async agent=>{
   const descriptor=sessionAgent({cli_type:agent});
   const bound={...session,cli_type:agent,agent: {...descriptor,capabilities:{...descriptor.capabilities,stopTurn:true}},
