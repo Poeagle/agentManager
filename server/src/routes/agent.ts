@@ -113,7 +113,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.36.2',
+    version:'3.37.0',
     updatedAt:'2026-11-25',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -440,7 +440,7 @@ export function getAgentApiContract() {
       {category:'Session control',method:'POST',path:'/api/sessions/:id/new-conversation',description:'Create a fresh native conversation in the same tab. Once it is ready, queue permanent deletion of the previous platform session history and its bound Agent conversation. The session owner must have agent write permission and be an administrator. Optional environment_id selects an authorized target environment and requires expected_native_id to match an idle source conversation. Unsupported targets are rejected.',
         request:{preference:{type:'object',required:false,description:'Optional model, effort, provider and service_tier preference; the current model is used when omitted.'},expected_native_id:{type:'string',required:false,description:'Expected source native conversation identity; required when environment_id is supplied.'},environment_id:{type:'string',required:false,description:'Authorized target Agent environment; omitted uses the current environment.'}},
         response:{session:'Fresh platform session with a new native identity',previous_conversation_deletion:'pending | failed — pending means durably queued for background cleanup',history_id:'Previous platform record ID for tracking the deletion',warning:'Optional warning when the new conversation is ready but deletion could not be scheduled'}},
-      {category:'Session control',method:'GET',path:'/api/sessions/:id/conversation',description:'Read paginated conversation history. Codex startup notices for shared resources and the agent-docs skill index are returned in native injection order. Compaction summary cards may identify an earlier internal assistant echo through compaction.replaces_message_id. User messages may carry verified project attachment references. Claude assistant messages may carry visible thinking fragments under the same native message identity as the answer. Claude API errors carry phase=error, including error.code=rate_limit for an upstream 429.'},
+      {category:'Session control',method:'GET',path:'/api/sessions/:id/conversation',description:'Read paginated conversation history. On a request without after or before, include_context=true adds startup_context with public injected notices from the first history window when file history is available. Notices use their native IDs and sequence and do not affect message pagination. Codex startup notices for shared resources and the agent-docs skill index are returned in native injection order. Compaction summary cards may identify an earlier internal assistant echo through compaction.replaces_message_id. User messages may carry verified project attachment references. Claude assistant messages may carry visible thinking fragments under the same native message identity as the answer. Claude API errors carry phase=error, including error.code=rate_limit for an upstream 429.'},
       {
         category: 'Session control',
         method: 'WS',
@@ -1287,7 +1287,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       readSessionUsageIntervals(binding.context,{parent,before:cursor})});
   });
 
-  app.get<{Params:{id:string};Querystring:{after?:string;before?:string;limit?:string}}>('/sessions/:id/conversation',async(req,reply)=>{
+  app.get<{Params:{id:string};Querystring:{after?:string;before?:string;limit?:string;include_context?:string}}>('/sessions/:id/conversation',async(req,reply)=>{
     const id=req.params.id;
     if(!canAccessAgentSession(req.user!.id,id)) return reply.code(404).send({error:'Session not found'});
     if(req.query.after && req.query.before) return reply.code(400).send({error:'只能选择一种分页方向'});
@@ -1296,7 +1296,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     if(!session) return reply.code(404).send({error:'Session not found'});
     const project=session.project_id ? getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined : undefined;
     const page=await readConversation({...session,cli_type:session.cli_type||'claude',codex_session_id:session.codex_session_id,claude_session_id:session.claude_session_id,project_path:project?.path||null},
-      {after:req.query.after,before:req.query.before,limit:Number(req.query.limit)||40});
+      {after:req.query.after,before:req.query.before,limit:Number(req.query.limit)||40,includeContext:req.query.include_context==='true'});
     const state=getTracker(id)?.state;
     const runtime=personalQuestionRuntime(await readAgentRuntime(session),req.user!.id);
     return reply.header('Cache-Control','private, no-store').send({...page,...presentAgentSession(session),messages:decorateConversationAttachments(id,linkConversationInputs(id,nativeConversationId(session),page.messages)),session_id:id,session_status:session.status,session_active:isSessionActive(id),

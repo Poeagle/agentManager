@@ -31,12 +31,12 @@ import { ConversationCompactionStatus } from "./ConversationCompactionStatus";
 import { ConversationControls } from "./ConversationControls";
 import { ConversationCacheDrop, MetadataTime } from "./ConversationCacheDrop";
 import {mergeCacheTimeline,unassignedUsageDescription,unassignedUsageLabel,type CacheTimeline,type SessionCacheDrop,type SessionMetadata} from '../lib/session-metadata';
-import { ConversationAutomaticContext } from "./ConversationAutomaticContext";
+import { ConversationAutomaticContext, ConversationSessionContext } from "./ConversationAutomaticContext";
 import { ConversationBriefContext } from "./ConversationBriefContext";
 import { ConversationDialogCard } from "./ConversationDialogCard";
 import { ConversationQuote } from "./ConversationQuote";
 import { makeConversationQuote, parseConversationQuote, quotePrefix, shiftInputOffsets, splitQuotedInput, type ConversationQuote as QuoteData } from "../lib/conversation-quote";
-import { automaticConversationContext, omitRepeatedSharedResourceNotices } from "../lib/conversation-context";
+import { automaticConversationContext, omitRepeatedSharedResourceNotices, sessionContextParts } from "../lib/conversation-context";
 import { parseBriefContext, prependBriefPayload } from "../lib/conversation-brief-context";
 import {
   ConversationInteraction,
@@ -1168,7 +1168,7 @@ export function SessionConversation({
       try {
         let result = await api.agent.conversation(
           session.id,
-          cursor.current ? { after: cursor.current } : {},
+          cursor.current ? { after: cursor.current } : { include_context: "true" },
           controller.signal,
         );
         if (controller.signal.aborted) return;
@@ -1177,7 +1177,7 @@ export function SessionConversation({
         // tail: obtain a complete baseline before resetting visible history.
         if (cursor.current && (result.reset ||
           generation.current !== null && result.generation !== generation.current)) {
-          result = await api.agent.conversation(session.id, {}, controller.signal);
+          result = await api.agent.conversation(session.id, { include_context: "true" }, controller.signal);
           if (controller.signal.aborted) return;
           result = { ...result, reset: true };
         }
@@ -1189,13 +1189,15 @@ export function SessionConversation({
             result.generation !== generation.current);
         const first = !cursor.current || reset;
         generation.current = result.generation;
-        setPage((previous) =>
-          previous?.native_id === result.native_id &&
-          Date.parse(previous.runtime?.observed_at || "") >
-            Date.parse(result.runtime?.observed_at || "")
-            ? { ...result, runtime: previous.runtime }
-            : result,
-        );
+        setPage((previous) => {
+          const sameNative = previous !== null && previous.native_id === result.native_id;
+          const keepRuntime = sameNative && Date.parse(previous.runtime?.observed_at || "") > Date.parse(result.runtime?.observed_at || "");
+          return {
+            ...result,
+            runtime: keepRuntime ? previous.runtime : result.runtime,
+            startup_context: result.startup_context ?? (sameNative && previous.generation === result.generation ? previous.startup_context : undefined),
+          };
+        });
         if (reset || result.statistics)
           setStatistics((previous) =>
             reset
@@ -2129,9 +2131,26 @@ export function SessionConversation({
       }
     >(),
   );
+  const { transcript, injected } = useMemo(() => {
+    const transcript: TimelineMessage[] = [];
+    const injected: TimelineMessage[] = [];
+    for (const message of messages) {
+      if (message.role === 'user' && !message.input_source && !isWaitingConversationInput(message)
+        && sessionContextParts(message.text).length > 0) injected.push(message);
+      else transcript.push(message);
+    }
+    return { transcript, injected };
+  }, [messages]);
+  const contextEntries = useMemo(() => omitRepeatedSharedResourceNotices(
+    mergeConversationTimeline(page?.startup_context ?? [], injected).flatMap(message =>
+      sessionContextParts(message.text).map(({ context, text }, index) => ({
+        ...message, context, text, id: `${message.id}:${index}`,
+      })),
+    ),
+  ), [page?.startup_context, injected]);
   const displayed = useMemo(
     () =>
-      omitRepeatedSharedResourceNotices(messages.flatMap((message) => {
+      omitRepeatedSharedResourceNotices(transcript.flatMap((message) => {
         const stats =
           statisticsIndex.get(message.id) ||
           statisticsIndex.get(`${message.turn_id}:${message.sequence}`);
@@ -2155,7 +2174,7 @@ export function SessionConversation({
         projected.current.set(message, { ignored, stats, value });
         return value ? [value] : [];
       })),
-    [messages, statisticsIndex, ignoredIds, ignoredKey],
+    [transcript, statisticsIndex, ignoredIds, ignoredKey],
   );
   const streamingId =
     !activeError &&
@@ -2514,6 +2533,13 @@ export function SessionConversation({
           onApply={changeDraft}
         />}
         <div className="session-chat-reading">
+          {active && canRead && contextEntries.length > 0 && <ConversationSessionContext
+            key={`${session.id}:${page?.native_id ?? agentNativeId(session)}:${page?.generation}`}
+            entries={contextEntries}
+            projectPath={projectPath}
+            projectId={session.project_id}
+            onNavigate={navigate}
+          />}
           <div
             ref={list}
             className="session-chat-scroll"

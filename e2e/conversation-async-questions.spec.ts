@@ -40,9 +40,10 @@ for(const format of ['item_completed','agent_message'] as const) test(`Codex asy
     await page.goto('/');
     const card=page.getByRole('region',{name:'Codex 向你提问'}).filter({visible:true}),submit=card.getByRole('button',{name:'提交回答',exact:true});
     await expect(card).toContainText('免费旅行，你最想去哪里？');await expect(card.getByRole('radio')).toHaveCount(4);
+    const context=page.getByText('会话上下文 · 1',{exact:true});
     const automatic=page.locator('[data-context-kind=shared_resources]');
     await expect(automatic).toHaveCount(1);await expect(page.getByRole('dialog',{name:'自动信息 · 共享资源'})).toHaveCount(0);
-    await automatic.getByText('自动信息 · 共享资源').click();await expect(page.getByRole('dialog',{name:'自动信息 · 共享资源'})).toContainText('凭据文件：/work/.env');await expect(page.locator('.session-chat-feed')).not.toContainText('PRIVATE_SETTINGS_MUST_NOT_APPEAR');await page.getByRole('button',{name:'关闭自动信息 · 共享资源'}).click();
+    await context.click();await automatic.getByRole('button',{name:/共享资源/}).click();await expect(page.getByRole('dialog',{name:'自动信息 · 共享资源'})).toContainText('凭据文件：/work/.env');await expect(page.locator('body')).not.toContainText('PRIVATE_SETTINGS_MUST_NOT_APPEAR');await page.getByRole('button',{name:'关闭自动信息 · 共享资源'}).click();await context.click();
 
     const attention=page.locator('.session-chat-pending-attention');
     await expect(attention).toContainText('有 1 个问题待回答');

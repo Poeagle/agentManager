@@ -764,7 +764,7 @@ export const api = {
     controls:(sessionId:string,refresh=false)=>fetchJSON<ConversationControlsData>(`/sessions/${encodeURIComponent(sessionId)}/controls${refresh?'?refresh=true':''}`),
     contextBreakdown:(sessionId:string,refresh=false,signal?:AbortSignal)=>fetchJSON<{context:ConversationContextBreakdown}>(`/sessions/${encodeURIComponent(sessionId)}/context-breakdown${refresh?'?refresh=true':''}`,{signal}),
     setControls:(sessionId:string,value:AgentModelPreference|null)=>fetchJSON<{ok:boolean;pending:AgentModelPreference|null;pending_status?:'saved'|'submitted'|null;model?:string;effort?:string;provider?:string;service_tier?:string}>(`/sessions/${encodeURIComponent(sessionId)}/controls`,{method:'PUT',body:JSON.stringify(value)}),
-    conversation:(sessionId:string,query:{after?:string;before?:string;limit?:string}={},signal?:AbortSignal)=>fetchJSON<ConversationPage>(`/sessions/${encodeURIComponent(sessionId)}/conversation?${new URLSearchParams(query)}`,{signal}),
+    conversation:(sessionId:string,query:{after?:string;before?:string;limit?:string;include_context?:'true'}={},signal?:AbortSignal)=>fetchJSON<ConversationPage>(`/sessions/${encodeURIComponent(sessionId)}/conversation?${new URLSearchParams(query)}`,{signal}),
     conversationMetadata:(sessionId:string,query:{event_before?:string;cache_before?:string}={},signal?:AbortSignal)=>fetchJSON<{metadata:SessionMetadataDetails|null}>(`/sessions/${encodeURIComponent(sessionId)}/conversation/metadata?${new URLSearchParams(query)}`,{signal}),
     conversationUsageIntervals:(sessionId:string,query:{parent?:string;before?:string},signal?:AbortSignal)=>fetchJSON<{intervals:SessionUsageIntervalPage|null}>(`/sessions/${encodeURIComponent(sessionId)}/conversation/usage-intervals?${new URLSearchParams(query)}`,{signal}),
     checkSend:(sessionId:string,payload:SendGuardPayload,signal?:AbortSignal)=>fetchJSON<SendGuardCheck>(`/sessions/${encodeURIComponent(sessionId)}/input-check`,{method:'POST',body:JSON.stringify(payload),signal}),
@@ -1420,6 +1420,7 @@ export interface ConversationControlsData {
 }
 export interface ConversationPage {
   metadata?:SessionMetadata|null;cache_drops?:SessionCacheDrop[];
+  startup_context?:ConversationMessage[];
   messages:ConversationMessage[];statistics?:ConversationStatistics[];has_more:boolean;reset:boolean;available:boolean;generation:string|null;
   agent?:AgentDescriptor;agent_id?:string;native_session_id?:string|null;session_id:string;session_status:Session['status'];session_active:boolean;native_id:string|null;
   runtime:Session['agent_runtime']|null;

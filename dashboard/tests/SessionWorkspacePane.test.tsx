@@ -133,7 +133,14 @@ describe('chat/raw terminal display',()=>{
     page.messages=[{id:'image-user',role:'user',text:'前文后文',timestamp:null,attachments:[{kind:'image',name:'image.png',path:'/project/image.png',offset}]}];mount();const image=await screen.findByRole('button',{name:'打开附件 image.png'});expect(image.previousSibling?.textContent||'').toBe('前文后文'.slice(0,offset));expect(image.closest('.session-chat-user-text')?.textContent).toBe('前文后文'.slice(0,offset)+'图片 1'+'前文后文'.slice(offset));
   });
   it('folds injected project instructions with a clear automatic category',async()=>{
-    page.messages.splice(1,0,{id:'rules',role:'user',text:'# AGENTS.md instructions for /project\n\n<INSTRUCTIONS>\n'+('项目规则\n'.repeat(50))+'</INSTRUCTIONS>',timestamp:'2026-10-31T03:00:00Z'});mount();const label=await screen.findByText('自动信息 · 项目规则');expect(screen.queryByRole('dialog',{name:'自动信息 · 项目规则'})).toBeNull();fireEvent.click(label);expect(screen.getByRole('dialog',{name:'自动信息 · 项目规则'})).toHaveTextContent('项目规则');
+    page.messages.splice(1,0,{id:'rules',role:'user',text:'# AGENTS.md instructions for /project\n\n<INSTRUCTIONS>\n'+('项目规则\n'.repeat(50))+'</INSTRUCTIONS>',timestamp:'2026-10-31T03:00:00Z'});
+    mount();
+    const context=await screen.findByText('会话上下文 · 1');
+    expect(context.closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(context);
+    expect(context.closest('details')).toHaveAttribute('open');
+    fireEvent.click(screen.getByRole('button',{name:/项目规则/}));
+    expect(screen.getByRole('dialog',{name:'自动信息 · 项目规则'})).toHaveTextContent('项目规则');
   });
   it('shows verified scheduled inputs as folded cards without folding ordinary messages',async()=>{
     page.messages=[{id:'ordinary',role:'user',text:'普通消息',timestamp:null},{id:'scheduled',role:'user',text:'定时提示正文\n第二行',timestamp:'2026-10-31T03:00:00Z',input_source:{kind:'scheduled',label:'每日检查'}}];

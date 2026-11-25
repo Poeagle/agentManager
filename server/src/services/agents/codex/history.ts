@@ -167,7 +167,7 @@ export function parseCodexMessage(line: Buffer, questionCallId?: string, context
                 ? [displayablePlatformDeveloperContext(part.text)] : []).filter(Boolean).join('\n\n') : undefined;
         const shared = developerText
             ? { role: 'user' as const, phase: 'user' as const, text: developerText, timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : null } : null;
-        const extracted = shared || failure || asyncMessage || decodeCodexText([entry], 128 * 1024).find(message => message.role === 'user' || message.role === 'assistant');
+        const extracted = shared || failure || asyncMessage || decodeCodexText([entry], 128 * 1024, true).find(message => message.role === 'user' || message.role === 'assistant');
         const reply = extracted?.role === 'user' ? conversationQuestionReply(extracted.text,Array.isArray(entry.payload?.content)&&entry.payload.content.some((part:any)=>part?.type==='input_image')) : undefined;
         const message = reply ? { ...extracted!, text: reply.text } : extracted;
         const assistantItem = asyncItem ?? (asyncProgress ? nativeAsyncItem : null);

@@ -724,7 +724,7 @@ describe('conversation send transaction', () => {
       .mockResolvedValue({...original,generation:'replaced',messages:[old,latest],reset:false});
     act(()=>Socket.latest.emit({type:'snapshot',messages:[latest],busy:false,stage:'idle'}));
     expect(await screen.findByText(latest.text)).toBeVisible();
-    await waitFor(()=>expect(read.mock.calls.slice(-1)[0][1]).toEqual({}));
+    await waitFor(()=>expect(read.mock.calls.slice(-1)[0][1]).toEqual({include_context:'true'}));
     expect(screen.getByText(old.text)).toBeVisible();
     expect(document.querySelectorAll('[data-chat-message-id]')).toHaveLength(2);
   });

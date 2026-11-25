@@ -11,6 +11,7 @@ import {
 } from "./prompt-context.js";
 import type { CliType } from "./session-identity.js";
 import { recoverConversationImageAttachments, type ConversationAttachment } from "./conversation-attachments.js";
+import { sessionContextParts } from "../shared/conversation-context.js";
 
 import type { AgentStatistics as ConversationStatistics } from "./agents/types.js";
 
@@ -671,15 +672,33 @@ function dedupe(messages: IndexedMessage[]): IndexedMessage[] {
   return result.filter((message) => !omit.has(message));
 }
 
+async function readStartupContext(
+  handle: Awaited<ReturnType<typeof open>>,
+  size: number,
+  kind: CliType,
+  nativeId?: string | null,
+): Promise<ConversationMessage[]> {
+  const buffer = Buffer.alloc(Math.min(size, WINDOW));
+  const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+  const context = new Map<string, ConversationMessage>();
+  for (const item of scan(buffer.subarray(0, bytesRead), 0, kind, [], [], { nativeId })) {
+    if (item.role !== "user" || item.client_id || !sessionContextParts(item.text).length) continue;
+    const { id, role, text, timestamp, order } = item;
+    context.set(id, { id, role, text, timestamp, sequence: order });
+  }
+  return [...context.values()];
+}
+
 /** A bounded incremental byte index. Cached metadata never contains message
  * bodies or tool output; only the requested page's public text is read. */
 export async function readConversation(
   session: PromptContextSession & {id?: string},
-  query: { after?: string; before?: string; limit?: number } = {},
+  query: { after?: string; before?: string; limit?: number; includeContext?: boolean } = {},
 ) {
   const adapter = agentForSession(session);
   const context = agentContext(session);
   const durable = sessionFactsEnabled(context);
+  const includeContext = query.includeContext && !query.after && !query.before;
   const nativePage = await adapter.history.read(context, query);
   if (nativePage) return {...nativePage, metadata: null, cache_drops: []};
   const file = await nativeConversationFile(session).catch(() => null);
@@ -986,6 +1005,7 @@ export async function readConversation(
         const first = selected[0];
         return {
           messages,
+          ...(includeContext ? { startup_context: await readStartupContext(handle, stats.size, file.kind, context.nativeId) } : {}),
           statistics,
           metadata,
           cache_drops: readSessionCacheDrops(context,

@@ -27,11 +27,11 @@ export function clipped(text: string, limit = 8000): string {
     const head = Math.ceil(remaining * 0.6);
     return `${text.slice(0, head)}${marker}${text.slice(-(remaining - head))}`;
 }
-export function textCollector(messageLimit: number) {
+export function textCollector(messageLimit: number, includeEnvironmentContext = false) {
     const messages: AgentTextMessage[] = [];
     let taskReference: string | null = null;
     const append = (role: AgentTextMessage['role'], phase: AgentTextMessage['phase'], text: string, timestamp: unknown) => {
-        if (!text || /^<environment_context>[\s\S]*<\/environment_context>$/.test(text))
+        if (!text || (!includeEnvironmentContext && /^<environment_context>[\s\S]*<\/environment_context>$/.test(text)))
             return;
         const last = messages.at(-1);
         if (last?.role === role && last.text === text) {

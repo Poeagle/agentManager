@@ -56,24 +56,45 @@ export function omitRepeatedSharedResourceNotices<T extends { role: string; text
   });
 }
 
-/** Recognize native wrappers only, never ordinary prose mentioning rules. */
-export function automaticConversationContext(text:string):{kind:string;label:string;source:string}|null {
-  const single=singleContext(text);if(single)return single;
-  // Native startup can put AGENTS.md and environment in one user message.
-  // Fold only when every part is a complete known wrapper. A trailing human
-  // request must remain an ordinary visible user message.
-  let rest=text.trim();const parts:Array<{kind:string;label:string;source:string}>=[];
-  while(rest){
-    const agents=AGENTS_OPENING.exec(rest);
-    const opening=agents||CONTEXT_OPENING.exec(rest);
-    if(!opening)return null;
-    const tag=agents?'INSTRUCTIONS':opening[1],end=rest.indexOf(`</${tag}>`,opening[0].length);
-    if(end<0)return null;const length=end+tag.length+3,part=singleContext(rest.slice(0,length));if(!part)return null;
-    parts.push(part);rest=rest.slice(length).trim();
+type AutomaticContext = { kind: string; label: string; source: string };
+type ContextPart = { context: AutomaticContext; text: string; body: string };
+
+function splitAutomaticContext(text: string): ContextPart[] {
+  const parts: ContextPart[] = [];
+  let rest = text.trim();
+  while (rest) {
+    const agents = AGENTS_OPENING.exec(rest);
+    const opening = agents || CONTEXT_OPENING.exec(rest);
+    if (!opening) return [];
+    const tag = agents ? 'INSTRUCTIONS' : opening[1];
+    const end = rest.indexOf(`</${tag}>`, opening[0].length);
+    if (end < 0) return [];
+    const length = end + tag.length + 3;
+    const wrapped = rest.slice(0, length);
+    const context = singleContext(wrapped);
+    if (!context) return [];
+    parts.push({ context, text: wrapped, body: rest.slice(opening[0].length, end).trim() });
+    rest = rest.slice(length).trim();
   }
-  return parts.length>1?{kind:'combined',label:[...new Set(parts.map(part=>part.label))].join(' · '),source:parts.map(part=>part.source).filter(Boolean).join(' · ')}:null;
+  return parts;
 }
-function singleContext(text:string):{kind:string;label:string;source:string}|null {
+
+/** Recognize native wrappers only, never ordinary prose mentioning rules. */
+export function automaticConversationContext(text: string): AutomaticContext | null {
+  const parts = splitAutomaticContext(text).map(part => part.context);
+  if (parts.length < 2) return parts[0] ?? null;
+  return {
+    kind: 'combined',
+    label: [...new Set(parts.map(part => part.label))].join(' · '),
+    source: parts.map(part => part.source).filter(Boolean).join(' · '),
+  };
+}
+
+export function sessionContextParts(text: string): ContextPart[] {
+  const parts = splitAutomaticContext(text);
+  return parts.every(({ context }) => context.kind !== 'task_notice' && context.kind !== 'execution_notice') ? parts : [];
+}
+function singleContext(text:string):AutomaticContext|null {
   const value=text.trim();
   if(/^<octoally_shared_resources>\n[\s\S]*\n<\/octoally_shared_resources>$/.test(value)) {
     const file=/^凭据文件：([^\r\n]+)$/m.exec(value)?.[1]?.trim();
@@ -91,20 +112,11 @@ function singleContext(text:string):{kind:string;label:string;source:string}|nul
 }
 /** Native wrapper tags are transport metadata, not HTML. Remove only complete
  * recognized wrappers so Markdown remains visible without enabling raw HTML. */
-export function automaticContextMarkdown(text:string):string {
- if(!automaticConversationContext(text))return text;
- let rest=text.trim();const parts:string[]=[];
- while(rest){
-  const agents=AGENTS_OPENING.exec(rest);
-  const opening=agents||CONTEXT_OPENING.exec(rest);
-  if(!opening)return text;
-  const tag=agents?'INSTRUCTIONS':opening[1],end=rest.indexOf(`</${tag}>`,opening[0].length);
-  if(end<0)return text;
-  const original=rest.slice(0,end+tag.length+3),meta=singleContext(original);
-  const body=rest.slice(opening[0].length,end).trim();
-  // Structured environment XML is shown faithfully as a fenced Markdown block.
-  const content=body.startsWith('<')?'```xml\n'+body+'\n```':body;
-  parts.push(`## ${meta?.label||'自动信息'}\n\n${content}`);rest=rest.slice(end+tag.length+3).trim();
- }
- return parts.join('\n\n');
+export function automaticContextMarkdown(text: string): string {
+  const parts = splitAutomaticContext(text);
+  if (!parts.length) return text;
+  return parts.map(({ context, body }) => {
+    const content = body.startsWith('<') ? '```xml\n' + body + '\n```' : body;
+    return `## ${context.label}\n\n${content}`;
+  }).join('\n\n');
 }

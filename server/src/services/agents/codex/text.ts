@@ -20,8 +20,8 @@ export function codexMessagePhase(phase: unknown, delivery?: unknown): 'unknown'
     return phase === 'final_answer' || phase === 'final' ? 'final' : 'unknown';
 }
 
-export function decodeCodexText(entries: Iterable<unknown>, limit = 8000) {
-    const { messages, append: collect } = textCollector(limit);
+export function decodeCodexText(entries: Iterable<unknown>, limit = 8000, includeEnvironmentContext = false) {
+    const { messages, append: collect } = textCollector(limit, includeEnvironmentContext);
     const itemText = (content: unknown) => Array.isArray(content)
         ? content.filter(isRecord)
             .filter(block => ['Text', 'output_text', 'text'].includes(String(block.type)) && typeof block.text === 'string')

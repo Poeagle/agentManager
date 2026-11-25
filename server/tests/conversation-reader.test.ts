@@ -29,6 +29,27 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{await app.close();vi.unstubAllEnvs();cleanup();});
 describe('public conversation pages',()=>{
+  it('returns the initial public context with a recent page beyond the cold history window', async () => {
+    const publicRules = '<environment_context>project runtime</environment_context>';
+    const shared = '<octoally_shared_resources>\n说明可以显示。\n</octoally_shared_resources>';
+    const developer = line('response_item', {
+      type: 'message', id: 'startup-developer', role: 'developer',
+      content: [{ type: 'input_text', text: shared + '\nPRIVATE_FIXTURE' }],
+    });
+    const padding = line('irrelevant_record', { text: 'a'.repeat(64 * 1024) }).repeat(40);
+    const ordinary = line('response_item', {
+      type: 'message', id: 'ordinary-user', role: 'user', content: [{ type: 'input_text', text: 'ordinary input' }],
+    });
+    writeFileSync(file, developer + user(publicRules) + user('<task_notification>execution notice</task_notification>') +
+      ordinary + padding + final('latest answer'));
+    const response = await app.inject({ url: '/api/sessions/chat/conversation?include_context=true&limit=1', headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    const page = response.json();
+    expect(page.messages.map((message: { text: string }) => message.text)).toEqual(['latest answer']);
+    expect(page.startup_context.map((message: { text: string }) => message.text)).toEqual([shared, publicRules]);
+    const incremental = await app.inject({ url: `/api/sessions/chat/conversation?after=${page.messages[0].id}`, headers: { cookie } });
+    expect(incremental.json()).not.toHaveProperty('startup_context');
+  });
   it('restores inherited messages from a paginated native fork',async()=>{
     const parent='019ff001-1111-7111-8111-111111111111';
     const record=(ordinal:number,type:string,payload:unknown)=>JSON.stringify({ordinal,type,payload})+'\n';

@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
-test('keeps automatic context and scheduled input cards equally compact with room around scrollable details', async ({ page }) => {
+test('keeps session context collapsed and pinned above paginated messages in injection order', async ({ page }) => {
   const auth = await (await page.request.get('/api/auth/status')).json();
   const login = await page.request.post(auth.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },
@@ -33,7 +33,7 @@ test('keeps automatic context and scheduled input cards equally compact with roo
   const message = (id: string, text: string, role = 'user') => JSON.stringify({
     type: 'response_item',
     timestamp: '2026-11-23T08:40:42Z',
-    payload: { type: 'message', id, role, content: [{ type: 'input_text', text }] },
+    payload: { type: 'message', id, role, content: [{ type: role === 'assistant' ? 'output_text' : 'input_text', text }] },
   });
   const resourceNotice = '<octoally_shared_resources>\n凭据文件：/project/.env\n使用说明。\n</octoally_shared_resources>';
   const skillIndex = 'You are in an Agent Manager tab. The platform skill agent-docs covers finding tabs, delegating work, reading progress and returning results. Load /project/agent-docs/SKILL.md only when this task calls for collaboration. The platform supplies the scoped tab credential to the included client automatically.';
@@ -55,8 +55,9 @@ test('keeps automatic context and scheduled input cards equally compact with roo
     message('platform-context', `${resourceNotice}\n\n${skillIndex}`, 'developer'),
     message('rules', rules),
     message('duplicate-resource', resourceNotice, 'developer'),
-    JSON.stringify(scheduledInput),
+    ...Array.from({ length: 50 }, (_, index) => message(`reply-${index}`, `历史回答 ${index + 1}`, 'assistant')),
     message('updated-resource', resourceNotice.replace('使用说明。', '更新后的说明。'), 'developer'),
+    JSON.stringify(scheduledInput),
   ].join('\n') + '\n');
 
   const Database = createRequire(import.meta.url)('../server/node_modules/better-sqlite3');
@@ -80,65 +81,57 @@ test('keeps automatic context and scheduled input cards equally compact with roo
     await page.goto('/');
 
     const chat = page.getByRole('region', { name: '会话对话' }).filter({ visible: true });
-    const title = '自动信息 · 项目规则 · 运行环境';
-    const rulesCard = chat.getByRole('button', { name: new RegExp(title) });
-    const platformTitle = '自动信息 · 共享资源 · agent-docs';
-    const resourcesCard = chat.getByRole('button', { name: new RegExp(platformTitle) });
-    const scheduledCard = chat.getByRole('button', { name: /定时任务 每日会话布局与详情弹窗巡检/ });
-    const dialog = page.getByRole('dialog', { name: title });
+    const header = chat.getByText('会话上下文 · 5', { exact: true });
+    const panel = chat.getByRole('list', { name: '已注入的上下文' });
+    const scheduled = chat.getByRole('button', { name: /定时任务 每日会话布局与详情弹窗巡检/ });
+    const scroll = chat.locator('.session-chat-scroll');
+    await expect(header).toBeVisible();
+    await expect(panel).toBeHidden();
+    await expect(scroll.getByRole('button', { name: /自动信息.*项目规则/ })).toHaveCount(0);
+    await expect(scheduled).toBeVisible();
 
-    await resourcesCard.click();
-    const platformDialog = page.getByRole('dialog', { name: platformTitle });
-    const sections = platformDialog.getByRole('heading', { level: 2 });
-    await expect(sections).toHaveText(['共享资源', 'agent-docs']);
-    await expect(platformDialog).toContainText('/project/agent-docs/SKILL.md');
+    const pinned = (await header.boundingBox())!;
+    const reading = (await scroll.boundingBox())!;
+    expect(reading.x + reading.width - pinned.x - pinned.width).toBeLessThan(50);
+    await scroll.evaluate(element => { element.scrollTop = 0; });
+    expect((await header.boundingBox())!.y).toBeCloseTo(pinned.y, 0);
+    await header.press('Enter');
+    await expect(panel).toBeVisible();
+    await expect(panel.getByRole('button')).toHaveText([
+      /共享资源/, /agent-docs/, /项目规则/, /运行环境/, /共享资源/,
+    ]);
+
+    await panel.getByRole('button', { name: /agent-docs/ }).click();
+    await expect(page.getByRole('dialog', { name: '自动信息 · agent-docs' })).toContainText('/project/agent-docs/SKILL.md');
     await page.keyboard.press('Escape');
-    const updatedCard = chat.getByRole('button', { name: /^自动信息 · 共享资源(?! · agent-docs)/ });
-    await expect(updatedCard).toHaveCount(1);
-    await updatedCard.click();
-    await expect(page.getByRole('dialog', { name: '自动信息 · 共享资源', exact: true })).toContainText('更新后的说明。');
+    await panel.getByRole('button', { name: /共享资源/ }).last().click();
+    await expect(page.getByRole('dialog', { name: '自动信息 · 共享资源' })).toContainText('更新后的说明。');
     await page.keyboard.press('Escape');
 
+    const rulesCard = panel.getByRole('button', { name: /项目规则/ });
+    const dialog = page.getByRole('dialog', { name: '自动信息 · 项目规则' });
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 680 });
-      const cards = [resourcesCard, rulesCard, scheduledCard];
-      for (const card of cards) {
-        await expect(card).toBeVisible();
-        expect.soft(await card.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-      }
-      const [resourcesBox, rulesBox, scheduledBox] = await Promise.all(
-        cards.map(async card => (await card.boundingBox())!),
-      );
-      expect.soft(resourcesBox.height).toBeLessThanOrEqual(30);
-      expect.soft(rulesBox.height).toBe(resourcesBox.height);
-      expect.soft(scheduledBox.height).toBe(resourcesBox.height);
-      for (const gap of [
-        rulesBox.y - resourcesBox.y - resourcesBox.height,
-        scheduledBox.y - rulesBox.y - rulesBox.height,
-      ]) {
-        expect.soft(gap).toBeGreaterThan(0);
-        expect.soft(gap).toBeLessThanOrEqual(6);
-      }
+      expect((await header.boundingBox())!.height).toBeLessThanOrEqual(30);
+      const panelBox = (await panel.boundingBox())!;
+      expect(panelBox.x).toBeGreaterThanOrEqual(0);
+      expect(panelBox.x + panelBox.width).toBeLessThanOrEqual(width);
       await rulesCard.click();
       await expect(dialog.getByRole('heading', { name: '项目规则', exact: true })).toBeVisible();
-      const dialogTitle = dialog.getByRole('heading', { name: title });
-      await expect(dialogTitle).toBeVisible();
-      const topInset = (await dialogTitle.boundingBox())!.y - (await dialog.boundingBox())!.y;
-      expect.soft(topInset).toBeGreaterThanOrEqual(22);
-
-      const lastSection = dialog.getByRole('heading', { name: '运行环境', exact: true });
-      await lastSection.scrollIntoViewIfNeeded();
-      await expect(lastSection).toBeInViewport();
-      const scrollInset = await lastSection.evaluate(heading => {
-        const panel = heading.closest('[role="dialog"]')!;
-        const scrollArea = heading.closest('.overflow-y-auto')!;
-        return panel.getBoundingClientRect().bottom - scrollArea.getBoundingClientRect().bottom;
-      });
-      expect.soft(scrollInset).toBeGreaterThanOrEqual(10);
+      await dialog.getByText('规则正文结束。', { exact: false }).scrollIntoViewIfNeeded();
+      await expect(dialog.getByText('规则正文结束。', { exact: false })).toBeInViewport();
       await page.keyboard.press('Escape');
       await expect(dialog).toBeHidden();
       await expect(rulesCard).toBeFocused();
     }
+
+    await header.click();
+    await chat.getByRole('button', { name: '加载更早的对话' }).click();
+    await expect(chat.getByText('历史回答 1', { exact: true })).toBeAttached();
+    await expect(header).toBeVisible();
+    await page.reload();
+    await expect(header).toBeVisible();
+    await expect(panel).toBeHidden();
   } finally {
     await page.request.delete(`/api/sessions/${session.id}`);
   }
