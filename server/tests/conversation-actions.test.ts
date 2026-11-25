@@ -13,8 +13,9 @@ afterEach(async()=>{for(const ws of wss.clients)ws.terminate();await new Promise
 it('uses native compaction only when idle',async()=>{await compactCodexConversation(old);expect(calls.map(c=>c.method)).toContain('thread/compact/start');expect(calls.map(c=>c.method)).not.toContain('turn/start');active=true;await expect(compactCodexConversation(old)).rejects.toThrow('当前任务');expect(calls.filter(c=>c.method==='thread/compact/start')).toHaveLength(1);});
 it('new conversation startup supplies shared context once and resume does not inject it again',async()=>{
  const text='<octoally_shared_resources>\n凭据文件：/work/.env\n</octoally_shared_resources>';
- await prepareFreshCodexConversation(old,'/work',text);
- expect(calls.find(c=>c.method==='thread/start')?.params.developerInstructions).toBe(text);
+ const skill='Discover agent-docs only when needed.';
+ await prepareFreshCodexConversation(old,'/work',text,undefined,undefined,undefined,skill);
+ expect(calls.find(c=>c.method==='thread/start')?.params.developerInstructions).toBe(text+'\n\n'+skill);
  const before=calls.length;await configureStreamingSharedResources(fresh,text);expect(calls).toHaveLength(before);
  await configureStreamingSharedResources(fresh,text+'\nupdated');expect(calls.at(-1)?.method).toBe('thread/inject_items');
  expect(calls.filter(c=>c.method==='turn/start')).toHaveLength(0);

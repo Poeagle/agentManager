@@ -98,12 +98,13 @@ export async function persistIdleCodexThread(request:CodexRequest,id:string):Pro
 
 /** Create the thread without a model turn when no initial task was supplied.
  * The terminal attaches to the same native identity. */
-export async function createStreamingCodexThread(cwd:string,task:string,sharedInstructions?:string,preference?:import('../types.js').ModelPreference|null,initialClientId?:string,toolEnvironment?:Record<string,string>):Promise<string> {
+export async function createStreamingCodexThread(cwd:string,task:string,sharedInstructions?:string,preference?:import('../types.js').ModelPreference|null,initialClientId?:string,toolEnvironment?:Record<string,string>,toolInstructions?:string):Promise<string> {
   return withCodexConnection(async request=>{
     if (!preference) await (await import('./controls.js')).assertCodexLaunchModel(request);
     const config={...preference?{model_reasoning_effort:preference.effort}:{},
       ...toolEnvironment?{shell_environment_policy:{set:toolEnvironment}}:{}};
-    const result=await request('thread/start',{cwd,approvalPolicy:'never',sandbox:'danger-full-access',...(sharedInstructions?{developerInstructions:sharedInstructions}:{}),
+    const developerInstructions=[sharedInstructions,toolInstructions].filter(Boolean).join('\n\n');
+    const result=await request('thread/start',{cwd,approvalPolicy:'never',sandbox:'danger-full-access',...(developerInstructions?{developerInstructions}:{}),
       ...Object.keys(config).length?{config}:{},
       ...(preference?{model:preference.model,...preference.provider?{modelProvider:preference.provider}:{},...preference.service_tier?{serviceTier:preference.service_tier}:{}}:{})});
     const id=result.thread?.id;
@@ -125,20 +126,25 @@ export function rememberStreamingSharedResources(threadId:string,instructions:st
   if(sharedContextFingerprints.size>1000)sharedContextFingerprints.delete(sharedContextFingerprints.keys().next().value!);
   try{getDb().prepare(`INSERT INTO shared_resource_injections(scope_key,content_hash) VALUES(?,?) ON CONFLICT(scope_key) DO UPDATE SET content_hash=excluded.content_hash`).run(key,hash);}catch{/* The native context remains valid even when its local dedup journal is unavailable. */}
 }
-export async function configureStreamingSharedResources(threadId: string, instructions: string): Promise<void> {
+export async function configureStreamingSharedResources(threadId: string, instructions: string, toolInstructions?: string): Promise<void> {
   const key = `${currentCodexEngine().socket}:${threadId}`;
   const fingerprint = createHash('sha256').update(instructions).digest('hex');
   const work=(sharedContextUpdates.get(key)||Promise.resolve()).catch(()=>{}).then(async()=>{
-  let known=sharedContextFingerprints.get(key);
-  if(!known)try{known=(getDb().prepare('SELECT content_hash FROM shared_resource_injections WHERE scope_key=?').get(key) as {content_hash:string}|undefined)?.content_hash;}catch{/* In-memory dedup remains available without a journal. */}
-  if (known === fingerprint) return;
-  await withCodexConnection(async request => {
-    await request('thread/resume', { threadId, excludeTurns: true });
-    // A loaded thread can ignore configuration overrides on resume. Append
-    // developer context explicitly; it is durable and never a user message.
-    await request('thread/inject_items', { threadId, items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text: instructions }] }] });
-  });
-  rememberStreamingSharedResources(threadId,instructions);
+    let known=sharedContextFingerprints.get(key);
+    if(!known)try{known=(getDb().prepare('SELECT content_hash FROM shared_resource_injections WHERE scope_key=?').get(key) as {content_hash:string}|undefined)?.content_hash;}catch{/* In-memory dedup remains available without a journal. */}
+    if (known === fingerprint) return;
+    // Older launches stored the shared notice and the tool index as one hash.
+    if (known && toolInstructions && known === createHash('sha256').update(`${instructions}\n\n${toolInstructions}`).digest('hex')) {
+      rememberStreamingSharedResources(threadId,instructions);
+      return;
+    }
+    await withCodexConnection(async request => {
+      await request('thread/resume', { threadId, excludeTurns: true });
+      // A loaded thread can ignore configuration overrides on resume. Append
+      // developer context explicitly; it is durable and never a user message.
+      await request('thread/inject_items', { threadId, items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text: instructions }] }] });
+    });
+    rememberStreamingSharedResources(threadId,instructions);
   });sharedContextUpdates.set(key,work);
   try{await work;}finally{if(sharedContextUpdates.get(key)===work)sharedContextUpdates.delete(key);}
 }

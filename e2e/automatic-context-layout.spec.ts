@@ -54,7 +54,9 @@ test('keeps automatic context and scheduled input cards equally compact with roo
   writeFileSync(join(logDirectory, `rollout-layout-${native}.jsonl`), [
     message('platform-context', `${resourceNotice}\n\n${skillIndex}`, 'developer'),
     message('rules', rules),
+    message('duplicate-resource', resourceNotice, 'developer'),
     JSON.stringify(scheduledInput),
+    message('updated-resource', resourceNotice.replace('使用说明。', '更新后的说明。'), 'developer'),
   ].join('\n') + '\n');
 
   const Database = createRequire(import.meta.url)('../server/node_modules/better-sqlite3');
@@ -90,6 +92,11 @@ test('keeps automatic context and scheduled input cards equally compact with roo
     const sections = platformDialog.getByRole('heading', { level: 2 });
     await expect(sections).toHaveText(['共享资源', 'agent-docs']);
     await expect(platformDialog).toContainText('/project/agent-docs/SKILL.md');
+    await page.keyboard.press('Escape');
+    const updatedCard = chat.getByRole('button', { name: /^自动信息 · 共享资源(?! · agent-docs)/ });
+    await expect(updatedCard).toHaveCount(1);
+    await updatedCard.click();
+    await expect(page.getByRole('dialog', { name: '自动信息 · 共享资源', exact: true })).toContainText('更新后的说明。');
     await page.keyboard.press('Escape');
 
     for (const width of [1440, 390]) {

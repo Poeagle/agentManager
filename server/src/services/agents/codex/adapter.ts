@@ -123,13 +123,13 @@ export const codexAdapter: AgentAdapter = {
             (await import('./identity.js')).persistCodexBinding(context.session.id, nativeId); },
         preflight: async (context) => context.nativeId?inCodexThread(context.nativeId,async()=>(await import('./version.js')).prepareCodexReload(!!context.sharedAccess && !!currentCodexEngine().socket)):(await import('./version.js')).prepareCodexReload(!!context.sharedAccess && !!currentCodexEngine().socket),
         compact: async (context) => inCodexThread(requireNative(context),async()=>(await import('./actions.js')).compactCodexConversation(requireNative(context))),
-        prepareFresh: async (context, instructions, preference) => inCodexThread(requireNative(context),async()=>(await import('./actions.js')).prepareFreshCodexConversation(requireNative(context), context.projectPath!, [instructions,context.platformToolInstructions].filter(Boolean).join('\n\n')||undefined,preference,undefined,context.platformToolEnvironment)),
+        prepareFresh: async (context, instructions, preference) => inCodexThread(requireNative(context),async()=>(await import('./actions.js')).prepareFreshCodexConversation(requireNative(context), context.projectPath!, instructions,preference,undefined,context.platformToolEnvironment,context.platformToolInstructions)),
         prepareFreshInEnvironment: async (context, environmentId, instructions, preference) => {
             const environments=await import('./environments.js');
             const target=environments.getCodexEnvironment(environmentId);
             if(target.kind==='account')await (await import('./account-transport.js')).checkAccountProject(environments.environmentConnection(target),context.projectPath!);
             const engine=await environments.engineForEnvironment(environmentId);
-            return inCodexThread(requireNative(context),async()=>(await import('./actions.js')).prepareFreshCodexConversation(requireNative(context),context.projectPath!,[instructions,context.platformToolInstructions].filter(Boolean).join('\n\n')||undefined,preference,engine,context.platformToolEnvironment));
+            return inCodexThread(requireNative(context),async()=>(await import('./actions.js')).prepareFreshCodexConversation(requireNative(context),context.projectPath!,instructions,preference,engine,context.platformToolEnvironment,context.platformToolInstructions));
         },
         discardFresh: async context => inCodexThread(requireNative(context),async()=>{await (await import('./stream.js')).withCodexConnection(request=>request('thread/archive',{threadId:requireNative(context)}));}),
         stopTurn: async (context, turnId) => inCodexThread(requireNative(context),async()=>{if(!currentCodexEngine().socket)throw Object.assign(Error('此会话未连接支持停止的原生服务'),{statusCode:409});return (await import('./stream.js')).stopStreamingCodexTurn(requireNative(context),turnId);}),
@@ -163,7 +163,7 @@ async function prepareCodexLaunch(context:import('../types.js').AgentContext,tas
                     const controls=await import('./controls.js');
                     const preference=context.session.created_by_user_id&&context.session.id?controls.readModelPreference(context.session.created_by_user_id,context.session.id):null;
                     await controls.prepareCodexModelRecovery(nativeId!,preference);
-                    if(instructions)await module.configureStreamingSharedResources(nativeId!,instructions);
+                    if(instructions)await module.configureStreamingSharedResources(nativeId!,instructions,context.platformToolInstructions);
                 });} catch(error){
                     if(error instanceof Error&&/already has an active writer/i.test(error.message)){
                         let name='当前 Engine';try{name=(await import('./environments.js')).getCodexEnvironment(context.session.agent_environment_id||'native').name;}catch{/* Retain a useful error if configuration is unavailable. */}
@@ -173,8 +173,7 @@ async function prepareCodexLaunch(context:import('../types.js').AgentContext,tas
                 }
                 else if (!resume) {
                     const preference=context.session.created_by_user_id&&context.session.id?(await import('./controls.js')).readModelPreference(context.session.created_by_user_id,context.session.id):null;
-                    const launchInstructions=[instructions,context.platformToolInstructions].filter(Boolean).join('\n\n')||undefined;
-                    nativeId = await module.createStreamingCodexThread(context.projectPath!, task, launchInstructions, preference,initialClientId,context.platformToolEnvironment);
+                    nativeId = await module.createStreamingCodexThread(context.projectPath!, task, instructions, preference,initialClientId,context.platformToolEnvironment,context.platformToolInstructions);
                 }
             }
             if (!streamSocket && !resume && context.session.created_by_user_id && context.session.id && (await import('./controls.js')).readModelPreference(context.session.created_by_user_id,context.session.id)) throw Error('所选模型无法在当前 Engine 启动');

@@ -365,8 +365,9 @@ describe('native Codex conversation streaming',()=>{
   it('passes shared-resource discovery as configuration, never as a human message or extra model turn',async()=>{
     requestParams=[];
     const instructions='<octoally_shared_resources>entry only</octoally_shared_resources>';
-    await createStreamingCodexThread('/project','actual user task',instructions);
-    expect(requestParams.find(frame=>frame.method==='thread/start')?.params.developerInstructions).toBe(instructions);
+    const skill='Discover agent-docs only when needed.';
+    await createStreamingCodexThread('/project','actual user task',instructions,undefined,undefined,undefined,skill);
+    expect(requestParams.find(frame=>frame.method==='thread/start')?.params.developerInstructions).toBe(instructions+'\n\n'+skill);
     expect(submissions).toHaveLength(1);
     expect(JSON.stringify(submissions)).not.toContain('octoally_shared_resources');
     const before=requestParams.length;await configureStreamingSharedResources('019ff001-8888-7888-8888-888888888888',instructions);expect(requestParams).toHaveLength(before);

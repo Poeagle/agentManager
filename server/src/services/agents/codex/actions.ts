@@ -19,7 +19,7 @@ export async function compactCodexConversation(threadId:string) {
 
 /** Persist an otherwise empty thread without generating a reply. The native
  * client cannot resume an empty thread until its rollout has been flushed. */
-export async function prepareFreshCodexConversation(threadId:string,cwd:string,sharedInstructions?:string,preference?:ModelPreference,environmentEngine?:CodexEngine,toolEnvironment?:Record<string,string>) {
+export async function prepareFreshCodexConversation(threadId:string,cwd:string,sharedInstructions?:string,preference?:ModelPreference,environmentEngine?:CodexEngine,toolEnvironment?:Record<string,string>,toolInstructions?:string) {
   return withCodexConnection(async request=>{
     const current=await request('thread/read',{threadId});
     if(!current.thread)throw Error('原生会话不存在，历史已保留');
@@ -45,9 +45,10 @@ export async function prepareFreshCodexConversation(threadId:string,cwd:string,s
     if(sandbox==='read-only'&&settings.sandbox.networkAccess===true)throw Error('此只读会话有自定义网络权限，请在原始终端新开会话');
     const targetEngine=environmentEngine||engineForProvider(chosen?.provider||current.thread.modelProvider);
     const create=async(target:typeof request)=>{
+    const developerInstructions=[sharedInstructions,toolInstructions].filter(Boolean).join('\n\n');
     const result=await target('thread/start',{
       cwd,model:chosen?.model||current.thread.model,modelProvider:chosen?.provider||current.thread.modelProvider,
-      ...(sharedInstructions?{developerInstructions:sharedInstructions}:{}),
+      ...(developerInstructions?{developerInstructions}:{}),
       approvalPolicy:settings.approvalPolicy,sandbox,...settings.approvalsReviewer?{approvalsReviewer:settings.approvalsReviewer}:{},...serviceTier?{serviceTier}:{},
       ...(settings.runtimeWorkspaceRoots?{runtimeWorkspaceRoots:settings.runtimeWorkspaceRoots}:{}),
       config:{...toolEnvironment?{shell_environment_policy:{set:toolEnvironment}}:{},...((chosen?.effort||current.thread.reasoningEffort)?{model_reasoning_effort:chosen?.effort||current.thread.reasoningEffort}:{}),

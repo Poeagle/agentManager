@@ -1,1 +1,1 @@
-export {automaticConversationContext, automaticContextMarkdown} from '../../../server/src/shared/conversation-context';
+export {automaticConversationContext, automaticContextMarkdown, omitRepeatedSharedResourceNotices} from '../../../server/src/shared/conversation-context';

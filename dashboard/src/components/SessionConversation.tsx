@@ -36,7 +36,7 @@ import { ConversationBriefContext } from "./ConversationBriefContext";
 import { ConversationDialogCard } from "./ConversationDialogCard";
 import { ConversationQuote } from "./ConversationQuote";
 import { makeConversationQuote, parseConversationQuote, quotePrefix, shiftInputOffsets, splitQuotedInput, type ConversationQuote as QuoteData } from "../lib/conversation-quote";
-import { automaticConversationContext } from "../lib/conversation-context";
+import { automaticConversationContext, omitRepeatedSharedResourceNotices } from "../lib/conversation-context";
 import { parseBriefContext, prependBriefPayload } from "../lib/conversation-brief-context";
 import {
   ConversationInteraction,
@@ -2131,7 +2131,7 @@ export function SessionConversation({
   );
   const displayed = useMemo(
     () =>
-      messages.flatMap((message) => {
+      omitRepeatedSharedResourceNotices(messages.flatMap((message) => {
         const stats =
           statisticsIndex.get(message.id) ||
           statisticsIndex.get(`${message.turn_id}:${message.sequence}`);
@@ -2154,7 +2154,7 @@ export function SessionConversation({
               : message;
         projected.current.set(message, { ignored, stats, value });
         return value ? [value] : [];
-      }),
+      })),
     [messages, statisticsIndex, ignoredIds, ignoredKey],
   );
   const streamingId =

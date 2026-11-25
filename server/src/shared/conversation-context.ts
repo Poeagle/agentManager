@@ -1,6 +1,7 @@
 const AGENTS_OPENING = /^# AGENTS\.md instructions(?: for ([^\r\n]+))?\r?\n\s*<INSTRUCTIONS>/;
 const CONTEXT_OPENING = /^<(environment_context|permissions|skills_instructions|task_notification|turn_aborted|octoally_shared_resources|octoally_agent_docs)(?:\s[^>]*)?>/;
 const SHARED_RESOURCES_BLOCK = /^<octoally_shared_resources>\n[\s\S]*?\n<\/octoally_shared_resources>(?=\s|$)/;
+const AGENT_DOCS_BLOCK = /^<octoally_agent_docs>\n[\s\S]*?\n<\/octoally_agent_docs>(?=\s|$)/;
 const AGENT_DOCS_PREFIX = 'You are in an Agent Manager tab. The platform skill agent-docs covers finding tabs, delegating work, reading progress and returning results. Load ';
 const AGENT_DOCS_SUFFIX = ' only when this task calls for collaboration. The platform supplies the scoped tab credential to the included client automatically.';
 
@@ -33,6 +34,26 @@ export function displayablePlatformDeveloperContext(text: string): string {
     rest = rest.slice(end).trimStart();
   }
   return sections.join('\n\n');
+}
+
+/** The transcript retains all native records. The timeline shows the first
+ * occurrence of each effective shared-resource revision, in native order. */
+export function omitRepeatedSharedResourceNotices<T extends { role: string; text: string; input_source?: unknown }>(messages: T[]): T[] {
+  let previous: string | undefined;
+  return messages.flatMap(message => {
+    if (message.role !== 'user' || message.input_source || !message.text.includes('<octoally_shared_resources>')) return [message];
+    const text = message.text.trim();
+    const skill = AGENT_DOCS_BLOCK.exec(text)?.[0];
+    const flow = skill ? text.slice(skill.length).trimStart() : text;
+    const shared = SHARED_RESOURCES_BLOCK.exec(flow)?.[0];
+    if (!shared || !automaticConversationContext(text)) return [message];
+    if (shared !== previous) {
+      previous = shared;
+      return [message];
+    }
+    const remainder = [skill, flow.slice(shared.length).trim()].filter(Boolean).join('\n\n');
+    return remainder ? [{ ...message, text: remainder }] : [];
+  });
 }
 
 /** Recognize native wrappers only, never ordinary prose mentioning rules. */
