@@ -1,5 +1,6 @@
 import { getDb } from '../../db/index.js';
-import type { ModelPreference } from './types.js';
+import { z } from 'zod';
+import type { AgentControls, AgentDescriptor, ModelPreference } from './types.js';
 const key = (id: string) => `session-control:${id}`;
 export function readModelPreference(userId: string, sessionId: string): ModelPreference | null {
     const row = getDb().prepare('SELECT value FROM user_ui_state WHERE user_id=? AND key=?').get(userId, key(sessionId)) as {
@@ -31,4 +32,42 @@ export function modelPreferenceSubmittedAt(userId: string, sessionId: string): s
     catch {
         return null;
     }
+}
+
+export const executionSettingsPatch = z.object({
+    model_id: z.string().trim().min(1).max(160).optional(),
+    reasoning_effort: z.string().trim().min(1).max(50).optional(),
+    service_tier: z.string().trim().min(1).max(50).optional(),
+}).strict().refine(value => Object.values(value).some(field => field !== undefined));
+
+export const inPlaceControlUpdate = z.object({
+    execution: executionSettingsPatch,
+    expected_native_id: z.string().min(1).max(2048),
+    expected_environment_id: z.string().min(1).max(2048),
+}).strict();
+
+export function inPlaceModelChoices(controls: AgentControls) {
+    return controls.models.filter(model => !model.provider || model.provider === controls.provider);
+}
+
+export function mergeExecutionSettings(
+    controls: AgentControls,
+    capabilities: AgentDescriptor['capabilities'],
+    patch: z.infer<typeof executionSettingsPatch>,
+    pending: ModelPreference | null,
+): ModelPreference {
+    const base = pending && (!pending.provider || pending.provider === controls.provider) ? pending : null;
+    const model = inPlaceModelChoices(controls).find(item => item.model === (patch.model_id ?? base?.model ?? controls.model));
+    if (!model) throw Error('当前绑定下没有可用的目标模型，请先查询标签页设置');
+    const currentEffort = base?.effort ?? controls.effort;
+    const effort = patch.reasoning_effort ?? model.efforts.find(item => item.value === currentEffort)?.value ?? model.defaultEffort;
+    if (!model.efforts.some(item => item.value === effort)) throw Error('当前模型不支持所选推理强度');
+    const tier = patch.service_tier ?? base?.service_tier;
+    const retainedTier = tier ?? controls.service_tier;
+    if (capabilities.serviceTier && retainedTier && retainedTier !== 'default' &&
+        !model.service_tiers?.some(item => item.id === retainedTier)) {
+        throw Error('目标模型不支持此服务档位；请从可用档位选择，或显式指定 default');
+    }
+    return { model: model.model, effort, ...(model.provider ? { provider: model.provider } : {}),
+        ...(tier !== undefined ? { service_tier: tier } : {}) };
 }

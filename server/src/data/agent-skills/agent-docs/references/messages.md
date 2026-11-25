@@ -21,7 +21,7 @@ PYTHON
 python3 scripts/platform_api.py send-message
 ```
 
-不同目标需要不同内容时，分别发送并使用不同请求 ID。并行任务需要等齐汇总时，设置 `intent: "task"` 并附上 [`batch_id`](batches.md)。带其他 Agent 文件内容或日志时，只包含当前任务需要的证据。
+不同目标需要不同内容时，分别发送并使用不同请求 ID。并行任务需要等齐汇总时，设置 `intent: "task"` 并附上 [`batch_id`](batches.md)。带其他 Agent 文件内容或日志时，只包含当前任务需要的证据。给 `target_tab_ids` 派发跟进任务时，可带 `after_current_turn: true` 使用原生队列。目标空闲会直接开始，忙碌会排队，队列不可用时返回拒绝。先通过 `list-tabs` 查看 `can_queue_follow_up`。
 
 ## 查看收件箱并回传
 
@@ -57,7 +57,7 @@ python3 scripts/platform_api.py send-message
 | 状态 | 含义 |
 |---|---|
 | `accepted` | 收到 Agent 接收回执。 |
-| `queued` | 旧版投递回执，等待既有 Agent 队列发送。新版协作消息在运行中即时插入，无法及时接收时返回 `rejected`。 |
+| `queued` | 追加消息已进入原生队列，等待当前轮结束。 |
 | `submitted` | 已交给运行时，尚无 Agent 接收回执。 |
 | `stored` | 批次回传已进入父标签页的收件箱，带来源和原任务引用。紧急阻塞另外返回 `wake_status`。 |
 | `rejected` | 已确认未交付。查看该目标的原因。 |

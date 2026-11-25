@@ -199,6 +199,7 @@ class ClaudeRuntime {
   private completedAssistants: AssistantEnvelope[] = [];
   private pending: Pending[] = [];
   private model: string | undefined;
+  private queryModel: string | undefined;
   private lastActivity: string | null = null;
   private compaction: AgentCompaction | null = null;
   private pendingModelMismatch: string | null = null;
@@ -322,11 +323,11 @@ class ClaudeRuntime {
   }
   private recordObservedModel(model: unknown) {
     if (
-      !this.model ||
+      !this.queryModel ||
       typeof model !== "string" ||
       !model ||
       model.startsWith("<") ||
-      model.toLowerCase() === this.model.toLowerCase() ||
+      model.toLowerCase() === this.queryModel.toLowerCase() ||
       this.providerAliases.has(model.toLowerCase())
     ) return;
     this.pendingModelMismatch = model;
@@ -1201,10 +1202,11 @@ class ClaudeRuntime {
       const currentInput = await userMessage(pending, sessionId, pending.priority);
       input.push(currentInput);
       const resume = this.resumeOnNextQuery;
+      const model = this.queryModel = this.model;
       const providerEnvironment = this.provider
         ? (await import("./providers.js")).claudeProviderEnvironment(
             this.provider,
-            this.model,
+            model,
           )
         : undefined;
       const options: Options = {
@@ -1231,7 +1233,7 @@ class ClaudeRuntime {
               },
             }
           : {}),
-        ...(this.model ? { model: this.model } : {}),
+        ...(model ? { model } : {}),
         ...(resume ? { resume: this.id } : { sessionId: this.id }),
       };
       this.currentInputUuid = currentInput.uuid;
@@ -1280,7 +1282,7 @@ class ClaudeRuntime {
         this.upsertError(`error:${this.turnId}`, text, claudeErrorCode(text));
       }
     } finally {
-      if (this.pendingModelMismatch && this.model) {
+      if (this.pendingModelMismatch && this.queryModel) {
         const observed = this.pendingModelMismatch;
         this.pendingModelMismatch = null;
         this.upsert({
@@ -1290,7 +1292,7 @@ class ClaudeRuntime {
             `model-mismatch:${this.turnId}`,
           ),
           role: "assistant",
-          text: `Provider 实际返回模型 ${observed}，与所选模型 ${this.model} 不一致。该结果未按所选模型执行，请检查 Provider 路由或模型目录。`,
+          text: `Provider 实际返回模型 ${observed}，与所选模型 ${this.queryModel} 不一致。该结果未按所选模型执行，请检查 Provider 路由或模型目录。`,
           timestamp: new Date().toISOString(),
           turn_id: this.turnId || undefined,
           phase: "error",
@@ -1298,6 +1300,7 @@ class ClaudeRuntime {
           error: { code: "model_mismatch", will_retry: false },
         });
       }
+      this.queryModel = undefined;
       const active = this.active;
       this.active = null;
       if (completed && active) {
@@ -1428,7 +1431,7 @@ class ClaudeRuntime {
     };
     void this.run(pending);
   }
-  setModel(preference: ModelPreference) {
+  setModel(preference: ModelPreference, nextTurn = false) {
     if (
       this.provider &&
       !this.provider.models.includes(preference.model)
@@ -1439,8 +1442,10 @@ class ClaudeRuntime {
     this.model = preference.model || undefined;
     const query = this.active as
       (Query & { setModel?: (model: string) => Promise<void> | void }) | null;
-    if (query?.setModel && this.model)
+    if (!nextTurn && query?.setModel && this.model) {
+      this.queryModel = this.model;
       void Promise.resolve(query.setModel(this.model)).catch(() => {});
+    }
   }
   runtime(): AgentRuntime {
     return {

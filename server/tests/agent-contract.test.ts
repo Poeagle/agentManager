@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.41.0');
+    expect(contract.version).toBe('3.42.0');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/tabs'&&e.method==='POST')?.description).toContain('same Agent, Provider and account');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/execution-options')?.description).toContain('source_execution');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/messages')?.description).toContain('stored immediately');
@@ -60,6 +60,8 @@ describe('Agent API contract', () => {
       'POST /api/agent-docs/messages',
       'POST /api/agent-docs/tabs',
       'POST /api/agent-docs/tabs/:id/delete',
+      'GET /api/agent-docs/tabs/:id/controls',
+      'POST /api/agent-docs/tabs/:id/controls',
       'GET /api/projects',
       'POST /api/files/upload-directory',
       'POST /api/files/upload',

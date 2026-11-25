@@ -4,10 +4,11 @@
 
 ## 查找现有标签页
 
-`GET /tabs` 对应 `list-tabs`。结果包含 `tabs`，每个条目提供 `tab_id`、`name`、`agent_id`、`state`、`can_receive`、`can_delete` 和 `parent_tab_id`。默认查找活跃标签页。用 `--include-ended` 同时查找已经结束的标签页，适合按名称定位要清理的历史会话。直接由用户创建的标签页其父级为空。子标签页的 `parent_tab_id` 指向创建者，关闭父级后这个 ID 仍保留。结果中的 `next_cursor` 非空时，按需读取下一页。
+`GET /tabs` 对应 `list-tabs`。结果包含 `tabs`，每个条目提供 `tab_id`、`name`、`agent_id`、`state`、`can_receive`、`can_queue_follow_up`、`can_delete` 和 `parent_tab_id`。默认查找活跃标签页。用 `--children` 只查当前标签页创建的直属子标签，可与 `--include-ended` 一起使用。用 `--include-ended` 同时查找已经结束的标签页，适合按名称定位要清理的历史会话。直接由用户创建的标签页其父级为空。子标签页的 `parent_tab_id` 指向创建者，关闭父级后这个 ID 仍保留。结果中的 `next_cursor` 非空时，按需读取下一页。
 
 ```sh
 python3 scripts/platform_api.py list-tabs
+python3 scripts/platform_api.py list-tabs --children
 python3 scripts/platform_api.py list-tabs --cursor "$next_cursor"
 python3 scripts/platform_api.py list-tabs --include-ended
 ```
@@ -21,6 +22,10 @@ python3 scripts/platform_api.py list-tabs --include-ended
 ```sh
 python3 scripts/platform_api.py read-tab "$target_tab_id"
 ```
+
+## 继续原会话
+
+回传后需要补证据或复验时，用原标签派发跟进任务。运行中的子标签有队列能力时，可用 [轮后派发](messages.md#投递) 把跟进安排在当前轮结束后。需要调整模型、推理强度或 Fast 时，使用 [原地更新](allocation.md#已有子标签页)。
 
 ## 创建并交付任务
 

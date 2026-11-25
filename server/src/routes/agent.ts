@@ -8,7 +8,7 @@ import {AgentSubmissionError} from '../services/agents/submission.js';
 import {sendAgentQuota} from '../services/agents/quota-response.js';
 import {withTerminalInput} from '../services/agents/terminal-input.js';
 import {observeAgentConversation} from '../services/agents/host.js';
-import {readModelPreference,saveModelPreference,modelPreferenceSubmittedAt} from '../services/agents/model-preferences.js';
+import {readModelPreference,saveModelPreference,modelPreferenceSubmittedAt,inPlaceControlUpdate,mergeExecutionSettings} from '../services/agents/model-preferences.js';
 import {agentForSession,agentDescriptors,getAgent} from '../services/agents/index.js';
 import {readAgentModelCatalog} from '../services/agents/model-catalog.js';
 import {sessionAgentContext,readAgentRuntime,presentAgentSession} from '../services/agents/session.js';
@@ -31,6 +31,7 @@ import {loadRecentAgentMessages,loadRecentPromptContext,nativeConversationFile,t
 import {sessionPresenter} from '../services/session-labels.js';
 import {randomUUID} from 'crypto';
 import {readConversation} from '../services/conversation-reader.js';
+import {broadcastEphemeral} from '../services/event-store.js';
 import {config} from '../config.js';
 
 import {personalQuestionRuntime} from '../services/question-attention.js';
@@ -65,6 +66,7 @@ const MAX_WAIT_FOR_LENGTH = 512;
 const MAX_EXECUTE_TIMEOUT = 120_000;
 const MAX_EXECUTE_QUIESCENCE = 30_000;
 const MAX_AGENT_MESSAGE_BYTES = 128 * 1024;
+const updatingControls = new Set<string>();
 const pendingInputs = new Map<string, Promise<unknown>>();
 
 interface ValidatedExecuteRequest {
@@ -113,7 +115,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.41.0',
+    version:'3.42.0',
     updatedAt:'2026-11-25',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -258,9 +260,12 @@ export function getAgentApiContract() {
       },
       {
         category: 'Sessions', method: 'PUT', path: '/api/sessions/:id/controls',
-        description: 'Update the model for an owned, authorized session. An unloaded supported session can save a preference for recovery. Send JSON null to clear a pending preference.',
-        request: { model: {type:'string',required:true}, effort: {type:'string',required:true}, provider: {type:'string',required:false}, service_tier: {type:'string',required:false} },
-        errors: { 400: 'Unsupported model or parameters', 403: 'Session or Engine not permitted', 409: 'Session or model service cannot be changed', 503: 'Native update not confirmed' },
+        description: 'Update model parameters for an owned, authorized session. Send a full preference, JSON null to clear a pending preference, or a partial execution object with both expected identities to change subsequent model requests in place. An unloaded supported session can save a preference for recovery.',
+        request: { model: {type:'string',required:false,description:'Required with effort for a full preference.'}, effort: {type:'string',required:false,description:'Required with model for a full preference.'}, provider: {type:'string',required:false}, service_tier: {type:'string',required:false},
+          execution: {type:'object',required:false,description:'Partial edit with model_id, reasoning_effort and/or service_tier.'},
+          expected_native_id:{type:'string',required:false,description:'Required with execution.'},
+          expected_environment_id:{type:'string',required:false,description:'Required with execution. Use native for an implicit binding.'} },
+        errors: { 400: 'Unsupported model or parameters', 403: 'Session or Engine not permitted', 409: 'Session or model service cannot be changed', 422: 'Requested control is unsupported', 503: 'Native update not confirmed' },
       },
       {
         category: 'Sessions', method: 'GET', path: '/api/sessions/:id/conversation/metadata',
@@ -557,8 +562,11 @@ export function getAgentApiContract() {
         description: 'Read the selected authorized Codex Engine model catalog for a permitted project.',
       },
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/capabilities',description:'With a launch-issued tab credential, return the source tab, owner, project, callable operations and limits.'},
-      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs',description:'List the owner’s Agent tabs in the same project, including parent_tab_id and can_delete. Optional cursor from next_cursor and include_ended=true to include ended tabs.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs',description:'List the owner’s Agent tabs in the same project, including parent_tab_id, can_delete and can_queue_follow_up. Optional cursor from next_cursor, children=true for direct children of the source tab, and include_ended=true for ended tabs.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs/:id',description:'Read parent_tab_id, state and recent public conversation text for an accessible tab.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs/:id/controls',description:'Read the current execution, pending selection, supported fields and model choices for the authorized target tab’s current binding. can_update is true only for a writable direct child with editable controls.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs/:id/controls',description:'Update a direct child in place through its existing Provider and account. The current model request continues. Result status is applied, saved for recovery, submitted pending confirmation, unsupported, rejected or unknown.',
+        request:{request_id:{type:'string',required:true},execution:{type:'object',required:true,description:'At least one of model_id, reasoning_effort or service_tier. Use model and tier IDs returned by GET; default resets the speed tier.'}}},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox',description:'Read the current tab’s handoffs in receipt order with verified source, message id, reply reference, optional batch_id and next_cursor.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox/:id',description:'Read one submitted, queued or stored handoff addressed to the source tab, including batch replies before the parent wakes.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/batches',description:'With a write-capable tab credential, open a result collection batch for the current tab. Body: request_id and optional timeout_seconds (default 1800). Result: batch_id and deadline_at.'},
@@ -567,7 +575,7 @@ export function getAgentApiContract() {
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/execution-options',description:'Return source_execution and launch settings for the source tab’s bound Provider or account only. Optional agent_id filters results and include_quota=true adds available quota.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs',description:'Create and launch one tab in the source project using the same Agent, Provider and account as the source tab. Body: request_id, name, optional execution, initial_message and batch_id (requires initial_message). A different agent_id or environment_id is rejected before launch. The platform checks model settings before sending the first task.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs/:id/delete',description:'Close another authorized tab belonging to the same user and project. Body: request_id and optional delete_history (default false). Explicit history removal runs in the background and can be tracked via GET /api/agent-docs/operations/:id. No cascade to child tabs.'},
-      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text to target_tab_ids or to the original sender using reply_to. Body: request_id, text, optional intent and batch_id (only with direct task dispatch). Replies to a batched task are stored immediately. A blocker reply additionally attempts immediate input and reports wake_status. An ordinary reply outside a batch is delivered immediately.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text to target_tab_ids or to the original sender using reply_to. Body: request_id, text, optional intent and batch_id (only with direct task dispatch), and after_current_turn=true to queue a direct delivery through the native follow-up API. Replies to a batched task are stored immediately. A blocker reply additionally attempts immediate input and reports wake_status. An ordinary reply outside a batch is delivered immediately.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/operations/:id',description:'Read settled or partial receipts for a request_id owned by the source tab.'},
       {
         category: 'Agents', method: 'GET', path: '/api/codex/environments',
@@ -600,6 +608,7 @@ export function getAgentApiContract() {
     ],
     tips: [
       'Agent Docs child tab example: POST /api/agent-docs/tabs with '+JSON.stringify({request_id:'child-review',name:'Review',initial_message:'Review the change and report the findings'})+'. Omit execution to inherit the source Agent, Provider and account.',
+      'Agent Docs in-place settings example: GET /api/agent-docs/tabs/:id/controls, then POST to the same path with '+JSON.stringify({request_id:'raise-review-effort',execution:{reasoning_effort:'high'}})+' if the target model supports that effort.',
       'Agent Docs batch example: open via POST /api/agent-docs/batches with '+JSON.stringify({request_id:'open-reviews',timeout_seconds:1800})+', reuse result.batch_id on each task dispatch, then POST /api/agent-docs/batches/:id/seal with an independent request_id.',
       'Batch input example: POST /api/sessions/:id/input with '+JSON.stringify({input:'one\n\ntwo',source:'conversation',client_id:'unique-batch-id',batch:[{length:3,attachments:0},{length:3,attachments:0}]}),
       'The output fields from display and execute are CLEAN TEXT — read them directly; do not strip ANSI or parse raw PTY data.',
@@ -872,25 +881,61 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       can_edit:adapter.descriptor.capabilities.model&&shared&&owned&&data.models.length>0&&(data.supports_model_recovery||data.loaded)&&userHasPermission(req.user!.id,'agent_api','write')});
   });
   app.put<{Params:{id:string};Body:unknown}>('/sessions/:id/controls',async(req,reply)=>{
-    const session=getSession(req.params.id);
-    if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
-    const adapter=agentForSession(session),context=sessionAgentContext(session,{sharedAccess:true});
-    if((session.agent_environment_id?!canControlEnvironment(session.agent_environment_id,req.user!.id,adapter.descriptor.id):req.user!.role!=='admin')||session.created_by_user_id&&session.created_by_user_id!==req.user!.id)return reply.code(403).send({error:'只能修改自己的会话设置'});
-    if(!context.nativeId||!adapter.descriptor.capabilities.model)return reply.code(409).send({error:'当前会话不可修改，请先恢复会话'});
-    if(req.body===null){saveModelPreference(req.user!.id,session.id,null);return {ok:true,pending:null};}
+    const id=req.params.id, userId=req.user!.id, session=getSession(id);
+    if(!session||!canAccessAgentSession(userId,id))return reply.code(404).send({error:'Session not found'});
+    if(!requirePermission(req,reply,'agent_api','write'))return;
+    const adapter=agentForSession(session),context=sessionAgentContext(session,{actorUserId:userId,sharedAccess:true});
+    const canControl=(target:typeof session)=>(target.agent_environment_id
+      ?canControlEnvironment(target.agent_environment_id,userId,adapter.descriptor.id):req.user!.role==='admin')
+      &&(!target.created_by_user_id||target.created_by_user_id===userId);
+    if(!canControl(session))return reply.code(403).send({error:'只能修改自己的会话设置'});
+    if(!context.nativeId)return reply.code(409).send({error:'当前会话不可修改，请先恢复会话'});
+    const isPatch=!!req.body&&typeof req.body==='object'&&'execution' in req.body;
+    const parsed=isPatch?inPlaceControlUpdate.safeParse(req.body):undefined;
+    if(parsed&&!parsed.success)return reply.code(400).send({error:'无效的会话设置请求'});
+    const patch=parsed?.data;
+    const capabilities=adapter.descriptor.capabilities;
+    if(!capabilities.model || patch?.execution.reasoning_effort!==undefined&&!capabilities.effort ||
+      patch?.execution.service_tier!==undefined&&!capabilities.serviceTier){
+      return reply.code(patch?422:409).send({error:'此 Agent 不支持修改所请求的模型参数'});
+    }
+    const stillCurrent=()=>{
+      const current=getSession(id);
+      return !!current&&nativeConversationId(current)===context.nativeId&&current.agent_environment_id===session.agent_environment_id
+        &&current.project_id===session.project_id&&agentForSession(current).descriptor.id===adapter.descriptor.id
+        &&canControl(current)&&canAccessAgentSession(userId,id)&&userHasPermission(userId,'agent_api','write')
+        &&(!patch||(['running','detached','released'].includes(current.status)&&
+          patch.expected_native_id===context.nativeId&&patch.expected_environment_id===(current.agent_environment_id||'native')));
+    };
+    const notify=()=>broadcastEphemeral({type:'session.controls',session_id:id,project_id:session.project_id??undefined});
+    if(updatingControls.has(id))return reply.code(409).send({error:'此标签页正在更新设置，请重新读取后再修改'});
+    updatingControls.add(id);
     try {
+      if(!stillCurrent())return reply.code(409).send({error:'标签页已切换对话、账号或运行状态，请重新读取'});
+      if(req.body===null){saveModelPreference(userId,id,null);notify();return {ok:true,pending:null};}
       const data=await adapter.controls.read(context);
-      const value=await adapter.controls.validate(context,req.body);
-      if(adapter.descriptor.id==='codex'&&value.provider&&value.provider!==data.provider)assertEnvironmentUse('codex','provider:'+value.provider,req.user!.id);
-      if(value.provider&&data.provider&&value.provider!==data.provider)return reply.code(409).send({error:'切换模型服务需要确认新开会话，原会话已保留'});
+      const merged=patch?mergeExecutionSettings(data,capabilities,patch.execution,readModelPreference(userId,id)):req.body;
+      const value=await adapter.controls.validate(context,merged);
+      if(adapter.descriptor.id==='codex'&&value.provider&&value.provider!==data.provider)assertEnvironmentUse('codex','provider:'+value.provider,userId);
+      if(value.provider&&(data.provider||patch)&&value.provider!==data.provider)return reply.code(409).send({error:'目标模型不属于当前 Provider'});
+      if(!stillCurrent())return reply.code(409).send({error:'标签页已切换对话、账号或运行状态，请重新读取'});
       if(!data.loaded&&!data.supports_model_recovery)return reply.code(409).send({error:'当前 Agent 尚不支持保存恢复模型，请先恢复会话'});
       const settingAction=beginSessionAction(context,value.service_tier!==undefined&&value.model===data.model?'speed':'model',{
         dimensions:{model:value.model,speed:value.service_tier??null,environment:session.agent_environment_id??null,account:null},
       });
-      if(!data.loaded){saveModelPreference(req.user!.id,session.id,value);return {ok:true,pending:value,pending_status:'saved'};}
-      try {const applied=await adapter.controls.apply(context,value);const pending=applied.pending===true?value:null;saveModelPreference(req.user!.id,session.id,pending,pending?new Date().toISOString():undefined);settingAction('accepted');return {ok:true,...applied,pending,pending_status:pending?'submitted':null};}
-      catch(error){settingAction('unknown');return reply.code(503).send({error:error instanceof Error?error.message:'设置失败，请刷新确认'});}
+      if(!data.loaded){saveModelPreference(userId,id,value);notify();return {ok:true,pending:value,pending_status:'saved'};}
+      try {
+        const applied=await adapter.controls.apply(context,value,patch?{nextTurn:true}:undefined);
+        if(!stillCurrent())throw Error('设置提交后目标会话已变化，请重新读取');
+        const pending=applied.pending===true?value:null;
+        saveModelPreference(userId,id,pending,pending?new Date().toISOString():undefined);
+        settingAction('accepted');notify();
+        return {ok:true,...applied,pending,pending_status:pending?'submitted':null,
+          ...(patch?{service_tier:applied.service_tier??data.service_tier}:{})};
+      }
+      catch(error){settingAction('unknown');notify();return reply.code(503).send({error:error instanceof Error?error.message:'设置失败，请刷新确认'});}
     }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'设置失败，请重试'});}
+    finally{updatingControls.delete(id);}
   });
 
   app.delete<{Params:{id:string;client:string}}>('/sessions/:id/queue/:client',async(req,reply)=>{
@@ -988,11 +1033,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         if(afterCurrentTurn&&!adapter.input.supportsFollowUp)
           throw new AgentSubmissionError('目标 Agent 未提供排队接口','rejected');
         if(handoff) {
-          if(!adapter.input.supportsImmediate)throw new AgentSubmissionError('目标 Agent 不支持即时协作消息','rejected');
+          if(!afterCurrentTurn&&!adapter.input.supportsImmediate)throw new AgentSubmissionError('目标 Agent 不支持即时协作消息','rejected');
           rememberInputSource(id,handoff.clientId,{kind:'agent_handoff',label:handoff.label});
           if(message_id)bindInputSourceMessage(id,handoff.clientId,message_id);
         }
-        const native=await adapter.input.submit(context,input,identity,attachments,handoff?{immediate:true}:afterCurrentTurn?{afterCurrentTurn}:undefined);
+        const native=await adapter.input.submit(context,input,identity,attachments,afterCurrentTurn?{afterCurrentTurn}:handoff?{immediate:true}:undefined);
         if(native){
           if(native==='queued')beginSessionAction(context,'queue',{message_id,client_id:identity})('accepted');
           rememberFirstSessionTask(id,conversationQuestionReply(input)?.text??input);
@@ -1000,8 +1045,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         }
         if(adapter.descriptor.sessionHost==='managed')throw Object.assign(Error('Agent 服务未接受输入，消息尚未提交'),{submission:'rejected'});
       }
-      if(handoff)throw new AgentSubmissionError('目标会话的即时输入尚未就绪，消息未发送','rejected');
       if(afterCurrentTurn)throw new AgentSubmissionError('原生队列不可用，消息尚未提交','rejected');
+      if(handoff)throw new AgentSubmissionError('目标会话的即时输入尚未就绪，消息未发送','rejected');
       if(nativeCandidate&&!await attachExistingSession(id))throw new AgentSubmissionError('消息尚未发送：终端连接未就绪，请重连后重试','rejected');
       if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);
       if(req.body?.source==='conversation'&&typeof clientId==='string'&&session){

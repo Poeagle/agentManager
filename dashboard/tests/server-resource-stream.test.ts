@@ -51,6 +51,19 @@ describe('shared resource stream cache', () => {
     expect(useStreamStore.getState().events).toHaveLength(0);
   });
 
+  it('refreshes only the changed tab’s controls, and refreshes stale controls after reconnect', () => {
+    const first = ['conversation-controls', 'child-a'];
+    const second = ['conversation-controls', 'child-b'];
+    client.setQueryData(first, { model: 'original' });
+    client.setQueryData(second, { model: 'other' });
+    socket.onmessage?.({ data: JSON.stringify({ type: 'session.controls', session_id: 'child-a' }) });
+    expect(client.getQueryState(first)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(second)?.isInvalidated).toBe(false);
+    expect(useStreamStore.getState().events).toHaveLength(0);
+    socket.onopen?.();
+    expect(client.getQueryState(second)?.isInvalidated).toBe(true);
+  });
+
   it('updates the resource cache from a pushed sample without adding telemetry to session events', () => {
     const sample = resources(5);
     socket.onmessage?.({ data: JSON.stringify({ type: 'server.resources', data: JSON.stringify(sample) }) });

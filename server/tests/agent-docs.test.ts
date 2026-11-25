@@ -1,17 +1,19 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { authHook, createSession, createUser, sessionCookieName } from '../src/auth.js';
+import { authHook, createSession, createUser, sessionCookieName, setProjectToolAccess } from '../src/auth.js';
 import { getDb } from '../src/db/index.js';
 import { agentDocsRoutes } from '../src/routes/agent-docs.js';
 import { agentRoutes } from '../src/routes/agent.js';
 import { sessionRoutes } from '../src/routes/sessions.js';
 import { agentDocsLaunch } from '../src/services/agent-docs.js';
+import { ensureClaudeRuntime, releaseClaudeRuntime } from '../src/services/agents/claude/sdk-runtime.js';
 import { createClaudeProvider } from '../src/services/agents/claude/providers.js';
 import * as codexControls from '../src/services/agents/codex/controls.js';
 import { getAgent } from '../src/services/agents/index.js';
 import { linkConversationInputs } from '../src/services/conversation-input-links.js';
 import * as manager from '../src/services/session-manager.js';
+import { setRoleGrants, setUserRoles } from '../src/services/rbac.js';
 import { createTestDatabase } from './helpers/database.js';
 
 const base = '/api/agent-docs';
@@ -84,6 +86,80 @@ it('inherits the creator and restricts the credential to Agent Docs, the same pr
   }
   getDb().prepare("UPDATE sessions SET status='cancelled' WHERE id='dev-one'").run();
   expect((await app.inject({ url: endpoint, headers })).statusCode).toBe(401);
+});
+
+it('lists only the caller’s direct children and bounds in-place settings to those children', async () => {
+  getDb().prepare("UPDATE sessions SET parent_session_id='dev-one' WHERE id IN ('test','different-owner','different-project')").run();
+  const headers = header('dev-one');
+  const children = (await app.inject({ url: base + '/tabs?children=true', headers })).json();
+  expect(children.tabs).toMatchObject([{ tab_id: 'test', parent_tab_id: 'dev-one' }]);
+  expect(children.tabs).toHaveLength(1);
+  const update = (id: string, payload: object, auth = headers) =>
+    app.inject({ method: 'POST', url: base + '/tabs/' + id + '/controls', headers: auth, payload });
+  const controls = vi.spyOn(getAgent('claude').controls, 'apply');
+  for (const id of ['dev-one', 'dev-two', 'different-owner', 'different-project']) {
+    expect((await update(id, { request_id: id, execution: { model_id: 'haiku' } })).json())
+      .toMatchObject({ result: { status: 'rejected' } });
+  }
+  const read = await app.inject({ url: base + '/tabs/test/controls', headers });
+  expect(read.json()).toMatchObject({
+    supported: { model: true, reasoning_effort: false, service_tier: false },
+    models: expect.arrayContaining([{ model_id: 'haiku', reasoning_efforts: [], default_reasoning_effort: null, service_tiers: [] }]),
+  });
+  expect((await update('test', { request_id: 'unsupported', execution: { service_tier: 'priority' } })).json())
+    .toMatchObject({ result: { status: 'unsupported' } });
+  expect((await update('test', { request_id: 'provider-switch', execution: { model_id: 'haiku', environment_id: 'other' } })).statusCode).toBe(400);
+  expect(controls).not.toHaveBeenCalled();
+});
+
+it('changes the Claude child model using its existing native session', async () => {
+  const fixture = manager.getSession('test')!;
+  getDb().prepare("UPDATE sessions SET parent_session_id='dev-one' WHERE id='test'").run();
+  const project = getDb().prepare('SELECT path FROM projects WHERE id=?').get(fixture.project_id) as {path: string};
+  const runtime = ensureClaudeRuntime(native, project.path, undefined, {model:'opus',effort:''});
+  try {
+    const headers = header('dev-one'), url = base + '/tabs/test/controls';
+    const update = await app.inject({method:'POST',url,headers,payload:{request_id:'claude-model',execution:{model_id:'haiku'}}});
+    expect(update.json()).toMatchObject({result:{tab_id:'test',status:'applied',execution:{
+      model_id:'haiku',reasoning_effort:null,service_tier:null,
+    }}});
+    expect((await app.inject({url,headers})).json()).toMatchObject({loaded:true,execution:{model_id:'haiku'}});
+    expect(runtime.selectedModel()).toBe('haiku');
+    expect(manager.getSession('test')).toMatchObject({native_session_id:native,status:'running'});
+  } finally { releaseClaudeRuntime(native); }
+});
+
+it('requires collaboration write permission to edit an owned child', async () => {
+  getDb().prepare("UPDATE sessions SET parent_session_id='dev-one' WHERE id='test'").run();
+  setProjectToolAccess({projectId:'p',userId:owner,canSession:true,canTerminal:false,sessionClients:['claude'],grantedBy:owner});
+  getDb().prepare("UPDATE users SET role='member' WHERE id=?").run(owner);
+  getDb().prepare("INSERT INTO rbac_roles(id,name) VALUES ('docs-reader','Docs reader')").run();
+  setRoleGrants('docs-reader', { agent_api: 'read' });
+  setUserRoles(owner, ['docs-reader']);
+  const headers = header('dev-one');
+  const capabilities = (await app.inject({url:base + '/capabilities',headers})).json();
+  expect(capabilities.operations).toContain('tab-controls');
+  expect(capabilities.operations).not.toContain('update-tab-controls');
+  const url = base + '/tabs/test/controls';
+  expect((await app.inject({url,headers})).json()).toMatchObject({can_update:false});
+  expect((await app.inject({method:'POST',url,headers,payload:{request_id:'read-only',execution:{model_id:'haiku'}}})).statusCode).toBe(403);
+});
+
+it.each([['test','claude'],['dev-two','codex']])('queues an explicit follow-up to %s with its source intact', async (target, agent) => {
+  const submit = vi.spyOn(getAgent(agent).input, 'submit').mockResolvedValue('queued');
+  const headers = header('dev-one');
+  const payload = { request_id:'queue-task', target_tab_ids:[target], after_current_turn:true, intent:'task', text:'下一轮复验' };
+  const request = () => app.inject({method:'POST',url:base + '/messages',headers,payload});
+  const response = await request();
+  const receipt = response.json().result.results[0];
+  expect(receipt).toMatchObject({tab_id:target,status:'queued',message_id:expect.any(String)});
+  expect((await request()).json()).toEqual(response.json());
+  expect(submit.mock.calls).toHaveLength(1);
+  expect(submit.mock.calls[0][4]).toEqual({afterCurrentTurn:true});
+  expect((await app.inject({url:base + '/inbox/' + receipt.message_id,headers:header(target)})).json())
+    .toMatchObject({message:{source_tab_id:'dev-one',content:'下一轮复验'}});
+  expect((await app.inject({method:'POST',url:base + '/messages',headers:header(target),
+    payload:{request_id:'bad-reply',reply_to:receipt.message_id,after_current_turn:true,text:'不排队回传'}})).statusCode).toBe(400);
 });
 
 it('delivers several sources immediately in receipt order and routes each reply to its original sender', async () => {

@@ -39,7 +39,7 @@ test('model controls use native capabilities and a docked file stays readable wh
  writeFileSync(log,record('event_msg',{type:'user_message',message:'查看审查报告'})+[1,2,3].map(i=>record('event_msg',{type:'agent_message',message:`第 ${i} 条进展，正在核对文件。`,phase:'commentary'})).join('')+record('event_msg',{type:'task_complete',last_agent_message:'报告已完成：[查看审查报告](REPORT.md)'})+record('turn_context',{model:'model-a',effort:'high',approval_policy:'never',sandbox_policy:{type:'workspace-write'}})+record('event_msg',{type:'token_count',info:{total_token_usage:{total_tokens:500000},last_token_usage:{input_tokens:11000,cached_input_tokens:10000,output_tokens:1000,total_tokens:12000},model_context_window:40000}}));
  const modelKey=(name:string)=>JSON.stringify(['openai',name]);
  let working=false;const steered:any[]=[];
- let tier='default',model='model-a',effort='high',compacting=false;let queued:any[]=[];const methods:string[]=[];const inputs:any[]=[],server=createServer(),wss=new WebSocketServer({server});
+ let tier='default',model='model-a',effort='high',compacting=false,broadcastSettings=true;let queued:any[]=[];const methods:string[]=[];const inputs:any[]=[],server=createServer(),wss=new WebSocketServer({server});
  wss.on('connection',(socket:any)=>socket.on('message',(bytes:any)=>{const f=JSON.parse(bytes.toString());if(!f.id||!f.method)return;methods.push(f.method);let result:any={};
   if(f.method==='config/read')result={config:{model_provider:'openai',model:'model-a'}};
   if(f.method==='thread/resume')result={serviceTier:tier};
@@ -51,7 +51,7 @@ test('model controls use native capabilities and a docked file stays readable wh
   if(f.method==='thread/queue/list')result={data:queued};
   if(f.method==='thread/queue/add'){const item={id:`q-${queued.length}`,clientUserMessageId:f.params.clientUserMessageId,input:f.params.input};queued.push(item);result={queuedSubmission:item};for(const client of wss.clients)client.send(JSON.stringify({method:'thread/queue/changed',params:{threadId:native}}));}
   if(f.method==='thread/queue/delete'){const before=queued.length;queued=queued.filter(q=>q.id!==f.params.queuedSubmissionId);result={deleted:queued.length<before};for(const client of wss.clients)client.send(JSON.stringify({method:'thread/queue/changed',params:{threadId:native}}));}
-  if(f.method==='thread/settings/update'){model=f.params.model;effort=f.params.effort;if(f.params.serviceTier!==undefined)tier=f.params.serviceTier;for(const client of wss.clients)client.send(JSON.stringify({method:'thread/settings/updated',params:{threadId:native,threadSettings:{model,effort,serviceTier:tier}}}));}
+  if(f.method==='thread/settings/update'){model=f.params.model;effort=f.params.effort;if(f.params.serviceTier!==undefined)tier=f.params.serviceTier;if(broadcastSettings)for(const client of wss.clients)client.send(JSON.stringify({method:'thread/settings/updated',params:{threadId:native,threadSettings:{model,effort,serviceTier:tier}}}));}
   if(f.method==='thread/compact/start'){compacting=true;for(const client of wss.clients){client.send(JSON.stringify({method:'turn/started',params:{threadId:native,turn:{id:'compact-turn',status:'inProgress'}}}));client.send(JSON.stringify({method:'item/started',params:{threadId:native,turnId:'compact-turn',item:{id:'compact-item',type:'contextCompaction'}}}));}}
   if(f.method==='turn/start'){inputs.push(f.params);model=f.params.model||model;effort=f.params.effort||effort;appendFileSync(log,record('event_msg',{type:'user_message',message:f.params.input[0].text})+record('event_msg',{type:'task_complete',last_agent_message:'已收到文件反馈。'}));}
   socket.send(JSON.stringify({id:f.id,result}));
@@ -74,6 +74,18 @@ test('model controls use native capabilities and a docked file stays readable wh
   await page.goto('/');const modelSelect=page.getByRole('combobox',{name:'选择模型'}),strength=page.getByRole('combobox',{name:'选择推理强度'}),input=page.getByRole('textbox',{name:'发送给当前 Agent 的消息'});await expect(modelSelect).toHaveValue(modelKey('model-a'));await expect(page.getByText('Context 40K | 30%',{exact:true})).toBeVisible();await expect(page.getByLabel('Weekly remaining 75%')).toHaveCount(0);
   await page.getByRole('button',{name:'开启 Fast 模式'}).click();await expect(page.getByRole('button',{name:'关闭 Fast 模式'})).toHaveAttribute('aria-pressed','true');expect(tier).toBe('priority');
   await page.getByRole('button',{name:'关闭 Fast 模式'}).click();await expect(page.getByRole('button',{name:'开启 Fast 模式'})).toHaveAttribute('aria-pressed','false');expect(tier).toBe('default');expect(inputs).toHaveLength(0);
+  // A remote settings edit must refresh the open tab even without an Engine settings frame.
+  broadcastSettings=false;
+  const updated=await page.request.put(`/api/sessions/${session.id}/controls`,{data:{
+   execution:{service_tier:'priority'},expected_native_id:native,expected_environment_id:'native',
+  }});
+  expect(updated.ok()).toBe(true);
+  await expect(page.getByRole('button',{name:'关闭 Fast 模式'})).toHaveAttribute('aria-pressed','true');
+  expect(tier).toBe('priority');
+  expect(inputs).toHaveLength(0);
+  broadcastSettings=true;
+  await page.getByRole('button',{name:'关闭 Fast 模式'}).click();
+  await expect(page.getByRole('button',{name:'开启 Fast 模式'})).toHaveAttribute('aria-pressed','false');
   await page.getByRole('combobox', { name: '选择 Codex 账号环境' }).selectOption('account:review');
   const switchDialog = page.getByRole('dialog', { name: '保留上下文切换 Codex 环境' });
   const preflight = switchDialog.getByRole('button', { name: '预检连接、登录、模型与项目权限' });
@@ -214,9 +226,13 @@ test('model controls use native capabilities and a docked file stays readable wh
    });
    if(width === 1280) expect(Math.abs(longBounds.width - contentWidth / 2)).toBeLessThan(1);
    expect(overflow).toBeLessThanOrEqual(1);
-   const longButton=(await longBatch.boundingBox())!;
-   const metadata=(await longRow.locator('.session-chat-message-meta').boundingBox())!;
-   expect(metadata.x-longButton.x-longButton.width).toBeLessThanOrEqual(12);
+   const timestamp=longRow.locator('.session-chat-message-meta time');
+   if(width===1280){
+    await expect(timestamp).toBeVisible();
+    const longButton=(await longBatch.boundingBox())!;
+    const metadata=(await timestamp.boundingBox())!;
+    expect(metadata.x-longButton.x-longButton.width).toBeLessThanOrEqual(12);
+   }else await expect(timestamp).toBeHidden();
    const title=(await sentBatch.getByText('批量消息',{exact:false}).boundingBox())!;
    const preview=(await sentBatch.getByText('批量发送后自动收起',{exact:true}).boundingBox())!;
    expect(Math.abs(title.y + title.height/2 - preview.y - preview.height/2)).toBeLessThan(2);

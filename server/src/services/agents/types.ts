@@ -617,6 +617,7 @@ export interface AgentControlsPort {
   apply(
     context: AgentContext,
     value: ModelPreference,
+    options?: { nextTurn?: boolean },
   ): Promise<AgentControlResult>;
 }
 export interface AgentTelemetryPort {

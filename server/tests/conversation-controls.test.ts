@@ -10,6 +10,8 @@ import {join} from 'path';
 import {createTestDatabase} from './helpers/database.js';
 import {authHook,createUser,createSession,setProjectToolAccess} from '../src/auth.js';
 import {getDb} from '../src/db/index.js';
+import {agentDocsLaunch} from '../src/services/agent-docs.js';
+import {agentDocsRoutes} from '../src/routes/agent-docs.js';
 import {agentRoutes} from '../src/routes/agent.js';
 import * as manager from '../src/services/session-manager.js';
 import {readConversationTelemetry,readModelPreference,saveModelPreference,readCodexModels} from '../src/services/agents/codex/controls.js';
@@ -30,7 +32,7 @@ beforeEach(async()=>{
   inputs=[];methods=[];active=false;loaded=true;fail=false;noModels=false;pricedModels=false;model='model-a';effort='high';tier='default';nativeCwd='/project';server=createServer();wss=new WebSocketServer({server});
   wss.on('connection',ws=>ws.on('message',bytes=>{const f=JSON.parse(bytes.toString());if(!f.method||!f.id)return;methods.push(f.method);let result:any={};
     if(f.method==='thread/read')result={thread:{id:native,status:{type:loaded?active?'active':'idle':'notLoaded'},model,reasoningEffort:effort,modelProvider:'openai',cwd:nativeCwd,cliVersion:'0.test'}};
-    if(f.method==='model/list')result={data:[{model:'model-a',displayName:'Model A',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high',serviceTiers:[{id:'priority',name:'Fast',description:'Faster requests'}]},{model:'model-b',displayName:'Model B',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'}],defaultReasoningEffort:'low'},{model:'hidden',displayName:'Hidden',hidden:true,supportedReasoningEfforts:[{reasoningEffort:'low'}]}]};
+    if(f.method==='model/list')result={data:[{model:'model-a',displayName:'Model A',supportedReasoningEfforts:[{reasoningEffort:'high'},{reasoningEffort:'max'}],defaultReasoningEffort:'high',serviceTiers:[{id:'priority',name:'Fast',description:'Faster requests'}]},{model:'model-b',displayName:'Model B',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'medium'}],defaultReasoningEffort:'low'},{model:'hidden',displayName:'Hidden',hidden:true,supportedReasoningEfforts:[{reasoningEffort:'low'}]}]};
     if(f.method==='model/list'&&noModels)result={data:[]};
     if(f.method==='model/list'&&pricedModels)result={data:['gpt-6.2-sol','gpt-6.2-astra'].map(model=>({model,displayName:model,supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'}))};
     if(f.method==='thread/resume')result={serviceTier:tier};
@@ -44,7 +46,7 @@ beforeEach(async()=>{
   getDb().prepare("INSERT INTO projects(id,name,path,owner_id) VALUES ('p','Project',?,?)").run(dir,owner);
   getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,codex_session_id,created_by_user_id) VALUES ('s','p','Task','running','terminal','codex',?,?)").run(native,owner);
   vi.spyOn(manager,'isSessionActive').mockReturnValue(true);vi.spyOn(manager,'writeToSession').mockReturnValue(true);
-  app=Fastify();await app.register(websocket);app.addHook('onRequest',authHook);await app.register(agentRoutes,{prefix:'/api'});
+  app=Fastify();await app.register(websocket);app.addHook('onRequest',authHook);await app.register(agentRoutes,{prefix:'/api'});await app.register(agentDocsRoutes,{prefix:'/api'});
 });
 afterEach(async()=>{await app.close();for(const ws of wss.clients)ws.terminate();await new Promise<void>(r=>wss.close(()=>r()));await new Promise<void>(r=>server.close(()=>r()));vi.restoreAllMocks();vi.unstubAllEnvs();cleanup();});
 const get=()=>app.inject({url:'/api/sessions/s/controls',headers:{cookie}});
@@ -63,8 +65,8 @@ describe('native conversation controls',()=>{
  it('exposes the same GPT-6.2 Standard credit rates and verification date in model metadata',async()=>{
   pricedModels=true;const response=await get();expect(response.statusCode).toBe(200);
   expect(response.json().models).toMatchObject([
-   {model:'gpt-6.2-sol',reference_credits:{input:50,cached:2.5,output:250,as_of:'2026-11-18'}},
-   {model:'gpt-6.2-astra',reference_credits:{input:200,cached:10,output:1000,as_of:'2026-11-18'}},
+   {model:'gpt-6.2-sol',reference_credits:{input:50,cached:2.5,output:250,as_of:'2026-11-22'}},
+   {model:'gpt-6.2-astra',reference_credits:{input:200,cached:10,output:1000,as_of:'2026-11-22'}},
   ]);
  });
  it('reads account model metadata through the selected system account and does not expose other fields',async()=>{
@@ -111,6 +113,52 @@ describe('native conversation controls',()=>{
  it('applies settings immediately through the TUI settings-only RPC without submitting a user turn',async()=>{
   expect((await set({model:'model-b',effort:'medium'})).statusCode).toBe(200);expect(inputs).toHaveLength(0);expect(methods).toContain('thread/settings/update');expect((await get()).json()).toMatchObject({model:'model-b',effort:'medium',pending:null});expect(readModelPreference(owner,'s')).toBeNull();
   expect((await send()).statusCode).toBe(202);expect(inputs[0]).not.toHaveProperty('model');expect(manager.writeToSession).not.toHaveBeenCalled();
+ });
+ it('changes a running child in place through the tab credential, preserving omitted fields',async()=>{
+  getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id,native_session_id) VALUES ('parent','p','Parent','running','session','codex',?,?)").run(owner,'parent-native');
+  getDb().prepare("UPDATE sessions SET mode='session',parent_session_id='parent' WHERE id='s'").run();
+  const token=agentDocsLaunch(manager.getSession('parent')!)!.environment.AGENT_MANAGER_COLLABORATION_SESSION;
+  const headers={authorization:'Bearer '+token};
+  const url='/api/agent-docs/tabs/s/controls';
+  const update=(request_id:string,execution:object)=>app.inject({method:'POST',url,headers,payload:{request_id,execution}});
+  active=true;
+  expect((await app.inject({url,headers})).json()).toMatchObject({can_update:true,execution:{model_id:'model-a',reasoning_effort:'high'},models:[
+   {model_id:'model-a',reasoning_efforts:['high','max'],service_tiers:['default','priority']},{model_id:'model-b'},
+  ]});
+  const fast=await update('enable-fast',{service_tier:'priority'});
+  expect(fast.json()).toMatchObject({state:'settled',result:{tab_id:'s',status:'applied',execution:{model_id:'model-a',reasoning_effort:'high',service_tier:'priority'}}});
+  expect((await update('enable-fast',{service_tier:'priority'})).json()).toEqual(fast.json());
+  expect((await update('enable-fast',{service_tier:'default'})).statusCode).toBe(409);
+  expect((await update('raise-effort',{reasoning_effort:'max'})).json())
+   .toMatchObject({result:{status:'applied',execution:{model_id:'model-a',reasoning_effort:'max',service_tier:'priority'}}});
+  expect((await update('no-tiers',{model_id:'model-b'})).json()).toMatchObject({result:{status:'rejected'}});
+  expect((await update('change-model',{model_id:'model-b',service_tier:'default'})).json())
+   .toMatchObject({result:{status:'applied',execution:{model_id:'model-b',reasoning_effort:'low',service_tier:'default'}}});
+  expect((await update('bad-effort',{reasoning_effort:'max'})).json()).toMatchObject({result:{status:'rejected'}});
+  expect((await get()).json()).toMatchObject({model:'model-b',effort:'low',service_tier:'default',native_id:native});
+  expect(getDb().prepare('SELECT id,parent_session_id,codex_session_id,status FROM sessions WHERE id=?').get('s'))
+   .toEqual({id:'s',parent_session_id:'parent',codex_session_id:native,status:'running'});
+  expect(methods.filter(method=>method==='thread/settings/update')).toHaveLength(3);
+  expect(methods).not.toContain('thread/start');
+  expect(methods).not.toContain('turn/interrupt');
+  expect(inputs).toHaveLength(0);
+ });
+ it('reports recovery settings separately and treats a native write failure as unknown',async()=>{
+  getDb().prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,created_by_user_id,native_session_id) VALUES ('parent','p','Parent','running','session','codex',?,?)").run(owner,'parent-native');
+  getDb().prepare("UPDATE sessions SET mode='session',parent_session_id='parent' WHERE id='s'").run();
+  const headers={authorization:'Bearer '+agentDocsLaunch(manager.getSession('parent')!)!.environment.AGENT_MANAGER_COLLABORATION_SESSION};
+  const url='/api/agent-docs/tabs/s/controls';
+  const update=(request_id:string)=>app.inject({method:'POST',url,headers,payload:{request_id,execution:{model_id:'model-b',service_tier:'default'}}});
+  loaded=false;
+  expect((await update('offline')).json()).toMatchObject({result:{status:'saved',execution:{model_id:'model-b',reasoning_effort:'low'}}});
+  expect((await app.inject({url,headers})).json()).toMatchObject({loaded:false,execution:{model_id:'model-a'},
+    pending_status:'saved',pending_execution:{model_id:'model-b'}});
+  expect(methods).not.toContain('thread/settings/update');
+  loaded=true;fail=true;
+  const unknown=await update('uncertain');
+  expect(unknown.json()).toMatchObject({state:'settled',result:{status:'unknown',tab_id:'s'}});
+  expect((await update('uncertain')).json()).toEqual(unknown.json());
+  expect(methods.filter(method=>method==='thread/settings/update')).toHaveLength(1);
  });
  it('sets and cancels Fast using catalog tier IDs, verifies native receipts, and never submits a turn',async()=>{
   const enabled=await set({model:'model-a',effort:'high',service_tier:'priority'});expect(enabled.statusCode).toBe(200);expect(enabled.json().service_tier).toBe('priority');expect((await get()).json().service_tier).toBe('priority');

@@ -112,6 +112,7 @@ export function connectStream() {
     useStreamStore.getState().setConnected(true);
     void queryClientRef?.invalidateQueries({ queryKey: SERVER_RESOURCE_QUERY_KEY });
     void queryClientRef?.invalidateQueries({ queryKey: ['notifications'] });
+    void queryClientRef?.invalidateQueries({ queryKey: ['conversation-controls'] });
     void queryClientRef?.invalidateQueries({ queryKey: ['project-sessions'] });
   };
 
@@ -159,6 +160,10 @@ export function connectStream() {
           client.removeQueries({ queryKey: ['project-session-detail', id], exact: true });
         }
         if (!projectPending) void client.invalidateQueries({ queryKey: ['admin-monitor'] });
+        return;
+      }
+      if (event.type === 'session.controls' && event.session_id) {
+        void queryClientRef?.invalidateQueries({ queryKey: ['conversation-controls', event.session_id], exact: true });
         return;
       }
       if(event.type==='session.retry')return;

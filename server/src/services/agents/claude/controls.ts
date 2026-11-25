@@ -216,13 +216,13 @@ export async function validateClaudeControls(context: AgentContext, value: unkno
         throw Error('请选择 Claude 支持的模型；推理强度由原生客户端管理');
     return { model: p.model, effort: '' };
 }
-export async function applyClaudeControls(context: AgentContext, value: ModelPreference) {
+export async function applyClaudeControls(context: AgentContext, value: ModelPreference, options?: { nextTurn?: boolean }) {
     if(!context.nativeId)throw Error('会话尚未连接');
     const runtime=(await import('./sdk-runtime.js')).claudeRuntime(context.nativeId);
     if(!runtime)throw Error('Claude managed runtime is not connected');
     const provider=readClaudeRuntimeProvider(context.session,context.environmentAccess);
     (await import('./providers.js')).assertClaudeSelectedModel(provider,value.model);
-    runtime.setModel(value);
+    runtime.setModel(value, options?.nextTurn);
     saveClaudeSessionModelPreference(context,value);
     return {...value,pending:false};
 }

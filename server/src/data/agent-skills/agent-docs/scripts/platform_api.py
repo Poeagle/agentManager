@@ -23,8 +23,17 @@ def parse_args():
     tabs = commands.add_parser("list-tabs")
     tabs.add_argument("--cursor")
     tabs.add_argument("--include-ended", action="store_true")
+    tabs.add_argument("--children", action="store_true")
     read = commands.add_parser("read-tab")
     read.add_argument("tab_id")
+    controls = commands.add_parser("tab-controls", help="Read the target's current settings and available models")
+    controls.add_argument("tab_id")
+    edit = commands.add_parser("update-tab-controls", help="Change an existing child tab's settings")
+    edit.add_argument("tab_id")
+    edit.add_argument("--request-id", required=True)
+    edit.add_argument("--model-id")
+    edit.add_argument("--reasoning-effort")
+    edit.add_argument("--service-tier")
     inbox = commands.add_parser("inbox")
     inbox.add_argument("--cursor")
     incoming = commands.add_parser("read-message")
@@ -73,21 +82,33 @@ def make_request(args):
         route = "/tabs" if command == "list-tabs" else "/inbox"
         if args.cursor:
             query["cursor"] = args.cursor
-        if command == "list-tabs" and args.include_ended:
-            query["include_ended"] = "true"
+        if command == "list-tabs":
+            if args.include_ended:
+                query["include_ended"] = "true"
+            if args.children:
+                query["children"] = "true"
     elif command == "execution-options":
         route = "/execution-options"
         if args.agent_id:
             query["agent_id"] = args.agent_id
         if args.include_quota:
             query["include_quota"] = "true"
-    elif command in ("read-tab", "delete-tab"):
+    elif command in ("read-tab", "delete-tab", "tab-controls", "update-tab-controls"):
         if not args.tab_id or args.tab_id in (".", ".."):
             raise ValueError("需要有效的 tab_id")
         route = "/tabs/" + quote(args.tab_id, safe="")
         if command == "delete-tab":
             body = {"request_id": args.request_id, "delete_history": args.delete_history}
             return route + "/delete", "", json.dumps(body).encode()
+        if command in ("tab-controls", "update-tab-controls"):
+            route += "/controls"
+        if command == "update-tab-controls":
+            execution = {key: value for key, value in (
+                ("model_id", args.model_id), ("reasoning_effort", args.reasoning_effort), ("service_tier", args.service_tier)
+            ) if value is not None}
+            if not execution:
+                raise ValueError("至少指定一个要修改的模型参数")
+            return route, "", json.dumps({"request_id": args.request_id, "execution": execution}).encode()
     elif command == "read-message":
         if not args.message_id or args.message_id in (".", ".."):
             raise ValueError("需要有效的 message_id")

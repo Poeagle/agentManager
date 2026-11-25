@@ -7,6 +7,8 @@ import { agentDocsAllowed, agentDocsTabAccessible, verifyAgentDocsToken, withAge
 import { agentDocsBatchLimits, agentDocsBatchScheduler, agentDocsBatchSnapshot, getAgentDocsBatch,
   initAgentDocsBatches, openAgentDocsBatch, reserveAgentDocsBatch, sealAgentDocsBatch, type AgentDocsBatch } from '../services/agent-docs-batches.js';
 import { agentForSession, getAgent } from '../services/agents/index.js';
+import { executionSettingsPatch, inPlaceModelChoices } from '../services/agents/model-preferences.js';
+import type { AgentControls, ModelPreference } from '../services/agents/types.js';
 import { nativeConversationId } from '../services/session-identity.js';
 import { sessionPresenter } from '../services/session-labels.js';
 import { automaticConversationContext } from '../shared/conversation-context.js';
@@ -34,6 +36,10 @@ const create = z.object({
   initial_message: message.optional(),
   batch_id: tabId.optional(),
 }).strict().refine(input => !input.batch_id || !!input.initial_message);
+const updateTabControls = z.object({
+  request_id: tabId,
+  execution: executionSettingsPatch,
+}).strict();
 const deleteTab = z.object({
   request_id: tabId,
   delete_history: z.boolean().default(false),
@@ -45,7 +51,8 @@ const send = z.object({
   intent: z.enum(['task', 'progress', 'result', 'note', 'blocker']).optional(),
   batch_id: tabId.optional(),
   text: message,
-}).strict().refine(input => !!input.target_tab_ids !== !!input.reply_to &&
+  after_current_turn: z.boolean().optional(),
+}).strict().refine(input => (!input.after_current_turn || !!input.target_tab_ids) && !!input.target_tab_ids !== !!input.reply_to &&
   (!input.batch_id || (!!input.target_tab_ids && input.intent === 'task')) &&
   (input.intent !== 'blocker' || !!input.reply_to));
 const openBatch = z.object({
@@ -80,6 +87,18 @@ function ownedTab(scope: Scope, id: string, includeEnded = false) {
   const accessible = includeEnded ? agentDocsTabAccessible : agentDocsAllowed;
   return target?.created_by_user_id === scope.userId && target.project_id === scope.projectId && accessible(target) ? target : undefined;
 }
+
+function canUpdateControls(scope: Scope, target: Session) {
+  return target.parent_session_id === scope.source.id && agentDocsAllowed(scope.source, 'write') &&
+    agentDocsAllowed(target, 'write') && ['running', 'detached', 'released'].includes(target.status);
+}
+
+function executionSelection(value: {model?: string | null; effort?: string | null; service_tier?: string | null}) {
+  return { model_id: value.model ?? null, reasoning_effort: value.effort || null, service_tier: value.service_tier ?? null };
+}
+
+type SessionControls = AgentControls & {can_edit: boolean; pending: ModelPreference | null; pending_status: string | null};
+type SessionControlUpdate = Partial<ModelPreference> & {pending: ModelPreference | null; pending_status: 'saved' | 'submitted' | null};
 
 function operation(scope: Scope, requestId: string): Operation | undefined {
   return getDb().prepare("SELECT fingerprint,state,result FROM agent_docs_operations WHERE tab_id=? AND request_id=? AND created_at>=datetime('now','-7 days')")
@@ -131,11 +150,11 @@ async function mutate(scope: Scope, kind: string, input: { request_id: string },
 
 const deliveryTails = new Map<string, { tail: Promise<unknown>; depth: number }>();
 
-async function deliver(app: Parameters<typeof platformApi>[0], scope: Scope, id: string, text: string, requestId: string, replyTo?: string, intent?: string, batchId?: string) {
+async function deliver(app: Parameters<typeof platformApi>[0], scope: Scope, id: string, text: string, requestId: string, replyTo?: string, intent?: string, batchId?: string, afterCurrentTurn?: boolean) {
   const queue = deliveryTails.get(id) || { tail: Promise.resolve(), depth: 0 };
   if (queue.depth >= LIMITS.pending_submissions) return { tab_id: id, status: 'rejected', reason: '目标会话当前有太多待投递消息' };
   queue.depth++;
-  const next = queue.tail.catch(() => {}).then(() => deliverOrdered(app, scope, id, text, requestId, replyTo, intent, batchId));
+  const next = queue.tail.catch(() => {}).then(() => deliverOrdered(app, scope, id, text, requestId, replyTo, intent, batchId, afterCurrentTurn));
   queue.tail = next;
   deliveryTails.set(id, queue);
   try { return await next; }
@@ -156,13 +175,13 @@ function handoffText(sourceId: string, messageId: string, text: string, replyTo?
 }
 
 async function submitHandoff(app: Parameters<typeof platformApi>[0], input: {
-  targetId: string; userId: string; clientId: string; label: string; text: string; native: string; environment: string;
+  targetId: string; userId: string; clientId: string; label: string; text: string; native: string; environment: string; afterCurrentTurn?: boolean;
 }) {
   try {
     const response = await withAgentDocsHandoff(input, () =>
       platformApi(app, input.userId, 'POST', `/api/sessions/${encodeURIComponent(input.targetId)}/input`, {
         input: input.text, source: 'conversation', client_id: input.clientId, expected_native_id: input.native,
-        expected_environment_id: input.environment,
+        expected_environment_id: input.environment, ...(input.afterCurrentTurn && { after_current_turn: true }),
       }));
     return { status: response.status === 'queued' ? 'queued' : 'submitted' };
   } catch (error) {
@@ -172,7 +191,7 @@ async function submitHandoff(app: Parameters<typeof platformApi>[0], input: {
   }
 }
 
-async function deliverOrdered(app: Parameters<typeof platformApi>[0], scope: Scope, id: string, text: string, requestId: string, replyTo?: string, intent?: string, batchId?: string) {
+async function deliverOrdered(app: Parameters<typeof platformApi>[0], scope: Scope, id: string, text: string, requestId: string, replyTo?: string, intent?: string, batchId?: string, afterCurrentTurn?: boolean) {
   const rejected = (reason: string) => ({ tab_id: id, status: 'rejected', reason });
   const source = ownedTab(scope, scope.source.id);
   const target = ownedTab(scope, id);
@@ -184,7 +203,7 @@ async function deliverOrdered(app: Parameters<typeof platformApi>[0], scope: Sco
   db.prepare(`INSERT INTO agent_docs_handoffs(id,target_tab_id,source_tab_id,source_label,request_id,reply_to,status,content,intent,batch_id)
     VALUES(?,?,?,?,?,?, 'unknown', ?,?,?)`).run(messageId, id, source.id, label, requestId, replyTo || null, text, intent || 'note', batchId ?? null);
   const receipt = await submitHandoff(app, { targetId: id, userId: scope.userId, clientId: messageId, label,
-    text: handoffText(source.id, messageId, text, replyTo), native: nativeConversationId(target)!,
+    text: handoffText(source.id, messageId, text, replyTo), native: nativeConversationId(target)!, afterCurrentTurn,
     environment: target.agent_environment_id || 'native' });
   db.prepare('UPDATE agent_docs_handoffs SET status=? WHERE id=?').run(receipt.status, messageId);
   return { tab_id: id, message_id: messageId, ...receipt };
@@ -272,9 +291,9 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
     scoped.get('/capabilities', async req => {
       const scope = readScope(req);
       const user = findUserById(scope.userId);
-      const operations = ['list-tabs', 'read-tab', 'inbox', 'read-message', 'execution-options', 'operation', 'read-batch'];
-      if (agentDocsAllowed(scope.source, 'write')) operations.push('create-tab', 'send-message', 'delete-tab', 'open-batch', 'seal-batch');
-      return { version: '1.4.0', source_tab_id: scope.source.id, project_id: scope.projectId,
+      const operations = ['list-tabs', 'read-tab', 'tab-controls', 'inbox', 'read-message', 'execution-options', 'operation', 'read-batch'];
+      if (agentDocsAllowed(scope.source, 'write')) operations.push('create-tab', 'update-tab-controls', 'send-message', 'delete-tab', 'open-batch', 'seal-batch');
+      return { version: '1.5.0', source_tab_id: scope.source.id, project_id: scope.projectId,
         user: { id: user?.id, display_name: user?.display_name || user?.username }, operations, limits: LIMITS };
     });
 
@@ -312,12 +331,15 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
       return result;
     });
 
-    scoped.get<{ Querystring: { cursor?: string; include_ended?: string } }>('/tabs', async (req, reply) => {
+    scoped.get<{ Querystring: { cursor?: string; include_ended?: string; children?: string } }>('/tabs', async (req, reply) => {
       const scope = readScope(req);
       const cursor = Number(req.query.cursor || 0);
       if (!Number.isSafeInteger(cursor) || cursor < 0) return reply.code(400).send({ error: '分页游标无效' });
-      const rows = getDb().prepare("SELECT id,rowid AS cursor FROM sessions WHERE created_by_user_id=? AND project_id=? AND mode='session' AND rowid>? ORDER BY rowid LIMIT ?")
-        .all(scope.userId, scope.projectId, cursor, LIMITS.page_size + 1) as Array<{ id: string; cursor: number }>;
+      const parent = req.query.children === 'true' ? scope.source.id : null;
+      const rows = getDb().prepare(`SELECT id,rowid AS cursor FROM sessions
+        WHERE created_by_user_id=? AND project_id=? AND mode='session' AND rowid>?
+        ${parent ? 'AND parent_session_id=?' : ''} ORDER BY rowid LIMIT ?`)
+        .all(scope.userId, scope.projectId, cursor, ...(parent ? [parent] : []), LIMITS.page_size + 1) as Array<{ id: string; cursor: number }>;
       const present = sessionPresenter(scope.userId);
       const includeEnded = req.query.include_ended === 'true';
       const mayDelete = agentDocsAllowed(scope.source, 'write');
@@ -327,7 +349,8 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
         return [{ tab_id: row.id, parent_tab_id: target.parent_session_id ?? null, name: present(target).tab_name, agent_id: agentForSession(target).descriptor.id,
           state: getTracker(row.id)?.state.processState || target.status,
           can_delete: mayDelete && target.id !== scope.source.id && agentDocsTabAccessible(target, 'write'),
-          can_receive: !!nativeConversationId(target) && !!agentForSession(target).input.supportsImmediate && target.id !== scope.source.id && ['running','detached','released'].includes(target.status) }];
+          can_receive: !!nativeConversationId(target) && !!agentForSession(target).input.supportsImmediate && target.id !== scope.source.id && ['running','detached','released'].includes(target.status),
+          can_queue_follow_up: !!nativeConversationId(target) && !!agentForSession(target).input.supportsFollowUp && target.id !== scope.source.id && ['running','detached','released'].includes(target.status) }];
       });
       return { tabs, next_cursor: rows.length > LIMITS.page_size ? String(rows[LIMITS.page_size - 1].cursor) : null };
     });
@@ -341,6 +364,58 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
         (item.role === 'user' || item.role === 'assistant') && typeof item.text === 'string' && !item.presentation && !automaticConversationContext(item.text))
         .map((item: { role: string; text: string }) => ({ role: item.role, text: item.text.slice(0, 2400) })) : [];
       return { tab_id: target.id, parent_tab_id: target.parent_session_id ?? null, state: getTracker(target.id)?.state.processState || target.status, messages };
+    });
+
+    scoped.get<{ Params: { id: string } }>('/tabs/:id/controls', async (req, reply) => {
+      const scope = readScope(req), target = ownedTab(scope, req.params.id, true);
+      if (!target) return reply.code(404).send({ error: '找不到标签页' });
+      const capabilities = agentForSession(target).descriptor.capabilities;
+      const binding = { tab_id: target.id, parent_tab_id: target.parent_session_id ?? null, ...sourceExecution(target) };
+      const supported = { model: !!capabilities.model, reasoning_effort: !!capabilities.effort, service_tier: !!capabilities.serviceTier };
+      const native = nativeConversationId(target);
+      if (!native || !supported.model) return { ...binding, supported, can_update: false, loaded: false,
+        execution: null, pending_execution: null, pending_status: null, models: [] };
+      const data: SessionControls = await platformApi(app, scope.userId, 'GET', `/api/sessions/${encodeURIComponent(target.id)}/controls`);
+      const current = ownedTab(scope, target.id, true);
+      if (!current || nativeConversationId(current) !== native || current.agent_environment_id !== target.agent_environment_id)
+        return reply.code(409).send({ error: '标签页已切换对话或账号，请重新读取' });
+      const models = inPlaceModelChoices(data);
+      return { ...binding, supported, loaded: data.loaded, execution: executionSelection(data),
+        can_update: canUpdateControls(scope, current) && data.can_edit && models.length > 0,
+        pending_execution: data.pending ? executionSelection(data.pending) : null, pending_status: data.pending_status,
+        models: models.map(model => ({
+          model_id: model.model, reasoning_efforts: supported.reasoning_effort ? model.efforts.map(effort => effort.value) : [],
+          default_reasoning_effort: supported.reasoning_effort ? model.defaultEffort : null,
+          service_tiers: supported.service_tier ? [...new Set(['default', ...(model.service_tiers ?? []).map(tier => tier.id)])] : [],
+        })),
+      };
+    });
+
+    scoped.post<{ Params: { id: string } }>('/tabs/:id/controls', async (req, reply) => {
+      const parsed = updateTabControls.safeParse(req.body);
+      if (!parsed.success || !tabId.safeParse(req.params.id).success)
+        return reply.code(400).send({ error: '无效的标签页设置请求' });
+      const scope = readScope(req), id = req.params.id, input = { ...parsed.data, tab_id: id };
+      return mutate(scope, 'update-tab-controls', input, async () => {
+        const target = ownedTab(scope, id);
+        const rejected = (reason: string) => ({ tab_id: id, status: 'rejected', reason });
+        if (!target || !canUpdateControls(scope, target)) return rejected('仅可修改当前标签页创建且有权控制的活动子标签页');
+        const native = nativeConversationId(target);
+        if (!native) return rejected('子标签页尚未连接原生会话');
+        recordResult(scope, input.request_id, { tab_id: id });
+        try {
+          const data: SessionControlUpdate = await platformApi(app, scope.userId, 'PUT', `/api/sessions/${encodeURIComponent(id)}/controls`, {
+            execution: input.execution, expected_native_id: native, expected_environment_id: target.agent_environment_id || 'native',
+          });
+          return { tab_id: id, status: data.pending_status ?? 'applied',
+            execution: executionSelection(data.pending ?? data) };
+        } catch (error) {
+          if (error instanceof PlatformApiError && error.statusCode === 422)
+            return { tab_id: id, status: 'unsupported', reason: error.message };
+          if (error instanceof PlatformApiError && error.statusCode < 500) return rejected(error.message);
+          throw error;
+        }
+      });
     });
 
     scoped.get<{ Querystring: { cursor?: string } }>('/inbox', async (req, reply) => {
@@ -411,7 +486,7 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
         const results: Array<{ tab_id: string; status: string; message_id?: string; reason?: string }> = targets.map(id => ({ tab_id: id, status: 'unknown' }));
         recordResult(scope, input.request_id, { results });
         await Promise.allSettled(targets.map(async (id, index) => {
-          results[index] = await deliver(app, scope, id, input.text, input.request_id, input.reply_to, input.intent, input.batch_id);
+          results[index] = await deliver(app, scope, id, input.text, input.request_id, input.reply_to, input.intent, input.batch_id, input.after_current_turn);
           recordResult(scope, input.request_id, { results });
         }));
         return { results };

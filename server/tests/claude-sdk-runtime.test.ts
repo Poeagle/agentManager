@@ -944,6 +944,27 @@ describe('Claude Agent SDK runtime',()=>{
     await promise;
     expect(sdk.queries[0].setModel).toBe('haiku');
   });
+  it('keeps the active query model when saving a child setting for the next query',async()=>{
+    let finish!:(value:unknown)=>void;
+    sdk.messages=[
+      new Promise(resolve=>{finish=resolve;}),
+      {type:'result',subtype:'success',uuid:'result',session_id:session},
+    ];
+    const runtime=ensureClaudeRuntime(session,'/tmp',undefined,{model:'opus',effort:''});
+    await runtime.submit('当前任务');
+    await vi.waitFor(()=>expect(sdk.queries).toHaveLength(1));
+    runtime.setModel({model:'haiku',effort:''},true);
+    finish({type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,
+      message:{id:'active-answer',model:'opus',content:[{type:'text',text:'完成'}]}});
+    await vi.waitFor(()=>expect(runtime.runtime().state).toBe('idle'));
+    expect(runtime.snapshot().messages.some(message=>message.error?.code==='model_mismatch')).toBe(false);
+    expect(sdk.queries[0].setModel).toBeUndefined();
+    expect(sdk.interrupts).toBe(0);
+    sdk.messages=[{type:'result',subtype:'success',uuid:'next',session_id:session}];
+    await runtime.submit('继续');
+    await vi.waitFor(()=>expect(sdk.queries).toHaveLength(2));
+    expect(sdk.queries[1].options).toMatchObject({model:'haiku',resume:session});
+  });
   it('ignores a repeated completed SDK message with the same native ID',async()=>{
     const completed={type:'assistant',uuid:assistant,session_id:session,parent_tool_use_id:null,message:{id:'same-completion',content:[{type:'text',text:'只显示一次'}]}};
     sdk.messages=[completed,completed,{type:'result',subtype:'success',uuid:'019ff001-1212-7212-8212-121212121215',session_id:session}];
