@@ -5,10 +5,10 @@ import { readEngineModelsForEnvironment } from './controls.js';
 import { cachedAccountStatus } from './account-status.js';
 import type { AgentCollaborationEnvironment, AgentCollaborationSelection } from '../types.js';
 
-export async function codexCollaborationOptions(userId: string, _projectId: string, includeQuota: boolean): Promise<AgentCollaborationEnvironment[]> {
-  const environments = allCodexEnvironments().filter(env => env.enabled && canUseEnvironment('codex', env.id, userId));
+export async function codexCollaborationOptions(userId: string, _projectId: string, includeQuota: boolean, environmentId: string): Promise<AgentCollaborationEnvironment[]> {
+  const environments = allCodexEnvironments().filter(env => env.id === environmentId && env.enabled && canUseEnvironment('codex', env.id, userId));
   const options: AgentCollaborationEnvironment[] = [];
-  for (const env of environments.slice(0, 20)) {
+  for (const env of environments) {
     const canConfigure = canControlEnvironment(env.id, userId);
     const models = canConfigure ? await readEngineModelsForEnvironment(env.id).catch(() => []) : [];
     let quota;

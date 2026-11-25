@@ -790,7 +790,9 @@ export interface AgentCollaborationEnvironment {
 }
 export interface AgentLaunchPort {
   supportsPlatformTools?: boolean;
-  collaborationOptions?(userId: string, projectId: string, includeQuota: boolean): Promise<AgentCollaborationEnvironment[]>;
+  /** The bound launch environment, including the adapter's implicit default for older sessions. */
+  collaborationEnvironmentId?(session: AgentSession): string;
+  collaborationOptions?(userId: string, projectId: string, includeQuota: boolean, environmentId: string): Promise<AgentCollaborationEnvironment[]>;
   validateCollaborationLaunch?(userId: string, projectId: string, selection: AgentCollaborationSelection): Promise<{preference?: ModelPreference; error?: string}>;
   /** Fresh launch preserves a platform-generated UUID for its first user message. */
   supportsInitialClientId?: boolean;

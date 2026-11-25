@@ -271,6 +271,7 @@ export const claudeAdapter: AgentDefinition = {
   },
   launch: {
     supportsPlatformTools: true,
+    collaborationEnvironmentId: session => claudeEnvironmentId(session.agent_environment_id || 'anthropic'),
     collaborationOptions: claudeCollaborationOptions,
     validateCollaborationLaunch: validateClaudeCollaborationLaunch,
     supportsInitialClientId: true,

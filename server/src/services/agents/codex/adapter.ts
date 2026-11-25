@@ -139,7 +139,7 @@ export const codexAdapter: AgentAdapter = {
         interrupt: async (context) => { if (context.nativeId && process.env.AGENTMANAGER_CODEX_STREAM_SOCKET)
             await inCodexThread(context.nativeId,async()=>(await import('./stream.js')).interruptStreamingCodexThread(context.nativeId!)); },
     },
-    launch: { supportsPlatformTools:true, collaborationOptions:codexCollaborationOptions, validateCollaborationLaunch:validateCodexCollaborationLaunch, supportsInitialClientId:true, prepare: async (context, task, instructions, resume, initialClientId) => {
+    launch: { supportsPlatformTools:true, collaborationEnvironmentId:sessionEnvironmentId, collaborationOptions:codexCollaborationOptions, validateCollaborationLaunch:validateCodexCollaborationLaunch, supportsInitialClientId:true, prepare: async (context, task, instructions, resume, initialClientId) => {
             assertSessionEnvironment(context.session);
             const owner=context.session.created_by_user_id;
             if(context.session.agent_environment_id&&owner&&canControlEnvironment(context.session.agent_environment_id,owner))context={...context,sharedAccess:true};

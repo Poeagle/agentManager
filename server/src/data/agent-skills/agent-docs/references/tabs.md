@@ -24,7 +24,7 @@ python3 scripts/platform_api.py read-tab "$target_tab_id"
 
 ## 创建并交付任务
 
-`POST /tabs` 对应 `create-tab`。需要指定 Agent、模型或账号时，先用 [配置分配](allocation.md) 查询这个项目可用的选项。名称使用有辨识度的任务或角色名，例如 Jira 工单号。下例假设查询结果允许使用 Codex。
+`POST /tabs` 对应 `create-tab`。新标签页继承创建者的 Agent 类型、Provider 和账号。需要为子任务指定模型时，先用 [配置分配](allocation.md) 查看同一 Provider 的选项。名称使用有辨识度的任务或角色名，例如 Jira 工单号。
 
 ```sh
 # request_id 使用执行命令前已生成并记录的 ID。
@@ -33,14 +33,13 @@ python3 scripts/platform_api.py create-tab <<JSON
 {
   "request_id": "$request_id",
   "name": "DBM-1234 排查",
-  "execution": {"agent_id": "codex"},
   "initial_message": "排查 DBM-1234。复现并记录环境、证据和影响范围，完成后回传结论。"
 }
 JSON
 ```
 
-- `request_id`、`name` 和 `execution.agent_id` 必填。`initial_message` 可省略，省略时创建空白标签页。首条任务附有平台生成的 `message_id` 与发起方 `source_tab_id`。接收方用原 `message_id` 作为 `reply_to`。
-- `execution` 可含 `environment_id`、`model_id`、`reasoning_effort` 和 `service_tier`。只有平台当前列为可选的配置才可指定。省略的字段采用平台默认值，返回结果应包含实际应用的配置。
+- `request_id` 和 `name` 必填。`initial_message` 可省略，省略时创建空白标签页。首条任务附有平台生成的 `message_id` 与发起方 `source_tab_id`。接收方用原 `message_id` 作为 `reply_to`。
+- `execution` 可省略。指定 `model_id`、`reasoning_effort` 或 `service_tier` 时使用继承环境支持的组合。若请求仍带 `agent_id` 或 `environment_id`，其值必须与创建者匹配，平台会拒绝跨 Provider 或跨账号的创建。
 - 用响应 `result` 里的 `tab_id`、`launch_status`、`applied_execution` 和 `initial_message_status` 分别核对标签页、启动、配置和首条任务。返回的 `parent_tab_id` 为本次创建者。启动状态可为 `ready`、`starting`、`rejected` 或 `unknown`。未提交首条任务时，其状态为 `null`。已进入投递流程的首条任务带有 `initial_message_id`。投递状态见 [消息投递](messages.md)。
 - 已有 `tab_id` 且首条任务明确被拒绝时，解决原因后向这个标签页补发。明确拒绝的启动按错误类型处理，例如权限不足、配置不可用、达到标签页上限。启动或首条任务结果待确认时，用原请求 ID 查询。
 

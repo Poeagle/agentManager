@@ -7,6 +7,8 @@ import { agentDocsRoutes } from '../src/routes/agent-docs.js';
 import { agentRoutes } from '../src/routes/agent.js';
 import { sessionRoutes } from '../src/routes/sessions.js';
 import { agentDocsLaunch } from '../src/services/agent-docs.js';
+import { createClaudeProvider } from '../src/services/agents/claude/providers.js';
+import * as codexControls from '../src/services/agents/codex/controls.js';
 import { getAgent } from '../src/services/agents/index.js';
 import { linkConversationInputs } from '../src/services/conversation-input-links.js';
 import * as manager from '../src/services/session-manager.js';
@@ -138,6 +140,60 @@ it('creates a named tab as its creator and sends the first handoff only after la
   expect((await app.inject({ url: base + '/tabs', headers })).json().tabs).toContainEqual(expect.objectContaining({ tab_id: id, name: 'DBM-1234 排查', parent_tab_id: 'dev-one' }));
   expect((await app.inject({ method: 'POST', url: base + '/tabs', headers, payload: request })).json()).toEqual(response.json());
   expect(manager.spawnSession).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  { agent: 'codex', source: 'dev-two', environment: 'account:parent', otherEnvironment: 'account:other' },
+  { agent: 'claude', source: 'dev-one', environment: 'claude-provider:parent', otherEnvironment: 'claude-provider:other' },
+])('inherits and restricts the source $agent Provider', async ({ agent, source, environment, otherEnvironment }) => {
+  for (const id of ['parent', 'other']) {
+    if (agent === 'claude') {
+      createClaudeProvider({
+        id, name: id, apiKey: 'test-key',
+        fields: { baseUrl: 'https://example.invalid', models: [id + '-model'] },
+      });
+    } else {
+      getDb().prepare(`INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids)
+        VALUES(?,'codex',?,'account',1,?,'[]')`)
+        .run('account:' + id, id, JSON.stringify({ username: id, port: 22, identityFile: '', codexCommand: 'codex', codexHome: '' }));
+    }
+  }
+  getDb().prepare('UPDATE sessions SET agent_environment_id=? WHERE id=?').run(environment, source);
+  const readModels = vi.spyOn(codexControls, 'readEngineModelsForEnvironment').mockResolvedValue([]);
+  const spawn = vi.spyOn(manager, 'spawnSession').mockImplementation(async id => {
+    getDb().prepare("UPDATE sessions SET status='running',native_session_id=? WHERE id=?").run(native, id);
+  });
+  const headers = header(source);
+  const post = async (requestId: string, execution?: object, sourceHeaders = headers) => (
+    await app.inject({
+      method: 'POST', url: base + '/tabs', headers: sourceHeaders,
+      payload: { request_id: requestId, name: requestId, ...(execution && { execution }) },
+    })
+  ).json();
+
+  const initialCount = getDb().prepare('SELECT count(*) AS count FROM sessions').get();
+  expect(await post('other-provider', { agent_id: agent, environment_id: otherEnvironment }))
+    .toMatchObject({ state: 'settled', result: { launch_status: 'rejected' } });
+  expect(await post('other-agent', { agent_id: agent === 'codex' ? 'claude' : 'codex' }))
+    .toMatchObject({ state: 'settled', result: { launch_status: 'rejected' } });
+  expect(spawn).not.toHaveBeenCalled();
+  expect(getDb().prepare('SELECT count(*) AS count FROM sessions').get()).toEqual(initialCount);
+
+  const options = (await app.inject({ url: base + '/execution-options', headers })).json();
+  expect(options).toMatchObject({
+    source_execution: { agent_id: agent, environment_id: environment },
+    environments: [{ agent_id: agent, environment_id: environment }],
+  });
+  expect(readModels.mock.calls.map(([id]) => id)).toEqual(agent === 'codex' ? [environment] : []);
+
+  const child = await post('inherit-provider');
+  expect(child).toMatchObject({ result: { launch_status: 'ready', applied_execution: { agent_id: agent, environment_id: environment } } });
+  expect(manager.getSession(child.result.tab_id)).toMatchObject({ parent_session_id: source, agent_environment_id: environment });
+  expect(await post('inherit-provider')).toEqual(child);
+
+  const grandchild = await post('same-provider', { agent_id: agent, environment_id: environment }, header(child.result.tab_id));
+  expect(grandchild).toMatchObject({ result: { launch_status: 'ready', applied_execution: { agent_id: agent, environment_id: environment } } });
+  expect(manager.getSession(grandchild.result.tab_id)).toMatchObject({ parent_session_id: child.result.tab_id, agent_environment_id: environment });
 });
 
 it('closes only accessible tabs in the same project and reuses the receipt without restarting cleanup', async () => {

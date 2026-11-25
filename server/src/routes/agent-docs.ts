@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { findUserById, userCanUseToolForProject } from '../auth.js';
 import { getDb } from '../db/index.js';
 import { agentDocsAllowed, agentDocsTabAccessible, verifyAgentDocsToken, withAgentDocsCreation, withAgentDocsHandoff } from '../services/agent-docs.js';
-import { agentDescriptors, agentForSession, getAgent } from '../services/agents/index.js';
+import { agentForSession, getAgent } from '../services/agents/index.js';
 import { nativeConversationId } from '../services/session-identity.js';
 import { sessionPresenter } from '../services/session-labels.js';
 import { automaticConversationContext } from '../shared/conversation-context.js';
@@ -22,12 +22,12 @@ const create = z.object({
   request_id: tabId,
   name: z.string().trim().min(1).max(120),
   execution: z.object({
-    agent_id: tabId,
+    agent_id: tabId.optional(),
     environment_id: z.string().min(1).max(160).optional(),
     model_id: z.string().min(1).max(160).optional(),
     reasoning_effort: z.string().max(50).optional(),
     service_tier: z.string().max(50).optional(),
-  }).strict(),
+  }).strict().optional(),
   initial_message: message.optional(),
 }).strict();
 const deleteTab = z.object({
@@ -53,6 +53,14 @@ function scopeFor(req: FastifyRequest): Scope | undefined {
   const source = getSession(match[1]);
   if (!source || !source.created_by_user_id || !source.project_id || !verifyAgentDocsToken(source, match[2])) return;
   return { source, userId: source.created_by_user_id, projectId: source.project_id };
+}
+
+function sourceExecution(session: Session) {
+  const adapter = agentForSession(session);
+  return {
+    agent_id: adapter.descriptor.id,
+    environment_id: adapter.launch.collaborationEnvironmentId?.(session) ?? session.agent_environment_id ?? null,
+  };
 }
 
 function ownedTab(scope: Scope, id: string, includeEnded = false) {
@@ -201,7 +209,7 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
       const user = findUserById(scope.userId);
       const operations = ['list-tabs', 'read-tab', 'inbox', 'read-message', 'execution-options', 'operation'];
       if (agentDocsAllowed(scope.source, 'write')) operations.push('create-tab', 'send-message', 'delete-tab');
-      return { version: '1.2.0', source_tab_id: scope.source.id, project_id: scope.projectId,
+      return { version: '1.3.0', source_tab_id: scope.source.id, project_id: scope.projectId,
         user: { id: user?.id, display_name: user?.display_name || user?.username }, operations, limits: LIMITS };
     });
 
@@ -262,11 +270,16 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
 
     scoped.get<{ Querystring: { agent_id?: string; include_quota?: string } }>('/execution-options', async req => {
       const scope = readScope(req);
-      const agents = agentDescriptors().filter(agent => agent.capabilities.launch && agent.id === (req.query.agent_id || agent.id) &&
-        userCanUseToolForProject(scope.userId, scope.projectId, 'session', agent.id));
-      return { environments: (await Promise.all(agents.map(agent => getAgent(agent.id).launch.collaborationOptions?.(
-        scope.userId, scope.projectId, req.query.include_quota === 'true',
-      ) ?? []))).flat() };
+      const source_execution = sourceExecution(scope.source);
+      const { agent_id, environment_id } = source_execution;
+      const agent = getAgent(agent_id);
+      const allowed = environment_id && agent.descriptor.capabilities.launch &&
+        (!req.query.agent_id || req.query.agent_id === agent_id) &&
+        userCanUseToolForProject(scope.userId, scope.projectId, 'session', agent_id);
+      const environments = allowed && environment_id ? await agent.launch.collaborationOptions?.(
+        scope.userId, scope.projectId, req.query.include_quota === 'true', environment_id,
+      ) ?? [] : [];
+      return { source_execution, environments };
     });
 
     scoped.get<{ Params: { id: string } }>('/operations/:id', async (req, reply) => {
@@ -336,9 +349,14 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
       const input = parsed.data, scope = readScope(req);
       return mutate(scope, 'create', input, async () => {
         const rejected = (reason: string) => ({ launch_status: 'rejected', initial_message_status: input.initial_message ? 'rejected' : null, reason });
-        const { agent_id, environment_id, model_id, reasoning_effort, service_tier } = input.execution;
-        if (!agentDescriptors().some(agent => agent.id === agent_id && agent.capabilities.launch) ||
-            !userCanUseToolForProject(scope.userId, scope.projectId, 'session', agent_id)) return rejected('项目未授权此 Agent');
+        const { agent_id, environment_id } = sourceExecution(scope.source);
+        const agent = getAgent(agent_id);
+        const { agent_id: requestedAgent, environment_id: requestedEnvironment, model_id, reasoning_effort, service_tier } = input.execution ?? {};
+        if (requestedAgent && requestedAgent !== agent_id) return rejected('子标签页必须使用创建者的 Agent');
+        if (requestedEnvironment && (agent.environment?.storageId?.(requestedEnvironment) ?? requestedEnvironment) !== environment_id)
+          return rejected('子标签页必须使用创建者绑定的 Provider 或账号');
+        if (!agent.descriptor.capabilities.launch || !userCanUseToolForProject(scope.userId, scope.projectId, 'session', agent_id))
+          return rejected('项目未授权此 Agent');
         const launchPreference = model_id || reasoning_effort || service_tier ? { model_id, reasoning_effort, service_tier } : undefined;
         const project = getDb().prepare('SELECT path FROM projects WHERE id=?').get(scope.projectId) as { path: string } | undefined;
         if (!project) return rejected('项目不可用');
@@ -347,7 +365,8 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
           const source = { id: scope.source.id, userId: scope.userId, projectId: scope.projectId };
           existing = await withAgentDocsCreation(source, () => platformApi(app, scope.userId, 'POST', '/api/sessions', {
             project_id: scope.projectId, project_path: project.path, mode: 'session', cli_type: agent_id,
-            environment_id, launch_preference: launchPreference, tab_name: input.name,
+            environment_id: scope.source.agent_environment_id || undefined,
+            launch_preference: launchPreference, tab_name: input.name,
           }));
         } catch (error) {
           if (error instanceof PlatformApiError && error.statusCode < 500) return rejected(error.message);
@@ -365,7 +384,7 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
         state.launch_status = 'ready';
         broadcastEphemeral({ type: 'session.started', session_id: id, project_id: scope.projectId });
         const runtime = await platformApi(app, scope.userId, 'GET', `/api/sessions/${encodeURIComponent(id)}/controls`).catch(() => null);
-        state.applied_execution = { agent_id, environment_id: current.agent_environment_id, model_id: runtime?.model ?? null,
+        state.applied_execution = { ...sourceExecution(current), model_id: runtime?.model ?? null,
           reasoning_effort: runtime?.effort ?? null, service_tier: runtime?.service_tier ?? null };
         if (launchPreference && (!runtime || runtime.model !== model_id ||
             reasoning_effort && runtime.effort !== reasoning_effort ||

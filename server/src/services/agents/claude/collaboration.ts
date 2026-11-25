@@ -1,11 +1,12 @@
 import { canUseClaudeEnvironment, claudeEnvironmentId, claudeProviderModelsForEnvironment, enabledClaudeProviders } from './providers.js';
+import { canUseEnvironment } from '../environment-access.js';
 import type { AgentCollaborationEnvironment, AgentCollaborationSelection } from '../types.js';
 
-export async function claudeCollaborationOptions(userId: string, _projectId: string, includeQuota: boolean): Promise<AgentCollaborationEnvironment[]> {
+export async function claudeCollaborationOptions(userId: string, _projectId: string, includeQuota: boolean, environmentId: string): Promise<AgentCollaborationEnvironment[]> {
   const environments = [{ id: 'anthropic', name: 'Anthropic 原生' },
     ...enabledClaudeProviders().filter(provider => provider.id !== 'anthropic').map(provider => ({ id: `claude-provider:${provider.id}`, name: provider.name }))];
-  return environments.filter(env => canUseClaudeEnvironment(env.id, userId)).map(env => ({
-    agent_id: 'claude', environment_id: env.id, name: env.name,
+  return environments.filter(env => claudeEnvironmentId(env.id) === environmentId && canUseEnvironment('claude', env.id, userId)).map(env => ({
+    agent_id: 'claude', environment_id: environmentId, name: env.name,
     models: claudeProviderModelsForEnvironment(env.id).map(id => ({ model_id: id, reasoning_efforts: [], service_tiers: [] })),
     quota: includeQuota ? { status: 'unknown', windows: [] } : undefined,
   }));
