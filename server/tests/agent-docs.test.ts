@@ -6,6 +6,7 @@ import { getDb } from '../src/db/index.js';
 import { agentDocsRoutes } from '../src/routes/agent-docs.js';
 import { agentRoutes } from '../src/routes/agent.js';
 import { sessionRoutes } from '../src/routes/sessions.js';
+import { skillsRoutes } from '../src/routes/skills.js';
 import { agentDocsLaunch } from '../src/services/agent-docs.js';
 import { ensureClaudeRuntime, releaseClaudeRuntime } from '../src/services/agents/claude/sdk-runtime.js';
 import { createClaudeProvider } from '../src/services/agents/claude/providers.js';
@@ -59,6 +60,7 @@ async function testApp() {
   await app.register(agentRoutes, { prefix: '/api' });
   await app.register(sessionRoutes, { prefix: '/api' });
   await app.register(agentDocsRoutes, { prefix: '/api' });
+  await app.register(skillsRoutes, { prefix: '/api' });
   return app.ready();
 }
 
@@ -67,6 +69,22 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   cleanup();
+});
+
+it('serves a task-writing example from the dispatch link in the built-in skill', async () => {
+  const cookie = `${sessionCookieName()}=${createSession(owner)}`;
+  const endpoint = '/api/integrations/agent-docs';
+  const entry = await app.inject({ url: endpoint, query: { file: 'SKILL.md' }, headers: { cookie } });
+  expect(entry.statusCode).toBe(200);
+  const reference = entry.json().content.match(/\]\((references\/collaboration\.md)#([^)]+)\)/);
+  expect(reference).not.toBeNull();
+  const [, file, heading] = reference!;
+  const playbook = await app.inject({ url: endpoint, query: { file }, headers: { cookie } });
+  expect(playbook.statusCode).toBe(200);
+  const sections = (playbook.json().content as string).split(/^## /m);
+  const guidance = sections.find(section => section.startsWith(heading + '\n'));
+  expect(guidance).toBeDefined();
+  expect(guidance).toMatch(/^> .+/m);
 });
 
 it('inherits the creator and restricts the credential to Agent Docs, the same project, and live tabs', async () => {

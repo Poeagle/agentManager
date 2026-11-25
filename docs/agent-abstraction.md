@@ -296,7 +296,7 @@ Codex 对话从原生历史恢复 `agent-docs` 技能索引，并在“自动信
 
 `delete-tab` 使用当前标签页的写权限和同用户、同项目的目标授权关闭其他标签。默认保留会话历史。指定 `delete_history` 后复用平台的后台历史清理队列，通过原请求 ID 查询结果。操作仅影响目标标签，不向后代扩散。
 
-协作约定参考 DeepSeek Harness 的持久父子关系、由平台记录发送方以及区分消息接收与工作结果。具体派工和验收仍由项目控制。Skill 的 [协作规范](../server/src/data/agent-skills/agent-docs/references/collaboration.md) 提供统一的任务、进展、阻塞和结果字段建议。
+协作约定参考 DeepSeek Harness 的持久父子关系、由平台记录发送方以及区分消息接收与工作结果。派工标签页负责把项目目标拆成可验收的任务，协调依赖、核对证据并安排补验。Skill 的 [协作规范](../server/src/data/agent-skills/agent-docs/references/collaboration.md#派工与验收) 提供派工示例及进展、阻塞和结果的正文约定。
 
 [协作批次](../server/src/data/agent-skills/agent-docs/references/batches.md)用原任务消息关联回传。同一标签页的多项任务分别计数。平台持久化已登记的操作、收件箱和唤醒状态，封批后收齐或到期时由原派发标签页的 Agent 输入适配器接收一次汇总。紧急阻塞可提前通过同一适配器进入会话，派发方原生会话或账号变更时已有结果仍可在收件箱读取。验收和后续关闭由父标签页按授权决定。
 

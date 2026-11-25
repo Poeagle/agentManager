@@ -15,7 +15,7 @@ request_id, *targets = sys.argv[1:]
 print(json.dumps({
     "request_id": request_id,
     "target_tab_ids": targets,
-    "text": "功能已完成并通过自验。请按各自职责核对改动，回传结论、证据和待处理项。",
+    "text": "以候选提交为准，按各自职责核对空结果与错误状态。逐项回传结论、证据和待处理项。共用环境有冲突时，告诉我需要协调的资源，先继续可独立完成的检查。",
 }, ensure_ascii=False))
 PYTHON
 python3 scripts/platform_api.py send-message
