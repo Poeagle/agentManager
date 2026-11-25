@@ -135,6 +135,21 @@ it('removes an instant reminder when the notice is handled elsewhere',async()=>{
   await waitFor(()=>expect(within(screen.getByRole('complementary',{name:'新消息通知'})).getAllByRole('button').map(button=>button.textContent)).toEqual(['项目 A｜标签 1']));
 });
 
+it('keeps new child notices in the center without showing floating alerts',async()=>{
+  mount();
+  const toast=await screen.findByRole('complementary',{name:'新消息通知'});
+  const nested=row(2,{parent_session_id:'closed-parent',kind:'result',state:'info'});
+  page={...page,notifications:[nested,row(1)],pending:1,unread:2,through_id:2};
+  await act(()=>client.invalidateQueries({queryKey:['notifications','u']}));
+  const bell=await screen.findByRole('button',{name:'消息通知，2 条未读'});
+  expect(within(toast).getAllByRole('button').map(button=>button.textContent)).toEqual(['项目 A｜标签 1']);
+
+  fireEvent.click(bell);
+  const dialog=await screen.findByRole('dialog',{name:'消息通知'});
+  fireEvent.click(within(dialog).getByRole('button',{name:'全部',exact:true}));
+  expect(await within(dialog).findByRole('button',{name:'项目 A · 标签 2'})).toBeVisible();
+});
+
 it('shows only the project and tab in the instant reminder and opens the source tab when clicked',async()=>{
   mount();await screen.findByRole('button',{name:'消息通知，1 条未读'});
   const result=row(2,{kind:'result',state:'info',title:'本轮运行完成',body:'执行结果正文',message_id:'final-2'});

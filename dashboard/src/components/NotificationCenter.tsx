@@ -91,7 +91,7 @@ export function NotificationCenter({userId,projects,onOpen,onDetailChange}:{user
     const visible=rows.filter(row=>!row.read_at&&notificationIsVisible(row));
     if(visible.length)read(visible.map(row=>row.id));
     const visibleIds=new Set(visible.map(row=>row.id));
-    const unread=rows.filter(row=>!row.read_at&&!row.muted&&(row.state==='info'||row.state==='pending')&&!visibleIds.has(row.id));
+    const unread=rows.filter(row=>!row.parent_session_id&&!row.read_at&&!row.muted&&(row.state==='info'||row.state==='pending')&&!visibleIds.has(row.id));
     setReminderIds(previous=>{
       const incoming=new Set(unread.map(row=>row.id).reverse());
       const retained=previous.filter(id=>incoming.delete(id));

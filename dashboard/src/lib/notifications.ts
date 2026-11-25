@@ -4,7 +4,7 @@ export interface Notification {
   id:number;session_id:string;native_id:string;source_id:string;message_id:string|null;turn_id:string|null;
   kind:'question'|'approval'|'result'|'error';state:'pending'|'recovering'|'submitted'|'resolved'|'info';
   title:string;body:string;read_at:string|null;created_at:string;updated_at:string;
-  project_id:string|null;project_name:string;display_name:string;muted:boolean;current_binding:boolean;
+  project_id:string|null;parent_session_id?:string|null;project_name:string;display_name:string;muted:boolean;current_binding:boolean;
 }
 export interface NotificationPage {
   notifications:Notification[];has_more:boolean;unread:number;pending:number;through_id:number;

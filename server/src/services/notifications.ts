@@ -14,7 +14,7 @@ export interface Notification {
   message_id:string|null;turn_id:string|null;kind:NotificationKind;state:NotificationState;
   title:string;body:string;read_at:string|null;dismissed_at:string|null;created_at:string;updated_at:string;
 }
-export type NotificationSession=AgentSession&{id:string;project_id:string|null;created_by_user_id:string|null;mode:string;status:string};
+export type NotificationSession=AgentSession&{id:string;project_id:string|null;created_by_user_id:string|null;parent_session_id?:string|null;mode:string;status:string};
 
 
 export function notificationSession(id:string):NotificationSession|undefined {
@@ -109,7 +109,7 @@ export function listNotifications(userId:string,query:{filter?:string;project_id
     if(row.dismissed_at||state==='resolved'||state==='submitted')return [];
     if(!isMuted&&!row.read_at){unread++;if(session.project_id)byProject[session.project_id]=(byProject[session.project_id]||0)+1;bySession[session.id]=(bySession[session.id]||0)+1;}
     if(!isMuted&&state==='pending')pending++;
-    return [{...row,state,project_id:session.project_id,...labels.get(session.id)!,muted:isMuted,current_binding:current}];
+    return [{...row,state,project_id:session.project_id,parent_session_id:session.parent_session_id??null,...labels.get(session.id)!,muted:isMuted,current_binding:current}];
   });
   const filtered=visible.filter(row=>(!query.project_id||row.project_id===query.project_id)
     &&(!query.before||row.id<query.before)

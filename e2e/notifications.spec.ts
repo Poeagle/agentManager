@@ -190,3 +190,47 @@ test('notifies changed sessions across closed projects, answers in the centered 
     }
   }
 });
+
+test('only shows root session popups while keeping child notifications in the inbox', async ({ page }) => {
+  const status = await (await page.request.get('/api/auth/status')).json();
+  const login = await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
+    data: { username: 'e2e-admin', password: 'test-password' },
+  });
+  expect(login.ok()).toBeTruthy();
+  const { user } = await login.json();
+  const directory = join(process.cwd(), '.test-data/e2e');
+  const path = join(directory, 'notification-lineage');
+  mkdirSync(path, { recursive: true });
+  const { project } = await (await page.request.post('/api/projects', {
+    data: { name: '子标签通知验证', path },
+  })).json();
+  await page.request.put('/api/settings', { data: { settings: { statusline_prompted: 'true' } } });
+  await page.request.put('/api/user-state/app', { data: { value: { projectTabs: [], activeTab: 'home' } } });
+
+  const db = new Database(join(directory, 'agentmanager.db'));
+  try {
+    const addSession = db.prepare(`INSERT INTO sessions(id,project_id,task,status,mode,cli_type,native_session_id,created_by_user_id,parent_session_id)
+      VALUES(?,?,?,'completed','session',?,?,?,?)`);
+    const addNotification = db.prepare(`INSERT INTO notifications(user_id,session_id,native_id,source_id,kind,state,title,body,created_at,updated_at)
+      VALUES(?,?,?,'fixture-final','result','info','完成','验证',datetime('now'),datetime('now'))`);
+    for (const [id, name, agent, native, parent] of [
+      ['notice-root', '通知主标签', 'codex', '019ff001-9181-7181-8181-111111111111', null],
+      ['notice-child', '通知子标签', 'claude', '019ff001-9181-7181-8181-222222222222', 'notice-root'],
+    ] as const) {
+      addSession.run(id, project.id, name, agent, native, user.id, parent);
+      addNotification.run(user.id, id, native);
+    }
+  } finally {
+    db.close();
+  }
+
+  await page.goto('/');
+  const toast = page.getByRole('complementary', { name: '新消息通知' });
+  await expect(toast.getByRole('button', { name: '子标签通知验证｜通知主标签' })).toBeVisible();
+  await expect(toast.getByRole('button', { name: '子标签通知验证｜通知子标签' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: /^消息通知，/ }).click();
+  const inbox = page.getByRole('dialog', { name: '消息通知' });
+  await inbox.getByRole('button', { name: '全部', exact: true }).click();
+  await expect(inbox.getByRole('button', { name: '子标签通知验证 · 通知子标签' })).toBeVisible();
+});
