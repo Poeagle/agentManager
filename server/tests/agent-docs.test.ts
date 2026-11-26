@@ -174,6 +174,33 @@ it('serves a task-writing example from the dispatch link in the built-in skill',
   expect(guidance).toMatch(/^> .+/m);
 });
 
+it('publishes independent completion, escalation and both delivery modes in the built-in skill', async () => {
+  const cookie = `${sessionCookieName()}=${createSession(owner)}`;
+  const read = async (file: string) => {
+    const response = await app.inject({ url: '/api/integrations/agent-docs', query: { file }, headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    return response.json<{ content: string }>().content;
+  };
+
+  const entry = await read('SKILL.md');
+  expect(entry).toMatch(/自主完成.*一次回传/);
+  expect(entry).toMatch(/无法自行解决.*向父 Agent/);
+  expect(entry).toMatch(/子 Agent 之间.*紧急/);
+
+  const collaboration = await read('references/collaboration.md');
+  expect(collaboration).toMatch(/需要对方立即介入.*才.*联系其他子 Agent/);
+  expect(collaboration).toMatch(/先继续.*独立完成/);
+
+  const messages = await read('references/messages.md');
+  expect(messages).toMatch(/即时投递.*after_current_turn.*false/);
+  expect(messages).toMatch(/轮后投递.*after_current_turn.*true/);
+  expect(messages).toMatch(/队列不可用.*等到空闲.*改成即时投递/);
+
+  const batches = await read('references/batches.md');
+  expect(batches).toContain('"after_current_turn":true');
+  expect(batches).toMatch(/完成并验证整项委派后.*一次 `result` 回传/);
+});
+
 it('publishes the Codex child dispatch ceiling and standard speed in the built-in skill', async () => {
   const cookie = `${sessionCookieName()}=${createSession(owner)}`;
   const url = '/api/integrations/agent-docs';

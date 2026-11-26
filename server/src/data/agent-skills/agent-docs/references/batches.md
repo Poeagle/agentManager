@@ -14,7 +14,7 @@ python3 scripts/platform_api.py open-batch <<JSON
 JSON
 
 python3 scripts/platform_api.py send-message <<JSON
-{"request_id":"$task_request_id","batch_id":"$batch_id","target_tab_ids":["$child_id"],"intent":"task","text":"复验这一项。回传结论、证据和未完成项。"}
+{"request_id":"$task_request_id","batch_id":"$batch_id","target_tab_ids":["$child_id"],"intent":"task","after_current_turn":true,"text":"完成本项全部复验后，一次回传结论、证据和受阻项。"}
 JSON
 
 python3 scripts/platform_api.py seal-batch --request-id="$seal_request_id" -- "$batch_id"
@@ -22,7 +22,7 @@ python3 scripts/platform_api.py seal-batch --request-id="$seal_request_id" -- "$
 
 ## 回传与汇总
 
-子标签页用原任务的 `message_id` 作为 `reply_to`。普通进展和结果即时入箱。需要父标签页立刻介入时才用 `blocker`，平台会另外尝试即时通知。已确定无法完成的事项，用 `result` 写明缺失条件和未验证范围，让父标签页知道这项已有结论。
+子标签页用原任务的 `message_id` 作为 `reply_to`。完成并验证整项委派后，用一次 `result` 回传。父标签页要求的进展和任务结果即时入箱。遇到无法自行解决的阻塞，确需父标签页立刻介入时才用 `blocker`，平台会另外尝试即时通知。等待协调时继续独立工作。收尾时仍无法完成的部分，在 `result` 里写明缺失条件和未验证范围。
 
 派发结束后，全部任务已有结果或明确投递失败时，平台唤醒父标签页一次。到了截止时间也会通知一次，尚无结论的任务仍列为待回传。过时回传依旧入箱，可按需读取。
 
