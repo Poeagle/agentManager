@@ -40,13 +40,13 @@ describe('shared project creation dialog', () => {
       await waitFor(() => expect(mounted.onSessionCreated).toHaveBeenCalledWith(created));
       expect(api.sessions.create).toHaveBeenCalledWith({project_id:'p1',project_path:project.path,mode:'session',cli_type:'codex',environment_id:'native'});
       expect(mounted.client.getQueryData(['sessions'])).toEqual({ sessions: [created] });
+      expect(mounted.client.getQueryData(['project-sessions', project.id])).toEqual({ sessions: [created] });
     } finally { mounted.dispose(); }
   });
   it('refreshes the authoritative lists after the workspace selects the new tab', async () => {
     const keys = [['sessions'], ['project-sessions', project.id]];
     const mounted = mount(client => {
-      // The workspace discards stale in-flight lists when it opens the returned session.
-      for (const queryKey of keys) void client.cancelQueries({ queryKey, exact: true });
+      for (const queryKey of keys) expect(client.getQueryData(queryKey)).toEqual({ sessions: [created] });
     });
     const running = { ...created, status: 'running' as const };
     const subscriptions = keys.map(queryKey => {

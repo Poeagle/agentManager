@@ -11,6 +11,7 @@ import { X, LayoutGrid, ArrowUpCircle, Plus, Loader2, Folders, ChevronRight } fr
 import { hasPermission, usePermissions } from './lib/permissions';
 import type { PlatformSection } from './components/PlatformCenter';
 import { CloseTabModal } from './components/CloseTabModal';
+import { projectOpenModes } from './components/project-open-modes';
 import { applyTheme } from './lib/themes';
 import {applyAppFont} from './lib/app-font';
 import { ProjectRollupDot } from './lib/session-signal';
@@ -28,6 +29,7 @@ import {notificationApi,notificationFocus,type Notification,type ConversationFoc
 
 const PlatformCenter = lazy(() => import('./components/PlatformCenter').then((module) => ({ default: module.PlatformCenter })));
 const ProjectView = lazy(() => import('./components/ProjectView').then((module) => ({ default: module.ProjectView })));
+const ProjectSessionCreateDialog = lazy(() => import('./components/ProjectSessionCreateDialog').then((module) => ({ default: module.ProjectSessionCreateDialog })));
 const ProjectDashboard = lazy(() => import('./components/ProjectDashboard').then((module) => ({ default: module.ProjectDashboard })));
 
 const queryClient = new QueryClient({
@@ -116,6 +118,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
     return t === 'skills' ? 'home' : t;
   });
   const [focusSessionId, setFocusSessionId] = useState<string | null>(null);
+  const [createSessionProjectId, setCreateSessionProjectId] = useState<string | null>(null);
   const [mobileProjectsOpen, setMobileProjectsOpen] = useState(false);
   const [projectToolbarHost, setProjectToolbarHost] = useState<HTMLDivElement | null>(null);
   const [sessionNavigationHosts, setSessionNavigationHosts] = useState(() => new Map<string, HTMLDivElement>());
@@ -209,6 +212,8 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
   const [updateDismissed, setUpdateDismissed] = useState(false);
 
   const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
+  const createSessionProject = projects.find((item) => item.id === createSessionProjectId);
+  const harnessUrl = appSettings?.settings?.[HARNESS_URL_SETTING];
   const sessions = useMemo(() => sessionsData?.sessions ?? [], [sessionsData]);
   const allowedProjectIds = useMemo(() => new Set(projects.map((project) => project.id)), [projects]);
   const projectTabs = useMemo(
@@ -671,7 +676,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                               if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
                               else if (e.key === 'Escape') { e.preventDefault(); skipTabBlurCommitRef.current = true; cancelTabRename(); }
                             }}
-                            className="bg-transparent outline-none border-b text-xs font-medium w-[120px]"
+                            className="w-full min-w-0 max-w-[120px] bg-transparent outline-none border-b text-xs font-medium"
                             style={{ color: 'var(--text-primary)', borderColor: 'var(--accent)' }}
                           />
                         </div>
@@ -688,6 +693,17 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                           {!!notifications.data?.unread_by_project[tab.projectId]&&<span className="notification-tab-count" aria-label={`${notifications.data.unread_by_project[tab.projectId]} 条未读通知`}>{notifications.data.unread_by_project[tab.projectId]}</span>}
                         </button>
                       )}
+                      <button
+                        type="button"
+                        className="workspace-subtab-action workspace-project-create"
+                        aria-label={`在 ${label} 新建标签页`}
+                        aria-haspopup="dialog"
+                        title="新建标签页"
+                        disabled={!project || projectOpenModes(project, harnessUrl).length === 0}
+                        onClick={() => setCreateSessionProjectId(tab.projectId)}
+                      >
+                        <Plus size={15} aria-hidden="true" />
+                      </button>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -776,7 +792,7 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
                       terminalsSuspended={showPlatformCenter}
                       focusSessionId={isActive ? focusSessionId : null}
                       onFocusSessionHandled={handleFocusSessionHandled}
-                      configuredHarnessUrl={appSettings?.settings?.[HARNESS_URL_SETTING]}
+                      configuredHarnessUrl={harnessUrl}
                       configuredHarnessModel={harnessModelSelection(appSettings?.settings)}
                       focusHarness={isActive && focusHarnessProjectId === tab.projectId}
                       onFocusHarnessHandled={clearHarnessFocus}
@@ -799,6 +815,25 @@ function Dashboard({ authUser, onLogout }: { authUser: AuthUser; onLogout: () =>
           onCancel={() => setConfirmClose(null)}
         />
       )}
+
+      <Suspense fallback={null}>
+        {createSessionProject && <ProjectSessionCreateDialog
+          key={createSessionProject.id}
+          project={createSessionProject}
+          title="新建会话"
+          harnessUrl={harnessUrl}
+          onClose={() => setCreateSessionProjectId(null)}
+          onSessionCreated={(session) => {
+            activateProject(createSessionProject.id);
+            setProjectExpanded(createSessionProject.id, true);
+            setFocusSessionId(session.id);
+          }}
+          onHarnessOpen={() => {
+            setProjectExpanded(createSessionProject.id, true);
+            openHarnessProject(createSessionProject.id, createSessionProject.name);
+          }}
+        />}
+      </Suspense>
 
       <Suspense fallback={null}>
         {platformSection && <PlatformCenter currentUser={authUser} onLogout={onLogout} initialSection={platformSection} onClose={closePlatformCenter} onOpenSession={(projectId, sessionId) => {

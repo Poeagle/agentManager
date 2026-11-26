@@ -75,6 +75,18 @@ test('compact workspace preserves readable labels, activity details and keyboard
   const secondProjectRow = (await projectRows.nth(1).boundingBox())!;
   expect(firstProject.x).toBe(secondProjectRow.x);
   expect(secondProjectRow.y).toBeGreaterThan(firstProject.y);
+  const desktopCreate = firstBranch.getByRole('button', { name: '在 dolphindb_manager 新建标签页' });
+  await expect(header.getByRole('button', { name: '新建会话', exact: true })).toHaveCount(0);
+  const createBounds = (await desktopCreate.boundingBox())!;
+  const closeBounds = (await projectRows.nth(0).getByTitle('Close tab').boundingBox())!;
+  expect(createBounds.x + createBounds.width).toBeLessThanOrEqual(closeBounds.x);
+  expect(createBounds.y + createBounds.height / 2).toBe(firstProject.y + firstProject.height / 2);
+  await desktopCreate.press('Enter');
+  const desktopCreateDialog = page.getByRole('dialog', { name: '新建会话 · dolphindb_manager' });
+  await expect(desktopCreateDialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(desktopCreateDialog).toHaveCount(0);
+  await expect(desktopCreate).toBeFocused();
   const toolbar = page.getByRole('toolbar', { name: '项目工具栏' });
   const toolBounds = await Promise.all((await toolbar.getByRole('button').all()).map(button => button.boundingBox()));
   expect(toolBounds).toHaveLength(6);
@@ -225,9 +237,7 @@ test('compact workspace preserves readable labels, activity details and keyboard
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
 
   const switcher = page.getByRole('button', { name: '切换会话', exact: true });
-  const createSession = page.getByRole('button', { name: '新建会话', exact: true });
   await expect(switcher).toBeInViewport();
-  await expect(createSession).toBeInViewport();
   await switcher.click();
   const dialog = page.getByRole('dialog', { name: '切换会话', exact: true });
   const search = dialog.getByRole('searchbox', { name: '搜索会话' });
@@ -237,7 +247,6 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await search.press('Enter');
   await expect(dialog).toHaveCount(0);
   await expect(switcher).toBeInViewport();
-  await expect(createSession).toBeInViewport();
 
   await switcher.click();
   const scheduledResult = dialog.getByRole('button', { name: '并行任务 16 定时', exact: true });
@@ -247,6 +256,34 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await expect(dialog.getByText('没有匹配的会话')).toBeVisible();
   await search.press('Escape');
   await expect(switcher).toBeFocused();
+
+  await mobileProjects.click();
+  const target = projectTabs.getByRole('button', { name: 'octoally-app', exact: true });
+  const targetCreate = projectTabs.getByRole('button', { name: '在 octoally-app 新建标签页' });
+  await targetCreate.scrollIntoViewIfNeeded();
+  await expect(targetCreate).toBeInViewport();
+  await targetCreate.click();
+  const targetDialog = page.getByRole('dialog', { name: '新建会话 · octoally-app' });
+  await expect(targetDialog).toBeVisible();
+  await expect(target).not.toHaveAttribute('aria-current', 'page');
+  await targetDialog.getByRole('radio', { name: 'Terminal', exact: true }).check();
+  const creation = page.waitForResponse(response =>
+    new URL(response.url()).pathname === '/api/sessions' && response.request().method() === 'POST');
+  await targetDialog.getByRole('button', { name: '新建会话', exact: true }).click();
+  const created = await creation;
+  expect(created.ok()).toBe(true);
+  expect(created.request().postDataJSON()).toMatchObject({ project_id: projects[2].id, mode: 'terminal' });
+  const { session } = await created.json();
+  try {
+    await expect(targetDialog).toHaveCount(0);
+    await expect(projectTabs).toBeHidden();
+    await mobileProjects.click();
+    await expect(target).toHaveAttribute('aria-current', 'page');
+    await expect(projectTabs.locator(`[data-session-id="${session.id}"]`)).toHaveAttribute('data-active', 'true');
+  } finally {
+    await page.request.delete(`/api/sessions/${session.id}`);
+  }
+
 });
 
 test('toggles nested session tabs after refresh and keeps children visible when the parent closes', async ({ page }) => {

@@ -7,7 +7,7 @@ import { ProjectOpenDialog } from './ProjectOpenDialog';
 import { projectOpenModes } from './project-open-modes';
 import { conversationClientId } from '../lib/conversation-timeline';
 
-/** One creation flow for the project list and the workspace's + button. */
+/** One creation flow for the project list and the workspace project rows. */
 export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated, title, harnessUrl, onHarnessOpen }: {
   project: Project; onClose: () => void; onSessionCreated: (session: Session) => void; title?: string;
   harnessUrl?: string; onHarnessOpen?: () => void;
@@ -32,7 +32,12 @@ export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated,
       });
     },
     onSuccess: ({ session }) => {
-      client.setQueryData<{ sessions: Session[] }>(['sessions'], (current) => ({ sessions: [session, ...(current?.sessions ?? []).filter((item) => item.id !== session.id)] }));
+      for (const queryKey of [['sessions'], ['project-sessions', project.id]]) {
+        void client.cancelQueries({ queryKey, exact: true });
+        client.setQueryData<{ sessions: Session[] }>(queryKey, current => ({
+          sessions: [session, ...(current?.sessions ?? []).filter(item => item.id !== session.id)],
+        }));
+      }
       onSessionCreated(session);
       onClose();
       void client.invalidateQueries({ queryKey: ['sessions'] });

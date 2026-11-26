@@ -157,8 +157,7 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
   activeTab:`project-${project.id}`,
  }}});
  await page.goto('/');
- await page.getByRole('button',{name:'Projects'}).click();
- await page.getByRole('button',{name:'打开项目 Claude Provider flow'}).click();
+ await page.getByRole('button',{name:'在 Claude Provider flow 新建标签页'}).click();
  await page.locator('label.project-open-option').filter({hasText:'Claude'}).click();
  await expect(page.locator('input[name="project-open-mode"][value="claude"]')).toBeChecked();
  const providerSelect=page.getByRole('combobox',{name:'新会话 Claude Provider'});
@@ -166,7 +165,8 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  await providerSelect.selectOption('claude-provider:xindu-real');
  const created=page.waitForRequest(request=>
   new URL(request.url()).pathname==='/api/sessions'&&request.method()==='POST');
- await page.getByRole('button',{name:'新建会话'}).click();
+ await page.getByRole('dialog',{name:'新建会话 · Claude Provider flow'})
+  .getByRole('button',{name:'新建会话',exact:true}).click();
  expect((await created).postDataJSON()).toMatchObject({
   cli_type:'claude',environment_id:'claude-provider:xindu-real',client_id:expect.stringMatching(/^[a-f0-9]{32}$/),
  });

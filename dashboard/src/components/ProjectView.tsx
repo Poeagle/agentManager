@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
-import { Monitor, FolderTree, GitBranch, Plus, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2, Loader2, List, PanelLeft, Search, CornerDownRight, ChevronRight } from 'lucide-react';
+import { Monitor, FolderTree, GitBranch, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2, Loader2, List, PanelLeft, Search, CornerDownRight, ChevronRight } from 'lucide-react';
 import { Terminal } from './Terminal';
 import { SessionWorkspacePane } from './SessionWorkspacePane';
 import { SessionTabSwitcher } from './SessionTabSwitcher';
@@ -13,8 +13,6 @@ import { droppedFiles, isFileDrag, type FileUploadRequest } from '../lib/file-up
 import { GitPanel } from './GitPanel';
 import { DeepSeekHarnessFrame } from './DeepSeekHarnessFrame';
 import type { HarnessModelSelection } from '../lib/deepseek-harness';
-import { ProjectSessionCreateDialog } from './ProjectSessionCreateDialog';
-import { projectOpenModes } from './project-open-modes';
 import { api, type Session } from '../lib/api';
 import { CloseTabModal } from './CloseTabModal';
 import { ConfirmModal } from './ConfirmModal';
@@ -179,7 +177,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
   const sessionResume = useSessionResume(projectId);
   const [terminalConnectionVersions, setTerminalConnectionVersions] = useState<Record<string, number>>({});
 
-  // Share project data with the creation dialog.
   const { data: projectsData } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.projects.list(),
@@ -476,8 +473,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     return () => document.removeEventListener('mousedown', onDocPointerDown, true);
   }, [editingTabId, commitTabRename]);
 
-  const [showNewSession, setShowNewSession] = useState(false);
-  const closeNewSession = useCallback(() => setShowNewSession(false), []);
   // Lazy-mount: only create xterm instances for terminals the user has actually viewed.
   // Prevents 8+ xterm instances from initializing simultaneously on page refresh.
   const mountedTerminals = useRef(new Set<string>());
@@ -1433,18 +1428,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         })}
       </div>
       <div className="workspace-session-actions">
-        {/* Create directly through the same dialog as the project list. */}
-        <button
-          type="button"
-          onClick={() => setShowNewSession(true)}
-          disabled={!project || projectOpenModes(project, harnessUrl).length === 0}
-          className="workspace-subtab-action"
-          title="新建会话"
-          aria-label="新建会话"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
-
         {/* Adopt external session button — on-demand scan */}
         <div ref={adoptMenuRef}>
           <button
@@ -1884,7 +1867,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         <div className="flex-1 min-h-0 relative">
           {/* Terminal mode */}
           <div className="h-full absolute inset-0" style={{visibility:activeMode==='terminal'?'visible':'hidden',pointerEvents:activeMode==='terminal'?'auto':'none'}}>
-              {terminalInstances.length === 0 && <div className="flex h-full items-center justify-center text-xs" style={{ color: 'var(--text-secondary)' }}>暂无打开的会话，点击上方「＋」新建。</div>}
+              {terminalInstances.length === 0 && <div className="flex h-full items-center justify-center text-xs" style={{ color: 'var(--text-secondary)' }}>暂无打开的会话，点击项目行右侧的「＋」新建。</div>}
 
               {/* Terminal instances stay mounted so tab switches preserve terminal state. */}
               <div className="h-full absolute inset-0" style={{ pointerEvents: 'none' }}>
@@ -2072,7 +2055,6 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         }}
         onClose={() => setShowTabSwitcher(false)}
       />}
-      {showNewSession && project && <ProjectSessionCreateDialog project={project} title="新建会话" onClose={closeNewSession} onSessionCreated={handleSessionCreated} harnessUrl={harnessUrl} onHarnessOpen={openHarness} />}
 
       {/* Close tab confirmation modal */}
       {closeConfirm && (

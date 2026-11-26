@@ -20,10 +20,6 @@ async function prepareProjects(page: Page) {
     data: { settings: { statusline_prompted: 'true', deepseek_harness_url: '' } },
   });
   expect(settings.ok()).toBeTruthy();
-  expect((await page.request.put('/api/user-state/app', {
-    data: { value: { activeTab: 'home', projectTabs: [] } },
-  })).ok()).toBeTruthy();
-
   const paths = [];
   for (const name of projects) {
     const path = join(process.cwd(), '.test-data', 'e2e', name);
@@ -34,6 +30,9 @@ async function prepareProjects(page: Page) {
   }
   const { projects: existing } = await (await page.request.get('/api/projects')).json();
   const projectIds = paths.map(path => existing.find((project: { path: string }) => project.path === path).id);
+  expect((await page.request.put('/api/user-state/app', {
+    data: { value: { activeTab: 'home', projectTabs: [{ projectId: projectIds[0], projectName: projects[0] }] } },
+  })).ok()).toBeTruthy();
   return { paths, projectIds, userId: user.id };
 }
 
@@ -91,8 +90,7 @@ async function chooseHarnessModel(page: Page, provider: string, model: string) {
 
 async function openHarness(page: Page, name: string, throughPlus = false) {
   if (throughPlus) {
-    await page.getByRole('button', { name, exact: true }).click();
-    await page.getByRole('button', { name: '新建会话', exact: true }).click();
+    await page.getByRole('button', { name: `在 ${name} 新建标签页`, exact: true }).click();
   } else {
     await page.getByRole('button', { name: '打开项目 ' + name }).click();
   }

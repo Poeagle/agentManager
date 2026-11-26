@@ -3,7 +3,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProjectView } from '../src/components/ProjectView';
-import { api, type Project, type Session } from '../src/lib/api';
+import { api, type Session } from '../src/lib/api';
 import { useStreamStore } from '../src/lib/websocket';
 
 vi.mock('../src/components/Terminal', () => ({ Terminal: ({ sessionId, onConnectionError }: { sessionId: string; onConnectionError?:(id:string,message:string)=>void }) => <div>Live terminal {sessionId}<button onClick={()=>onConnectionError?.(sessionId,'Session not found or not running')}>模拟连接失败</button></div> }));
@@ -105,28 +105,23 @@ describe('project workspace navigation', () => {
       expect(client.getQueryData<{sessions:Session[]}>(['sessions'])?.sessions[0].codex_session_id).toBeNull();
     }finally{view.unmount();client.clear();}
   });
-  it('mounts a freshly created native-pending session as a live terminal instead of its history',async()=>{
-    const user=userEvent.setup();
-    const current={...oldSession,id:'current',project_id:'p1',status:'running' as const};
-    const created={...oldSession,id:'created',project_id:'p1',status:'pending' as const,codex_session_id:null,native_session_id:null};
-    const project:Project={id:'p1',name:'Workspace',path:'/workspace/p1',description:null,session_prompt:null,openclaw_prompt:null,color:'',created_at:'2026-10-14T00:00:00Z',tool_access:{can_session:true,can_terminal:false,session_clients:['codex']}};
-    let sessions=[current];
-    vi.mocked(api.projects.list).mockResolvedValue({projects:[project]});
-    vi.mocked(api.sessions.list).mockImplementation(async()=>({sessions}));
-    vi.mocked(api.sessions.create).mockImplementation(async()=>{
-      const session={...created,status:'pending' as const};
-      sessions=[current,session as Session];
-      return {ok:true,session};
-    });
-    const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
-    const view=render(<QueryClientProvider client={client}><ProjectView currentUserId="u1" projectId="p1" projectPath={project.path} projectName={project.name}/></QueryClientProvider>);
-    try{
+  it('opens a freshly created native-pending session from workspace navigation', async () => {
+    const current = { ...oldSession, id: 'current', status: 'running' as const };
+    const created = { ...oldSession, id: 'created', status: 'pending' as const, codex_session_id: null, native_session_id: null };
+    vi.mocked(api.sessions.list).mockResolvedValue({ sessions: [current] });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const workspace = (focusSessionId?: string) => <QueryClientProvider client={client}>
+      <ProjectView currentUserId="u1" projectId="p1" projectPath="/workspace/p1" projectName="Workspace" focusSessionId={focusSessionId} />
+    </QueryClientProvider>;
+    const view = render(workspace());
+    try {
       expect(await screen.findByText('Live terminal current')).toBeVisible();
-      await user.click(screen.getByRole('button',{name:'新建会话',exact:true}));
-      await user.click(within(screen.getByRole('dialog')).getByRole('button',{name:'新建会话',exact:true}));
+      act(() => client.setQueryData(['sessions'], { sessions: [created, current] }));
+      view.rerender(workspace(created.id));
       expect(await screen.findByText('Live terminal created')).toBeVisible();
       expect(screen.queryByText('History created')).not.toBeInTheDocument();
-    }finally{view.unmount();client.clear();}
+      expect(api.sessions.create).not.toHaveBeenCalled();
+    } finally { view.unmount(); client.clear(); }
   });
   it.each(['detached','launching'] as const)('keeps an old %s tab omitted from the global window through delayed hydration and refresh',async status=>{
     const jira={...oldSession,id:'jira',status};let hydrate!:(value:{state:Record<string,unknown>})=>void;
@@ -161,37 +156,18 @@ describe('project workspace navigation', () => {
       });
     } finally { view.unmount(); client.clear(); }
   });
-  it('ignores the saved Home selection, opens an existing session, and creates or cancels directly from +', async () => {
-    const user = userEvent.setup();
-    const project: Project = { id: 'p1', name: 'Workspace', path: '/workspace/p1', description: null, session_prompt: null,
-      openclaw_prompt: null, color: '', created_at: '2026-10-14T00:00:00Z',
-      tool_access: { can_session: true, can_terminal: false, session_clients: ['codex'] } };
+  it('ignores the saved Home selection and opens an existing session directly', async () => {
     const current: Session = { ...oldSession, id: 'current', status: 'running' };
-    let sessions = [current];
-    vi.mocked(api.projects.list).mockResolvedValue({ projects: [project] });
-    vi.mocked(api.sessions.list).mockImplementation(async () => ({ sessions }));
-    vi.mocked(api.sessions.create).mockImplementation(async () => {
-      const session: Session = { ...current, id: 'created' }; sessions = [current, session]; return { ok: true, session };
-    });
+    vi.mocked(api.sessions.list).mockResolvedValue({ sessions: [current] });
     localStorage.setItem('agentmanager-project-u1-p1', JSON.stringify({ activeMode: 'terminal', explorerInstances: [], terminalInstances: [{ id: 'current', label: 'Session 1' }], activeTerminalId: 'current', showLauncher: true }));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const view = render(<QueryClientProvider client={client}><ProjectView currentUserId="u1" projectId="p1" projectPath={project.path} projectName={project.name} /></QueryClientProvider>);
+    const view = render(<QueryClientProvider client={client}><ProjectView currentUserId="u1" projectId="p1" projectPath="/workspace/p1" projectName="Workspace" /></QueryClientProvider>);
     try {
       expect(await screen.findByText('Live terminal current')).toBeVisible();
       expect(screen.queryByRole('button', { name: 'Home', exact: true })).not.toBeInTheDocument();
       expect(screen.queryByRole('table', { name: '工作区入口' })).not.toBeInTheDocument();
-      await user.click(screen.getByRole('button', { name: '新建会话', exact: true }));
-      expect(screen.getByRole('dialog', { name: '新建会话 · Workspace' })).toBeVisible();
-      expect(screen.queryByRole('radio', { name: 'Terminal' })).not.toBeInTheDocument();
-      await user.click(screen.getByRole('button', { name: '取消' }));
-      expect(screen.getByText('Live terminal current')).toBeVisible();
-      expect(api.sessions.create).not.toHaveBeenCalled();
-      await user.click(screen.getByRole('button', { name: '新建会话', exact: true }));
-      await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '新建会话', exact: true }));
-      expect(await screen.findByText('Live terminal created')).toBeVisible();
-      expect(api.sessions.create).toHaveBeenCalledTimes(1);
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: '打开网页' })).not.toBeInTheDocument();
+      expect(api.sessions.create).not.toHaveBeenCalled();
     } finally { view.unmount(); client.clear(); }
   });
   it('opens an older record after saved tabs finish loading and keeps it open through session refreshes', async () => {

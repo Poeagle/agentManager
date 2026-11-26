@@ -214,6 +214,8 @@
 .workspace-project-row { min-width: 0; height: 28px; gap: 4px; padding-left: 2px; }
 .workspace-project-row .workspace-tab-button { flex: 1; max-width: none; height: 100%; }
 .workspace-project-row .workspace-tab-close { top: 3px; }
+.workspace-project-create { width: 22px; height: 22px; }
+.workspace-project-create:hover:not(:disabled) { background: var(--bg-primary); color: var(--accent); }
 :is(.workspace-project-disclosure, .workspace-session-disclosure) {
   display: grid;
   flex: 0 0 20px;

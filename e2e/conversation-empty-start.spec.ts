@@ -34,10 +34,11 @@ test('new empty Codex session survives its creation connection, reload and first
  try{
   const auth=await(await page.request.get('/api/auth/status')).json();expect((await page.request.post(auth.needsSetup?'/api/auth/setup':'/api/auth/login',{data:{username:'e2e-admin',password:'test-password'}})).ok()).toBe(true);
   const created=await page.request.post('/api/projects',{data:{name:'空白会话回归',path}});expect(created.ok()).toBe(true);
+  const {project}=await created.json();
   await page.request.put('/api/settings',{data:{settings:{session_codex_command:`node '${fake}'`,statusline_prompted:'true'}}});
-  await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[],activeTab:'home'}}});
-  await page.goto('/');await page.getByRole('button',{name:'打开项目 空白会话回归'}).click();
-  const dialog=page.getByRole('dialog',{name:'打开项目 · 空白会话回归'});await dialog.getByRole('radio',{name:'Codex',exact:true}).check();
+  await page.request.put('/api/user-state/app',{data:{value:{projectTabs:[{projectId:project.id,projectName:project.name}],activeTab:'home'}}});
+  await page.goto('/');await page.getByRole('button',{name:'在 空白会话回归 新建标签页',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'新建会话 · 空白会话回归'});await dialog.getByRole('radio',{name:'Codex',exact:true}).check();
   const creation=page.waitForResponse(response=>response.url().endsWith('/api/sessions')&&response.request().method()==='POST');
   await dialog.getByRole('button',{name:'新建会话',exact:true}).click();const response=await creation;expect(response.ok()).toBe(true);expect(response.request().postDataJSON()).not.toHaveProperty('task');sessionId=(await response.json()).session.id;
   const chat=page.getByRole('region',{name:'会话对话'});await expect(chat.getByText('Event stream connected',{exact:true})).toBeVisible();expect(persisted).toBe(true);expect(inputs).toEqual([]);
