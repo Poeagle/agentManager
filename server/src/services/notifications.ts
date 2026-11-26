@@ -109,13 +109,13 @@ export function listNotifications(userId:string,query:{filter?:string;project_id
     const isMuted=!!session.project_id&&muted.has(session.project_id);
     throughId=Math.max(throughId,row.id);
     if(row.dismissed_at||state==='resolved'||state==='submitted')return [];
-    if(!isMuted&&!row.read_at){unread++;if(session.project_id)byProject[session.project_id]=(byProject[session.project_id]||0)+1;bySession[session.id]=(bySession[session.id]||0)+1;}
+    if(!isMuted&&!row.read_at&&state!=='recovering'){unread++;if(session.project_id)byProject[session.project_id]=(byProject[session.project_id]||0)+1;bySession[session.id]=(bySession[session.id]||0)+1;}
     if(!isMuted&&state==='pending')pending++;
     return [{...row,state,project_id:session.project_id,parent_session_id:session.parent_session_id??null,...labels.get(session.id)!,muted:isMuted,current_binding:current}];
   });
   const filtered=visible.filter(row=>(!query.project_id||row.project_id===query.project_id)
     &&(!query.before||row.id<query.before)
-    &&(query.filter==='pending'?row.state==='pending':query.filter==='unread'?!row.read_at:true));
+    &&(query.filter==='pending'?row.state==='pending':query.filter==='unread'?!row.read_at&&row.state!=='recovering':true));
   const page=filtered.slice(0,50);
   const bodies=new Map(page.length?(getDb().prepare(`SELECT id,body FROM notifications WHERE id IN (${page.map(()=>'?').join(',')})`).all(...page.map(row=>row.id)) as Pick<Notification,'id'|'body'>[]).map(row=>[row.id,row.body]):[]);
   return {notifications:page.map(row=>({...row,body:bodies.get(row.id)||''})),has_more:filtered.length>50,unread,pending,through_id:throughId,

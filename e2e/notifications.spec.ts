@@ -57,8 +57,7 @@ test('notifies changed sessions across closed projects, answers in the centered 
     active=false;send('turn/completed',{threadId:native,turn:{id:'work',status:'completed',completedAt:Date.now()/1000}});
     await expect(page.getByRole('button',{name:/消息通知，1 条未读/})).toBeVisible({timeout:15000});
     const toast=page.getByRole('complementary',{name:'新消息通知'});
-    await expect(toast).toHaveText('通知验证项目｜兼容性修复');
-    await expect(toast.getByRole('button')).toHaveCount(1);
+    await expect(toast).toHaveCount(0);
     await page.getByRole('button',{name:/消息通知，1 条未读/}).click();
     const drawer=page.getByRole('dialog',{name:'消息通知'});
     const noticeList=drawer.getByRole('region',{name:'通知列表'});
@@ -150,28 +149,30 @@ test('notifies changed sessions across closed projects, answers in the centered 
     await expect(original).not.toBeVisible();
     await page.setViewportSize({width:320,height:780});
     await page.clock.install();
-    appendFileSync(log,record('response_item',{type:'message',id:'popup-result',role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'reply-turn-2'},content:[{type:'output_text',text:'可通过右侧提醒定位这条结果。'}]})+record('event_msg',{type:'task_complete',turn_id:'reply-turn-2'}));
+    appendFileSync(log,record('response_item',{type:'message',id:'popup-result',role:'assistant',phase:'final_answer',internal_chat_message_metadata_passthrough:{turn_id:'reply-turn-2'},content:[{type:'output_text',text:'普通完成结果只进铃铛。'}]})+record('event_msg',{type:'task_complete',turn_id:'reply-turn-2'}));
     active=false;send('turn/completed',{threadId:native,turn:{id:'reply-turn-2',status:'completed',completedAt:Date.now()/1000}});
-    const jumpFromToast=toast.getByRole('button',{name:'通知验证项目｜兼容性修复',exact:true}).and(toast.locator('[data-kind="result"]'));
-    await expect(jumpFromToast).toBeVisible();
-    await expect(jumpFromToast.locator('.notification-toast-dot')).toHaveCSS('background-color','rgb(22, 163, 74)');
-    const toastLabel=jumpFromToast.getByText('通知验证项目｜兼容性修复');
+    const bell=page.getByRole('button',{name:'消息通知，1 条未读',exact:true});
+    await expect(bell).toBeVisible();
+    await expect(toast.locator('[data-kind="result"]')).toHaveCount(0);
+    await page.clock.fastForward(11_000);
+    await expect(bell).toBeVisible();
+    await bell.click();
+    await expect(drawer.getByRole('button',{name:'通知验证项目 · 兼容性修复'})).toBeVisible();
+    await drawer.getByRole('button',{name:'关闭消息通知'}).click();
+    await expect(drawer).not.toBeVisible();
+
+    send('turn/started',{threadId:native,turn:{id:'toast-failure',status:'inProgress'}});
+    send('error',{threadId:native,turnId:'toast-failure',error:{message:'验证右侧报错提醒。'},willRetry:false});
+    const errorToast=toast.locator('button[data-kind="error"]');
+    await expect(errorToast.locator('.notification-toast-dot')).toHaveCSS('background-color','rgb(220, 38, 38)');
+    const toastLabel=errorToast.getByText('通知验证项目｜兼容性修复');
     await expect(toastLabel).toHaveCSS('white-space','nowrap');
     await expect(toastLabel).toHaveCSS('text-overflow','ellipsis');
     const toastBox=await toast.boundingBox();
     expect(toastBox!.height).toBeLessThan(40);
     expect(toastBox!.x+toastBox!.width).toBeLessThanOrEqual(320);
-    await page.clock.fastForward(11_000);
-    await expect(jumpFromToast).toBeVisible();
-    send('turn/started',{threadId:native,turn:{id:'toast-failure',status:'inProgress'}});
-    send('error',{threadId:native,turnId:'toast-failure',error:{message:'验证右侧报错提醒。'},willRetry:false});
-    const errorToast=toast.locator('button[data-kind="error"]');
-    await expect(errorToast.locator('.notification-toast-dot')).toHaveCSS('background-color','rgb(220, 38, 38)');
-    expect((await errorToast.boundingBox())!.y).toBeGreaterThan((await jumpFromToast.boundingBox())!.y+(await jumpFromToast.boundingBox())!.height);
-    await jumpFromToast.click();
-    await expect(drawer).not.toBeVisible();
-    await expect(jumpFromToast).not.toBeVisible();
-    await expect(original.locator('[data-notification-focus="true"]')).toContainText('可通过右侧提醒定位这条结果。');
+    await errorToast.click();
+    await expect(original).toBeVisible();
     expect((await(await page.request.get('/api/sessions')).json()).sessions).toHaveLength(2);
   }finally{
     try {
@@ -226,8 +227,7 @@ test('excludes child results from popups, the inbox and unread counts', async ({
 
   await page.goto('/');
   const toast = page.getByRole('complementary', { name: '新消息通知' });
-  await expect(toast.getByRole('button', { name: '子标签通知验证｜通知主标签' })).toBeVisible();
-  await expect(toast.getByRole('button', { name: '子标签通知验证｜通知子标签' })).toHaveCount(0);
+  await expect(toast).toHaveCount(0);
 
   await page.getByRole('button', { name: '消息通知，1 条未读', exact: true }).click();
   const inbox = page.getByRole('dialog', { name: '消息通知' });

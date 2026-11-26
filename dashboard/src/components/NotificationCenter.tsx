@@ -91,7 +91,7 @@ export function NotificationCenter({userId,projects,onOpen,onDetailChange}:{user
     const visible=rows.filter(row=>!row.read_at&&notificationIsVisible(row));
     if(visible.length)read(visible.map(row=>row.id));
     const visibleIds=new Set(visible.map(row=>row.id));
-    const unread=rows.filter(row=>!row.parent_session_id&&!row.read_at&&!row.muted&&(row.state==='info'||row.state==='pending')&&!visibleIds.has(row.id));
+    const unread=rows.filter(row=>!row.parent_session_id&&!row.read_at&&!row.muted&&row.state==='pending'&&!visibleIds.has(row.id));
     setReminderIds(previous=>{
       const incoming=new Set(unread.map(row=>row.id).reverse());
       const retained=previous.filter(id=>incoming.delete(id));
@@ -111,7 +111,13 @@ export function NotificationCenter({userId,projects,onOpen,onDetailChange}:{user
   const unread=summary.data?.unread||0,pending=summary.data?.pending||0;
   const current=selected&&(summary.data?.notifications.find(row=>row.id===selected.id)||selected);
   const notificationsById=new Map(summary.data?.notifications.map(row=>[row.id,row]));
-  const reminders=reminderIds.flatMap(id=>{const row=notificationsById.get(id);return row?[row]:[];});
+  const remindedTabs=new Set<string>();
+  const reminders=reminderIds.flatMap(id=>{
+    const row=notificationsById.get(id);
+    if(!row||remindedTabs.has(row.session_id))return [];
+    remindedTabs.add(row.session_id);
+    return [row];
+  });
   return <>
     <button ref={button} type="button" className="notification-bell workspace-header-button" aria-label={`消息通知${unread?`，${unread} 条未读`:''}`} aria-expanded={open} aria-controls="notification-center" onClick={()=>{if(!open){setSelected(null);setFilter(pending?'pending':'unread');}setOpen(value=>!value);}} title={`消息通知 · ${pending} 项待处理`}><Bell size={14}/>{!!unread&&<span className="notification-badge">{unread>99?'99+':unread}</span>}{summary.isError&&<span className="notification-offline" title="通知读取失败"/>}</button>
     {!!reminders.length&&!open&&createPortal(<aside className="notification-toast-stack" aria-label="新消息通知" aria-live="polite" aria-relevant="additions">

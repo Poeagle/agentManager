@@ -22,7 +22,6 @@
 .notification-toast:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .notification-toast-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .notification-toast-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--warning)}
-.notification-toast[data-kind=result] .notification-toast-dot{background:var(--success)}
 .notification-toast[data-kind=error] .notification-toast-dot{background:var(--error)}
 .notification-historical{padding:16px;font-size:13px}.notification-historical pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:16px 0}.notification-historical button{color:var(--accent)}
 [data-notification-focus=true]{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:4px;border-radius:4px}

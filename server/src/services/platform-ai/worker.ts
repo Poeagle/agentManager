@@ -19,6 +19,8 @@ import {assertLiveUser,claimMessage,enqueueNotice,formatTaskNotification,getConv
 import {publishMessage,refreshConversation} from './live.js';
 import {subscribe,type Event as PlatformEvent} from '../event-store.js';
 import {getSession} from '../session-manager.js';
+import {nativeConversationId} from '../session-identity.js';
+import type {Notification} from '../notifications.js';
 import {hasScheduledConversationInput} from '../conversation-input-links.js';
 import {sessionPresenter} from '../session-labels.js';
 import type {AgentTextMessage} from '../prompt-context.js';
@@ -627,30 +629,62 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         cancel('本轮来源为定时任务');return;
       }
       const metadata=JSON.parse(item.reply_context);
-      const completionSessionId=noticeType==='project-notice'&&projectKind==='complete'?projectSessionId:metadata.completion?.session_id;
+      const completion=metadata.completion as CompletionNotice|undefined;
+      const completionSessionId=noticeType==='project-notice'&&projectKind==='complete'?projectSessionId:completion?.session_id;
       const sourceSessionId=task?.session_id||(noticeType==='project-notice'?projectSessionId:completionSessionId);
-      if(sourceSessionId&&getSession(sourceSessionId)?.parent_session_id){
+      const sourceSession=sourceSessionId&&getSession(sourceSessionId);
+      if(sourceSession?.parent_session_id){
         cancel('本轮来源为子 Agent');return;
       }
+      const isProjectNotice=noticeType==='project-notice';
+      const completionBindingChanged=()=>{
+        if(!isProjectNotice||!completion)return false;
+        const current=getSession(completion.session_id);
+        return !current||nativeConversationId(current)!==completion.native_id;
+      };
+      if(completionBindingChanged()){cancel('结果所属对话已变更');return;}
       let destination=this.deliveryDestination(item);
       let personalId=Number.isSafeInteger(metadata.personal_notification_id)?metadata.personal_notification_id as number:null;
-      if(noticeType==='project-notice'&&projectKind==='error'&&projectEvent==='structured'&&projectNoticeId===String(personalId)){
-        if(await isScheduledProjectError(destination.conversation.user_id,projectSessionId,projectMessageId.join(':'))){
+      const structuredNotice=isProjectNotice&&projectEvent==='structured'&&projectNoticeId===String(personalId);
+      const structuredMessageId=projectMessageId.join(':');
+      if(structuredNotice&&projectKind==='error'){
+        if(await isScheduledProjectError(destination.conversation.user_id,projectSessionId,structuredMessageId)){
           cancel('本轮来源为定时任务');return;
         }
         destination=this.deliveryDestination(item);
       }
       const hasScheduledInput=completionSessionId&&hasScheduledConversationInput(completionSessionId);
-      if(destination.channel&&metadata.completion&&(!personalId||hasScheduledInput)){
-        const resolved=await resolveCompletionNotice(destination.conversation.user_id,metadata.completion);
+      if(destination.channel&&completion&&(!personalId||hasScheduledInput)){
+        const resolved=await resolveCompletionNotice(destination.conversation.user_id,completion);
         if(resolved.scheduled){cancel('本轮来源为定时任务');return;}
         if(hasScheduledInput&&resolved.scheduled===undefined&&!personalId){cancel('无法核对本轮输入来源');return;}
         personalId??=resolved.personalId;
         destination=this.deliveryDestination(item);
       }
-      const isHandled=()=>{if(!personalId)return false;const n=getDb().prepare('SELECT read_at,dismissed_at,state FROM notifications WHERE id=? AND user_id=?').get(personalId,destination.conversation.user_id) as {read_at:string|null;dismissed_at:string|null;state:string}|undefined;return !!n&&(!!n.read_at||!!n.dismissed_at||['submitted','resolved'].includes(n.state));};
-      if(isHandled()){cancel('已在网页查看或处理');return;}
-      if(destination.channel&&metadata.completion&&personalId){
+      const skipNotice=()=>{
+        if(completionBindingChanged()){cancel('结果所属对话已变更');return true;}
+        if(!personalId)return false;
+        const notice=getDb().prepare('SELECT read_at,dismissed_at,state,message_id,native_id FROM notifications WHERE id=? AND user_id=?')
+          .get(personalId,destination.conversation.user_id) as Pick<Notification,'read_at'|'dismissed_at'|'state'|'message_id'|'native_id'>|undefined;
+        if(structuredNotice){
+          const current=getSession(projectSessionId);
+          if(!notice||!current||nativeConversationId(current)!==notice.native_id||(notice.message_id||'')!==structuredMessageId){
+            cancel('通知已被新状态取代');return true;
+          }
+        }
+        if(notice&&(notice.read_at||notice.dismissed_at||notice.state==='submitted'||notice.state==='resolved')){
+          cancel('已在网页查看或处理');return true;
+        }
+        if(structuredNotice&&notice?.state==='recovering'){
+          // The same native error can become pending again if recovery fails.
+          getDb().prepare("UPDATE platform_ai_outbox SET status='pending',available_at=?,attempts=attempts-1,lease_until=0 WHERE id=?")
+            .run(Date.now()+5000,item.id);
+          return true;
+        }
+        return false;
+      };
+      if(skipNotice())return;
+      if(destination.channel&&completion&&personalId){
         const eligibleAt=completionAvailableAt(personalId,item.available_at-10_000);
         if(eligibleAt>Date.now()){
           getDb().prepare("UPDATE platform_ai_outbox SET status='pending',available_at=?,attempts=attempts-1,lease_until=0,reply_context=json_set(reply_context,'$.personal_notification_id',?) WHERE id=?")
@@ -708,7 +742,7 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
         const context = channel.kind === 'wecom_bot' && !item.dedupe_key.startsWith('reply:') ? {} : JSON.parse(item.reply_context);
         const target=metadata.notification_target;
         const content=channel.kind==='wecom_bot'&&target?prepareReplyNotification({noticeId:item.id,noticeKey:item.dedupe_key,target,userId:conversation.user_id,channelId:channel.id,externalUserId:projectRecipient?.external_user_id||conversation.external_user_id,chatId:projectRecipient?.chat_id||conversation.external_chat_id,content:body}):body;
-        if(isHandled()){cancel('已在网页查看或处理');return;}
+        if(skipNotice())return;
         await deliverMessage(channel, projectRecipient?.chat_id || conversation.external_chat_id, projectRecipient?.external_user_id || conversation.external_user_id, content, context, item.id, this.abort.signal);
       }
       getDb().prepare("UPDATE platform_ai_outbox SET status='sent',error=NULL,lease_until=0 WHERE id=?").run(item.id);

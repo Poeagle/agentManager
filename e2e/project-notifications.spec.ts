@@ -25,7 +25,8 @@ test('project notification settings persist, pause and delete through the platfo
   await dialog.getByRole('combobox',{name:'项目',exact:true}).selectOption(project.id);
   const recipient = await dialog.getByRole('combobox',{name:'接收渠道',exact:true}).locator('option').filter({hasText:'项目通知测试渠道'}).getAttribute('value');
   await dialog.getByRole('combobox',{name:'接收渠道',exact:true}).selectOption(recipient!);
-  await dialog.getByLabel('任务完成时通知',{exact:true}).uncheck();
+  await expect(dialog.getByLabel('任务完成时通知',{exact:true})).not.toBeChecked();
+  await expect(dialog.getByLabel('需要输入时通知',{exact:true})).toBeChecked();
   await dialog.getByRole('button',{name:'保存通知规则',exact:true}).click();
   await expect(dialog.getByText('通知规则已保存',{exact:true})).toBeVisible();
   let table = dialog.getByRole('table',{name:'项目通知规则'});

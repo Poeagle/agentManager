@@ -291,6 +291,39 @@ describe('project-wide automatic notifications', () => {
     expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://notify.example'))).toHaveLength(0);
   });
 
+  it.each(['resolved', 'pending', 'superseded'] as const)('holds a queued error during recovery and rechecks the %s outcome', async (state) => {
+    configure();subscription();seedSession();
+    getDb().prepare("UPDATE sessions SET codex_session_id='native-recheck' WHERE id='session-1'").run();
+    const now=new Date(Date.now()+1000).toISOString();
+    getDb().prepare(`INSERT INTO notifications(user_id,session_id,native_id,source_id,message_id,kind,state,title,body,created_at,updated_at)
+      VALUES (?,'session-1','native-recheck','error:turn','failure-1','error','pending','出错','等待恢复',?,?)`).run(member,now,now);
+    const fetchMock=provider();
+    worker.tick();await worker.drain();expect(notices()[0].status).toBe('pending');
+    getDb().prepare("UPDATE notifications SET state='recovering' WHERE source_id='error:turn'").run();
+    worker.tick();await worker.drain();
+    expect(notices()[0].status).toBe('pending');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    getDb().prepare("UPDATE notifications SET state=?,message_id=? WHERE source_id='error:turn'")
+      .run(state==='superseded'?'pending':state,state==='superseded'?'failure-2':'failure-1');
+    await deliverAfterGrace();
+    expect(notices()).toEqual([expect.objectContaining({status:state==='pending'?'sent':'cancelled'})]);
+    expect(fetchMock).toHaveBeenCalledTimes(state==='pending'?1:0);
+  });
+
+  it('cancels a queued completion after the original conversation has been replaced', async () => {
+    configure();subscription();seedSession();
+    getDb().prepare("UPDATE sessions SET codex_session_id='native-before' WHERE id='session-1'").run();
+    nativeMessages=[finalMessage()];
+    const fetchMock=provider();
+    worker.tick();await worker.drain();expect(notices()[0].status).toBe('pending');
+
+    getDb().prepare("UPDATE sessions SET codex_session_id='native-after' WHERE id='session-1'").run();
+    await deliverAfterGrace();
+    expect(notices()).toEqual([expect.objectContaining({status:'cancelled'})]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('does not ask a model to classify tracked progress in a subscribed project', async () => {
     configure();subscription();seedSession();const received=inbound();
     const task=trackTask(getConversation(received.conversation_id)!,'session-1','处理问题',0,'ref-progress');

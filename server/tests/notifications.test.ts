@@ -167,9 +167,11 @@ it('shows automatic recovery without repeated failure notices and confirms recov
   const job={session_id:'s',native_id:'opaque/thread',root_turn_id:'turn',failed_turn_ids:['turn'],status:'waiting',attempt:0};
   getDb().prepare('INSERT INTO conversation_retries VALUES(?,?,?,?,?)').run('s','opaque/thread','turn',JSON.stringify(job),now());
   const emit=streams.get('s')!,failure=message('fail',{phase:'error',text:'Selected model is at capacity'});
-  emit(snapshot({messages:[failure]}));expect(listNotifications(owner)).toMatchObject({pending:0,notifications:[{state:'recovering'}]});
+  emit(snapshot({messages:[failure]}));
+  expect(listNotifications(owner)).toMatchObject({pending:0,unread:0,notifications:[{state:'recovering'}]});
+  expect(listNotifications(owner,{filter:'unread'}).notifications).toHaveLength(0);
   broadcastEphemeral({type:'session.retry',session_id:'s',data:{retry:{...job,status:'exhausted'}}});
-  expect(listNotifications(owner).pending).toBe(1);
+  expect(listNotifications(owner)).toMatchObject({pending:1,unread:1});
   getDb().prepare('UPDATE conversation_retries SET data=?').run(JSON.stringify({...job,status:'exhausted'}));
   emit(snapshot({busy:true,stage:'tools',messages:[]}));expect(stored('error')[0].state).toBe('submitted');expect(listNotifications(owner).notifications).toEqual([]);
   emit(snapshot({messages:[message('recovered',{turn_id:'new-turn'})],completed_at:now()}));

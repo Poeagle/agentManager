@@ -7,7 +7,7 @@ import { TableActionButton, TableActions } from './table/TableActions';
 
 const field = 'rounded-md border px-3 py-2 text-sm disabled:opacity-40';
 const style = {background: 'var(--bg-primary)', borderColor: 'var(--border)', color: 'var(--text-primary)'};
-const empty: ProjectNotificationInput = {project_id: '', recipient_id: '', enabled: true, on_complete: true, on_input: true};
+const empty: ProjectNotificationInput = {project_id: '', recipient_id: '', enabled: true, on_complete: false, on_input: true};
 
 export function ProjectNotificationsPanel({canWrite, enabled}: {canWrite: boolean; enabled: boolean}) {
   const query = useQuery({queryKey: ['platform-ai-project-notifications'], queryFn: platformAiApi.projectNotifications, refetchInterval: 15000});
