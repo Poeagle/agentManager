@@ -2,7 +2,7 @@ import {normalizeCodexRetry} from '../src/services/agents/codex/retry.js';
 import {codexQuotaExhausted} from '../src/services/agents/codex/quota-error.js';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import Database from 'better-sqlite3';
-import {ConversationRetryManager,retryableConversationError,type ConversationRetryFrame,type RetryDependencies} from '../src/services/conversation-retry.js';
+import {ConversationRetryManager,RetrySuperseded,retryableConversationError,type ConversationRetryFrame,type RetryDependencies} from '../src/services/conversation-retry.js';
 import type {ConversationStreamFrame,observeCodexConversation} from '../src/services/agents/codex/stream.js';
 const quota={message:"You've hit your usage limit. Try again later.",codexErrorInfo:'UsageLimitExceeded'};
 const capacity={message:'Selected model is at capacity. Please try a different model.',codexErrorInfo:'ServerOverloaded'};
@@ -107,6 +107,23 @@ describe('bounded durable conversation retries',()=>{
   manager.failure('session','user','native','initial',quota,false);
   await vi.advanceTimersByTimeAsync(10000);
   expect(run).toHaveBeenCalledOnce();
+ });
+ it('checks a newer quota failure after the superseded handoff settles, without sending twice',async()=>{
+  let rejectPrevious!:(error:Error)=>void;
+  const previous=new Promise<never>((_resolve,reject)=>{rejectPrevious=reject;});
+  const run=vi.fn(async()=>{}).mockReturnValueOnce(previous);
+  manager.close();manager=create(undefined,{matches:(_session,error)=>codexQuotaExhausted(error),run});
+  manager.monitor('session','user','native');
+  failed!('initial',quota,false);
+  failed!('follow-up',quota,false);
+  failed!('initial',quota,false);
+  failed!('follow-up',quota,false);
+  expect(run).toHaveBeenCalledOnce();
+  rejectPrevious(new RetrySuperseded('newer_turn'));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(run).toHaveBeenCalledTimes(2);
+  expect(run.mock.calls[1]?.[0]).toMatchObject({root_turn_id:'follow-up'});
+  expect(readJob()).toMatchObject({root_turn_id:'follow-up',status:'succeeded'});
  });
  it('recognizes subscription exhaustion without treating generic throttling or API billing as a switch signal',()=>{
   expect(codexQuotaExhausted(quota)).toBe(true);

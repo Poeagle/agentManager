@@ -82,7 +82,7 @@ export const codexAdapter: AgentAdapter = {
         supportsFollowUp: true,
         supportsImmediate: true,
         hasQueuedFollowUp: async context => inCodexThread(requireNative(context),async()=>
-            (await import('./queue.js')).hasOwnedCodexQueuedInput(requireNative(context))),
+            (await import('./queue.js')).hasCodexQueuedFollowUp(requireNative(context))),
         cancelQueued: async(context,clientId)=>inCodexThread(requireNative(context),async()=>(await import('./queue.js')).cancelCodexQueuedInput(requireNative(context),clientId)),
         submit: async (context, text, clientId, attachments, options) => {
             assertSessionEnvironment(context.session,context.actorUserId);

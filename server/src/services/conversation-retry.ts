@@ -48,7 +48,7 @@ export class RetrySuperseded extends Error {constructor(readonly reason:string){
  * Active jobs retain their observer when a browser disconnects. */
 export class ConversationRetryManager {
   private jobs=new Map<string,ConversationRetry>();
-  private quotaJobs=new Map<string,ConversationRetry>();
+  private quotaJobs=new Map<string,{job:ConversationRetry;pendingTurns:Set<string>}>();
   private timers=new Map<string,ReturnType<typeof setTimeout>>();
   private observers=new Map<string,ReturnType<AgentRetryObserver>>();
   private listeners=new Map<string,Set<(frame:ConversationRetryFrame)=>void>>();
@@ -130,35 +130,51 @@ export class ConversationRetryManager {
     const job:ConversationRetry={session_id:sessionId,native_id:nativeId,root_turn_id:turnId,failed_turn_ids:[turnId],user_id:userId,attempt:0,max_attempts:3,status:'waiting',next_retry_at:new Date(Date.now()+DELAYS[0]).toISOString(),retry_turn_id:null,client_id:null};
     this.jobs.set(sessionId,job);this.save(job);this.watch(job);this.arm(job);
   }
-  private handoffQuotaFailure(sessionId:string,userId:string,nativeId:string,turnId:string) {
+  private handoffQuotaFailure(sessionId:string,userId:string,nativeId:string,turnId:string,pendingTurns=new Set<string>()) {
     const key=JSON.stringify([sessionId,nativeId]);
-    if(this.quotaJobs.has(key))return;
     const previous=this.db.prepare('SELECT data FROM conversation_retries WHERE session_id=? AND native_id=? AND root_turn_id=?')
       .get(sessionId,nativeId,turnId) as {data:string}|undefined;
     if(previous && (JSON.parse(previous.data) as ConversationRetry).action==='quota_handoff')return;
+    const inFlight=this.quotaJobs.get(key);
+    if(inFlight){
+      inFlight.pendingTurns.add(turnId);
+      if(inFlight.pendingTurns.size>100)inFlight.pendingTurns.delete(inFlight.pendingTurns.values().next().value!);
+      return;
+    }
     const active=this.jobs.get(sessionId);
     if(active?.native_id===nativeId)this.finish(active,'cancelled','quota_exhausted');
     const job:ConversationRetry={session_id:sessionId,native_id:nativeId,root_turn_id:turnId,
       failed_turn_ids:[turnId],user_id:userId,action:'quota_handoff',attempt:1,max_attempts:1,status:'submitting',
       next_retry_at:null,retry_turn_id:null,client_id:`quota-handoff-${randomUUID()}`};
     this.save(job);
-    this.quotaJobs.set(key,job);
-    const current=()=>!this.stopped&&this.quotaJobs.get(key)===job;
+    const handoff={job,pendingTurns};
+    this.quotaJobs.set(key,handoff);
+    const current=()=>!this.stopped&&this.quotaJobs.get(key)===handoff;
+    let submitted=false;
     void this.deps.quotaHandoff!.run(job,current).then(
-      ()=>{if(current())this.save({...job,status:'succeeded'});},
+      ()=>{submitted=true;if(current())this.save({...job,status:'succeeded'});},
       (error:unknown)=>{
         if(!current())return;
         const reason=error instanceof RetrySuperseded?error.reason:
           error instanceof AgentSubmissionError&&error.submission==='rejected'?'quota_handoff_rejected':undefined;
         this.save({...job,status:reason?'cancelled':'unknown',stop_reason:reason});
       },
-    ).finally(()=>{if(current())this.quotaJobs.delete(key);});
+    ).finally(()=>{
+      if(!current())return;
+      this.quotaJobs.delete(key);
+      if(submitted||!pendingTurns.size||!this.deps.allowed(sessionId,userId,nativeId))return;
+      // The native queue can start and fail a new turn while the previous
+      // failure is being checked. Only the newest eligible turn can resume.
+      const next=[...pendingTurns].at(-1)!;
+      pendingTurns.delete(next);
+      this.handoffQuotaFailure(sessionId,userId,nativeId,next,pendingTurns);
+    });
   }
   cancel(sessionId:string,nativeId:string,reason='user_cancelled') {
     const job=this.jobs.get(sessionId);if(job?.native_id===nativeId)this.finish(job,'cancelled',reason);
     const key=JSON.stringify([sessionId,nativeId]);
     const handoff=this.quotaJobs.get(key);
-    if(handoff){this.quotaJobs.delete(key);this.save({...handoff,status:'cancelled',stop_reason:reason});}
+    if(handoff){this.quotaJobs.delete(key);this.save({...handoff.job,status:'cancelled',stop_reason:reason});}
   }
   close() {
     this.stopped=true;this.quotaJobs.clear();for(const entry of this.monitors.values()){clearTimeout(entry.timer);entry.stop();}this.monitors.clear();

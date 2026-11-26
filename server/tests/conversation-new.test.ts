@@ -4,7 +4,7 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 vi.mock('../src/services/agents/codex/terminal-bridge.js',()=>({ensureCodexTerminalBridge:vi.fn(async(path:string)=>path)}));
 vi.mock('../src/services/agents/codex/version.js',()=>({prepareCodexReload:vi.fn().mockResolvedValue('0.166.0')}));
 vi.mock('../src/services/agents/codex/actions.js',()=>({prepareFreshCodexConversation:vi.fn().mockResolvedValue('019ff001-3333-7333-8333-333333333333'),releaseCodexConversation:vi.fn().mockResolvedValue(undefined),compactCodexConversation:vi.fn().mockResolvedValue(undefined)}));
-vi.mock('../src/services/agents/codex/stream.js',()=>({interruptStreamingCodexThread:vi.fn().mockResolvedValue(undefined)}));
+vi.mock('../src/services/agents/codex/stream.js',()=>({interruptStreamingCodexThread:vi.fn().mockResolvedValue(undefined),withCodexConnection:vi.fn(),submitStreamingCodexInput:vi.fn()}));
 vi.mock('child_process',async original=>{
  const actual=await original<typeof import('child_process')>(),{EventEmitter}=await import('events');
  return {...actual,fork:vi.fn(()=>{const worker:any=new EventEmitter();worker.connected=true;worker.exitCode=null;worker.signalCode=null;worker.kill=vi.fn(()=>{worker.connected=false;worker.exitCode=0;queueMicrotask(()=>worker.emit('exit',0));});worker.send=vi.fn((message:any)=>{if(message.type==='spawn')queueMicrotask(()=>worker.emit('message',{type:'ready',pid:90000001}));if(message.type==='kill')worker.kill();});queueMicrotask(()=>worker.emit('message',{type:'worker-ready'}));return worker;})};
@@ -23,7 +23,13 @@ import {prepareFreshCodexConversation,releaseCodexConversation,compactCodexConve
 import {prepareCodexReload} from '../src/services/agents/codex/version.js';
 import {readConversationControls,validateModelPreference} from '../src/services/agents/codex/controls.js';
 import {getAgent} from '../src/services/agents/index.js';
-import {authHook,createUser,createSession as createAuthSession} from '../src/auth.js';
+import {withCodexConnection,submitStreamingCodexInput} from '../src/services/agents/codex/stream.js';
+import {ConversationRetryManager,type AgentRetryObserver,type ConversationRetry} from '../src/services/conversation-retry.js';
+import {matchesQuotaHandoff,resumeQuotaFailedTurn} from '../src/services/conversation-quota-handoff.js';
+import {initAccountStatus} from '../src/services/agents/codex/account-status.js';
+import {parseBriefContext} from '../src/shared/conversation-brief.js';
+import * as conversationReader from '../src/services/conversation-reader.js';
+import {authHook,createUser,createSession as createAuthSession,setProjectToolAccess} from '../src/auth.js';
 import {createSessionRecordDeletionWorker,sessionRecordDeletionState} from '../src/services/session-record-deletion.js';
 let cleanup:()=>void;
 let historyDir:string;
@@ -286,4 +292,62 @@ it('does not replace a conversation that starts running while the target is prep
   expect(result).toMatchObject({ok:false,error:'准备期间原会话开始运行，未发送简要历史'});
   expect(discard).toHaveBeenCalledOnce();expect(getSession('new-test')?.codex_session_id).toBe(native);expect(fork).not.toHaveBeenCalled();
  }finally{runtime.mockRestore();prepare.mockRestore();discard.mockRestore();}
+});
+
+it('resumes the latest quota failure on the backup account after native queue consumption',async()=>{
+ const db=getDb(),adapter=getAgent('codex'),owner=createUser({username:'quota-owner',password:'password1',role:'admin'}).id;
+ const target='account:quota-backup',queuedClient='queued-client',latestTurn='quota-follow-up';
+ db.prepare("UPDATE sessions SET created_by_user_id=? WHERE id='new-test'").run(owner);
+ db.prepare("UPDATE projects SET owner_id=? WHERE id='new-project'").run(owner);
+ setProjectToolAccess({projectId:'new-project',userId:owner,canSession:true,canTerminal:true,sessionClients:['codex'],grantedBy:owner});
+ db.prepare("INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES(?,'codex','Backup','account',1,?, '[]')")
+   .run(target,JSON.stringify({username:'quota-backup',port:22,codexHome:'/fixture/backup'}));
+ initAccountStatus();
+ const sample=db.prepare('INSERT INTO codex_account_status(account,identity,data,checked_at) VALUES(?,?,?,?)');
+ const reset=Date.now()/1000+3600;
+ sample.run('native',JSON.stringify(['native',process.env.CODEX_HOME]),JSON.stringify({account:{email:'depleted@example.invalid'},windows:[{usedPercent:100,resetsAt:reset}]}),new Date().toISOString());
+ sample.run(target,JSON.stringify(['quota-backup','/fixture/backup']),JSON.stringify({account:{email:'funded@example.invalid'},windows:[{usedPercent:38,resetsAt:reset}]}),new Date().toISOString());
+ db.prepare('INSERT INTO agent_queued_inputs VALUES(?,?,?,?)').run('codex','/fake',native,queuedClient);
+ writeFileSync(rollout(native),'{}\n');
+ const originalError={codexErrorInfo:'usageLimitExceeded',message:"You've hit your usage limit."};
+ const latest={id:latestTurn,status:'failed',error:originalError,items:[{type:'userMessage',clientId:queuedClient}]};
+ let firstRead=true;
+ vi.mocked(withCodexConnection).mockImplementation(action=>action(async method=>{
+   if(method==='thread/read')return {thread:{status:{type:'systemError'}}};
+   if(method==='thread/queue/list')return {data:[]};
+   if(method==='thread/turns/list'){
+     const turn=firstRead?{...latest,error:undefined}:latest;
+     firstRead=false;
+     return {data:[turn]};
+   }
+   throw Error(method);
+ },{userAgent:null}));
+ vi.mocked(submitStreamingCodexInput).mockResolvedValue(true);
+ const runtime=vi.spyOn(adapter.runtime,'read').mockResolvedValue({state:'failed'} as Awaited<ReturnType<typeof adapter.runtime.read>>);
+ const prepare=vi.spyOn(adapter.lifecycle,'prepareFreshInEnvironment').mockResolvedValue(defaultFresh);
+ const history=vi.spyOn(conversationReader,'readConversation').mockResolvedValue({available:true,has_more:false,reset:false,generation:'source',
+   messages:[{id:'queued-user',role:'user',text:'执行已排队的检查',timestamp:null,turn_id:latestTurn,client_id:queuedClient}],statistics:[],metadata:null,cache_drops:[]});
+ let onFailure:Parameters<AgentRetryObserver>[2];
+ const retries=new ConversationRetryManager(db,{
+   allowed:(id,_user,expected)=>getSession(id)?.codex_session_id===expected,
+   observe:(_id,_emit,callback)=>{onFailure=callback;return Object.assign(()=>{}, {respond:()=>{}});},
+   quotaHandoff:{matches:(id,error)=>matchesQuotaHandoff(getSession(id)!,error),run:resumeQuotaFailedTurn},
+ });
+ try{
+  retries.monitor('new-test',owner,native);
+  onFailure!(latestTurn,originalError,false);
+  onFailure!(latestTurn,originalError,false);
+  const row=()=>db.prepare('SELECT data FROM conversation_retries WHERE root_turn_id=?').get(latestTurn) as {data:string};
+  await vi.waitFor(()=>expect(JSON.parse(row().data).status).toBe('succeeded'),{timeout:3000});
+  const job:ConversationRetry=JSON.parse(row().data);
+  expect(getSession('new-test')).toMatchObject({codex_session_id:defaultFresh,agent_environment_id:target,status:'running'});
+  expect(db.prepare('SELECT status,agent_environment_id FROM sessions WHERE codex_session_id=?').get(native)).toEqual({status:'cancelled',agent_environment_id:null});
+  expect(db.prepare('SELECT 1 FROM agent_queued_inputs').all()).toEqual([]);
+  expect(existsSync(rollout(native))).toBe(true);
+  expect(prepare).toHaveBeenCalledOnce();
+  expect(submitStreamingCodexInput).toHaveBeenCalledExactlyOnceWith(defaultFresh,expect.any(String),job.client_id,undefined,expect.any(Function),undefined,true);
+  expect(parseBriefContext(vi.mocked(submitStreamingCodexInput).mock.calls[0][1])).toMatchObject({
+    context:{turns:[{input:'执行已排队的检查'}]},input:expect.stringContaining('避免重复执行'),
+  });
+ }finally{retries.close();history.mockRestore();runtime.mockRestore();prepare.mockRestore();}
 });

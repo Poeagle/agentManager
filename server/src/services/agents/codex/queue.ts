@@ -32,10 +32,24 @@ export async function cancelCodexQueuedInput(threadId:string,clientId:string):Pr
 
 const owned=new Map<string,Set<string>>(),draining=new Map<string,Promise<string|null>>();
 const ownershipKey=(thread:string)=>JSON.stringify([currentCodexEngine().socket,thread]);
-export function hasOwnedCodexQueuedInput(thread:string):boolean {
+function hasOwnedCodexQueuedInput(thread:string):boolean {
  if(owned.get(ownershipKey(thread))?.size)return true;
  try{return !!getDb().prepare('SELECT 1 FROM agent_queued_inputs WHERE agent_id=? AND scope_key=? AND native_id=? LIMIT 1')
    .get('codex',currentCodexEngine().socket,thread);}catch{return false;}
+}
+export async function hasCodexQueuedFollowUp(thread:string):Promise<boolean> {
+ if(!hasOwnedCodexQueuedInput(thread))return false;
+ return withCodexConnection(async request=>{
+  const queue=await request('thread/queue/list',{threadId:thread,limit:1});
+  if(!Array.isArray(queue.data)||queue.data.length)return true;
+  const turns=await request('thread/turns/list',{threadId:thread,limit:1,itemsView:'summary'});
+  // Another native client can consume the entry. Clear ownership only with
+  // a matching receipt, since a queue/add might still be in flight.
+  for(const item of turns.data?.[0]?.items??[]){
+   if(item.type==='userMessage'&&typeof item.clientId==='string')ownCodexQueuedInput(thread,item.clientId,true);
+  }
+  return hasOwnedCodexQueuedInput(thread);
+ });
 }
 /** Store only native identities, never prompts. Native queue remains the source
  * of truth and atomically claims an item when starting it. */

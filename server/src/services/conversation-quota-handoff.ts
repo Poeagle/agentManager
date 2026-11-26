@@ -107,8 +107,10 @@ export async function resumeQuotaFailedTurn(job: ConversationRetry,current:()=>b
     if(state.turn.status!=='failed'||!state.turn.quota_exhausted)throw new RetrySuperseded('turn_finished');
   };
   let state=await inspect();
-  // The error notification can precede the terminal turn status.
-  for(let attempt=0;attempt<10&&current()&&state.turn?.id===job.root_turn_id&&state.turn.status==='running';attempt++){
+  // The error notification can precede the terminal status or its error details.
+  for(let attempt=0;attempt<10&&current()&&state.turn?.id===job.root_turn_id;attempt++){
+    if(state.turn.has_final||state.queued||
+       state.state==='idle'&&state.turn.status==='failed'&&state.turn.quota_exhausted)break;
     await delay(500);
     state=await inspect();
   }

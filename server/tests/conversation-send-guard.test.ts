@@ -240,18 +240,21 @@ it.each(['cached','native rejection','uncertain'] as const)('recovers eligible q
  expect(parseBriefContext(text)).toMatchObject({input:'hello',context:{turns:[{input:'整理项目文件'}]}});
 });
 
-it.each(['unfinished','has final','queued','newer turn','stale history'] as const)('resumes a quota-failed task only when safe (%s)',async condition=>{
+it.each(['unfinished','failure details pending','status pending','has final','queued','newer turn','stale history'] as const)('resumes a quota-failed task only when safe (%s)',async condition=>{
  const {replace,read}=stubQuotaHandoff();
  if(condition==='stale history')read.mockResolvedValue({available:true,has_more:false,reset:false,generation:'fixture',
    messages:[{id:'previous',role:'user',text:'另一个轮次的任务',timestamp:null,turn_id:'older'}],statistics:[],metadata:null,cache_drops:[]});
- vi.spyOn(codexAdapter.retry,'inspect').mockResolvedValue({
-   state:'idle',queued:condition==='queued',turn:{id:condition==='newer turn'?'another':'last-turn',status:'failed',
-     quota_exhausted:true,retryable:false,has_final:condition==='has final',user_client_ids:['original']},
- });
+ const turn={id:condition==='newer turn'?'another':'last-turn',status:'failed' as const,
+   quota_exhausted:true,retryable:false,has_final:condition==='has final',user_client_ids:['original']};
+ const inspect=vi.spyOn(codexAdapter.retry,'inspect').mockResolvedValue({state:'idle',queued:condition==='queued',turn});
+ if(condition==='failure details pending'||condition==='status pending'){
+   inspect.mockResolvedValueOnce({state:'idle',queued:false,turn:{...turn,
+     status:condition==='status pending'?'unknown':'failed',quota_exhausted:false}});
+ }
  const job={session_id:'s',native_id:'native',root_turn_id:'last-turn',failed_turn_ids:['last-turn'],user_id:userId,
    action:'quota_handoff',attempt:1,max_attempts:1,status:'submitting',client_id:'quota-handoff-test',
    next_retry_at:null,retry_turn_id:null} as const;
- if(condition!=='unfinished'){
+ if(!['unfinished','failure details pending','status pending'].includes(condition)){
    await expect(resumeQuotaFailedTurn({...job,failed_turn_ids:[...job.failed_turn_ids]},()=>true)).rejects.toThrow();
    expect(replace).not.toHaveBeenCalled();
    expect(stream.submitStreamingCodexInput).not.toHaveBeenCalled();
