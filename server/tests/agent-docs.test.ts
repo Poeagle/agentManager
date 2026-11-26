@@ -128,7 +128,8 @@ it.each(['claude', 'codex'])('requires internal handoffs for direct input to a %
     payload: { request_id: 'internal-only', target_tab_ids: [child], text: '请先核对范围' } });
   expect(handoff.json().result.results[0].status).toBe('submitted');
   expect(submit).toHaveBeenCalledTimes(1);
-  expect(submit.mock.calls[0][1]).toContain('Use agent-docs');
+  expect(agentDocsLaunch(manager.getSession(child)!)?.instructions).toMatch(/You are a child Agent\. Read .*agent-docs\/SKILL\.md before working/);
+  expect(submit.mock.calls[0][1]).toMatch(/child_tab=You are a child Agent\. Read .*agent-docs\/SKILL\.md before working/);
   const handed = handoff.json().result.results[0];
   const visible = linkConversationInputs(child, native, [{ id: 'echo', role: 'user', text: submit.mock.calls[0][1],
     timestamp: null, client_id: handed.message_id }]);
@@ -400,6 +401,56 @@ it.each([['dev-one', 'claude'], ['dev-two', 'codex']])('reviews completed childr
   const created = await post(parent, '/tabs', create);
   expect(created.json()).toMatchObject({ result: { launch_status: 'ready', initial_message_status: 'submitted' } });
   expect(manager.getSession(created.json().result.tab_id)?.cli_type).toBe(parentAgent);
+  expect(manager.getSession(child)?.native_session_id).toBe(native);
+});
+
+it.each([['dev-one', 'claude'], ['dev-two', 'codex']])('prompts %s to close the accepted child and preserves its history', async (parent, agent) => {
+  const child = 'closeout-child';
+  tab(child, owner, 'p', agent);
+  getDb().prepare('UPDATE sessions SET parent_session_id=? WHERE id=?').run(parent, child);
+  const adapter = getAgent(agent);
+  const submit = vi.spyOn(adapter.input, 'submit').mockResolvedValue(true);
+  const runtime = vi.spyOn(adapter.runtime, 'read').mockResolvedValue({
+    source: 'fixture', session_id: native, state: 'running', last_activity_at: null, observed_at: '', reason: '',
+  });
+  const queued = vi.spyOn(adapter.input, 'hasQueuedFollowUp').mockResolvedValue(false);
+  const kill = vi.spyOn(manager, 'killSession').mockImplementation(async id => {
+    getDb().prepare("UPDATE sessions SET status='cancelled' WHERE id=?").run(id);
+    return true;
+  });
+  const post = (source: string, path: string, payload: object) =>
+    app.inject({ method: 'POST', url: base + path, headers: header(source), payload });
+  const assign = async (request_id: string) => (await post(parent, '/messages',
+    { request_id, target_tab_ids: [child], intent: 'task', text: '验收窄屏布局' })).json().result.results[0].message_id;
+  const result = async (request_id: string, reply_to: string) => (await post(child, '/messages',
+    { request_id, reply_to, intent: 'result', text: '窄屏布局通过。' })).json().result.results[0].message_id;
+  const close = (source: string, request_id: string, reviewed_result_id: string) =>
+    post(source, '/tabs/' + child + '/delete', { request_id, reviewed_result_id });
+
+  const initial = await assign('task-before-close');
+  const reviewed = await result('first-review', initial);
+  const direct = submit.mock.calls.at(-1)![1];
+  expect(direct).toContain('closeout=');
+  expect(direct).toContain('delete-tab');
+  expect(linkConversationInputs(parent, native, [{ id: 'return-echo', role: 'user', text: direct,
+    timestamp: null, client_id: reviewed }])[0].text).toBe('窄屏布局通过。');
+
+  const sibling = parent === 'dev-one' ? 'dev-two' : 'dev-one';
+  expect((await close(sibling, 'foreign-close', reviewed)).json().result.status).toBe('rejected');
+  expect((await close(parent, 'still-busy', reviewed)).json().result.status).toBe('rejected');
+  runtime.mockResolvedValue({ source: 'fixture', session_id: native, state: 'idle', last_activity_at: null, observed_at: '', reason: '' });
+  queued.mockResolvedValue(true);
+  expect((await close(parent, 'still-queued', reviewed)).json().result.status).toBe('rejected');
+  queued.mockResolvedValue(false);
+  const followup = await assign('task-follow-up');
+  expect((await close(parent, 'has-follow-up', reviewed)).json().result.status).toBe('rejected');
+  const final = await result('final-review', followup);
+  expect((await close(parent, 'obsolete-review', reviewed)).json().result.status).toBe('rejected');
+  expect(kill).not.toHaveBeenCalled();
+  expect((await close(parent, 'accepted-close', final)).json().result)
+    .toMatchObject({ status: 'closed', history_status: 'retained' });
+  expect((await close(parent, 'accepted-close', final)).json().result.status).toBe('closed');
+  expect(kill).toHaveBeenCalledTimes(1);
   expect(manager.getSession(child)?.native_session_id).toBe(native);
 });
 
@@ -710,7 +761,7 @@ it.each([['dev-one', 'claude'], ['dev-two', 'codex']].flatMap(([parent, agent]) 
   if (replacedForBlocker || replacedForSummary) expect(replacedForBlocker ?? replacedForSummary).toHaveBeenCalledTimes(1);
   const wake = submit.mock.calls[1][1];
   expect(wake).toContain(batchId);
-  expect(wake).toContain('已回传来源：test');
+  expect(wake).toContain('验收后立即关闭');
   if (guard === 'summary') expect(parseBriefContext(wake)).toMatchObject({ context: { turns: [{input: '验收两个事项'}] } });
   expect(linkConversationInputs(parent, wakeNative, [{ id: 'batch-echo', role: 'user', text: wake, timestamp: null, client_id: batchId }]))
     .toMatchObject([{ text: wake, input_source: { kind: 'agent_handoff', label: '协作结果' } }]);

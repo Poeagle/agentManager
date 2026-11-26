@@ -7,7 +7,10 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.48.0');
+    expect(contract.version).toBe('3.49.0');
+    const closeChild = contract.endpoints.find(e=>e.path==='/api/agent-docs/tabs/:id/delete')?.description;
+    expect(closeChild).toContain('reviewed_result_id');
+    expect(closeChild).toContain('child_close_not_ready');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/tab-usage'&&e.method==='GET')?.description).toContain('descendant tabs');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/tabs'&&e.method==='POST')?.description).toContain('same Agent, Provider and account');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/execution-options')?.description).toContain('source_execution');

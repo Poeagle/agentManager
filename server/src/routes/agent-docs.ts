@@ -8,6 +8,7 @@ import type { NotificationInput, NotificationSession } from '../services/notific
 import { agentDocsBatchLimits, agentDocsBatchScheduler, agentDocsBatchSnapshot, getAgentDocsBatch,
   initAgentDocsBatches, openAgentDocsBatch, rebindActiveAgentDocsBatches, reserveAgentDocsBatch, sealAgentDocsBatch, type AgentDocsBatch } from '../services/agent-docs-batches.js';
 import { agentForSession, getAgent } from '../services/agents/index.js';
+import { readAgentRuntime, sessionAgentContext } from '../services/agents/session.js';
 import { canUseSessionEnvironment } from '../services/agents/environment-access.js';
 import { executionSettingsPatch, inPlaceModelChoices } from '../services/agents/model-preferences.js';
 import type { AgentControls, ModelPreference } from '../services/agents/types.js';
@@ -49,7 +50,8 @@ const updateTabControls = z.object({
 const deleteTab = z.object({
   request_id: tabId,
   delete_history: z.boolean().default(false),
-}).strict();
+  reviewed_result_id: tabId.optional(),
+}).strict().refine(input => !input.reviewed_result_id || !input.delete_history);
 const stopChildTurn = z.object({
   request_id: tabId,
   native_id: z.string().min(1).max(2048),
@@ -104,6 +106,7 @@ interface ChildCleanupOptions {
   onlyIds?: string[];
   excludeIds?: string[];
   batchId?: string;
+  lockedTabId?: string;
 }
 
 const matchingTaskResult = `
@@ -154,10 +157,13 @@ function childCleanupCandidates(scope: Scope, options: ChildCleanupOptions = {})
   const candidates: Array<{tab_id: string; name: string; state: string; can_delete: boolean;
     cleanup_review: {task_message_id: string; result_message_id: string}}> = [];
   for (const child of children) {
+    const deliveryDepth = deliveryTails.get(child.id)?.depth ?? 0;
+    const ownClose = options.lockedTabId === child.id ? 1 : 0;
     if (excluded.has(child.id) || only && !only.has(child.id) || !agentDocsTabAccessible(child)
-      || sessionRecordDeletionState(child.id) === 'pending' || deliveryTails.has(child.id)) continue;
+      || sessionRecordDeletionState(child.id) === 'pending' || deliveryDepth > ownClose) continue;
     const tracker = getTracker(child.id);
-    if (tracker && (tracker.hasPendingExecute || tracker.state.processState !== 'idle' || tracker.state.isPermission)) continue;
+    if (tracker && (tracker.hasPendingExecute || tracker.state.processState !== 'idle' || tracker.state.isPermission
+      || tracker.state.promptType === 'choice' || tracker.state.promptType === 'confirmation')) continue;
     const completed = completedTask.get(child.id, scope.source.id) as
       { task_message_id: string; result_message_id: string; batch_id: string | null } | undefined;
     if (!completed || options.batchId && completed.batch_id === options.batchId) continue;
@@ -267,8 +273,12 @@ function deliveryBlocked(target: Session | undefined, id: string) {
   if (tracker?.isPermission || tracker?.promptType === 'choice' || tracker?.promptType === 'confirmation') return '目标正在等待用户交互';
 }
 
-function handoffText(sourceId: string, messageId: string, text: string, replyTo?: string, child = false) {
-  return `[Agent Manager handoff · source_tab_id=${sourceId} · message_id=${messageId}${replyTo ? ` · reply_to=${replyTo}` : ''}${child ? ` · child_tab=${CHILD_AGENT_INSTRUCTIONS}` : ''}]\n${text}`;
+function handoffText(sourceId: string, messageId: string, text: string, replyTo?: string, child = false, closeout = false) {
+  const fields = [`source_tab_id=${sourceId}`, `message_id=${messageId}`];
+  if (replyTo) fields.push(`reply_to=${replyTo}`);
+  if (child) fields.push(`child_tab=${CHILD_AGENT_INSTRUCTIONS}`);
+  if (closeout) fields.push('closeout=验收后用 agent-docs 的 delete-tab --reviewed-result-id 立即关闭已空闲且无后续工作的子标签。');
+  return `[Agent Manager handoff · ${fields.join(' · ')}]\n${text}`;
 }
 
 interface HandoffSubmission {
@@ -378,8 +388,12 @@ async function deliverOrdered(app: Parameters<typeof platformApi>[0], scope: Sco
   const label = sessionPresenter(scope.userId)(source).tab_name;
   db.prepare(`INSERT INTO agent_docs_handoffs(id,target_tab_id,source_tab_id,source_label,request_id,reply_to,status,content,intent,batch_id)
     VALUES(?,?,?,?,?,?, 'unknown', ?,?,?)`).run(messageId, id, source.id, label, requestId, replyTo || null, text, intent || 'note', batchId ?? null);
+  const closesChildTask = intent === 'result' && !!replyTo && source.parent_session_id === id
+    && !!db.prepare(`SELECT 1 FROM agent_docs_handoffs task WHERE ${trackedTask} AND task.id=? AND task.source_tab_id=?`)
+      .get(source.id, replyTo, id);
   const receipt = await submitHandoff(app, { targetId: id, userId: scope.userId, clientId: messageId, label,
-    text: handoffText(source.id, messageId, text, replyTo, !!target.parent_session_id), native: nativeConversationId(target)!, afterCurrentTurn,
+    text: handoffText(source.id, messageId, text, replyTo, !!target.parent_session_id, closesChildTask),
+    native: nativeConversationId(target)!, afterCurrentTurn,
     environment: target.agent_environment_id || 'native' }, scope);
   db.prepare('UPDATE agent_docs_handoffs SET status=? WHERE id=?').run(receipt.status, messageId);
   return { tab_id: id, message_id: messageId, ...receipt };
@@ -509,7 +523,7 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
       const user = findUserById(scope.userId);
       const operations = ['list-tabs', 'read-tab', 'tab-controls', 'inbox', 'read-message', 'execution-options', 'operation', 'read-batch'];
       if (agentDocsAllowed(scope.source, 'write')) operations.push('create-tab', 'update-tab-controls', 'send-message', 'delete-tab', 'stop-child-turn', 'open-batch', 'seal-batch');
-      return { version: '1.8.0', source_tab_id: scope.source.id, parent_tab_id: scope.source.parent_session_id ?? null, project_id: scope.projectId,
+      return { version: '1.9.0', source_tab_id: scope.source.id, parent_tab_id: scope.source.parent_session_id ?? null, project_id: scope.projectId,
         user: { id: user?.id, display_name: user?.display_name || user?.username }, operations, limits: LIMITS };
     });
 
@@ -745,11 +759,27 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
       }
       const scope = readScope(req), id = req.params.id;
       const input = { ...parsed.data, tab_id: id };
-      return mutate(scope, 'delete', input, async () => {
+      const close = async () => {
         const result = { tab_id: id, status: 'rejected' };
         const target = ownedTab(scope, id, true);
         if (!target || target.id === scope.source.id || !agentDocsTabAccessible(target, 'write')) {
           return { ...result, reason: '目标标签不可删除' };
+        }
+        if (input.reviewed_result_id) {
+          const reviewed = () => {
+            const current = ownedTab(scope, id, true);
+            return current && current.status === target.status && nativeConversationId(current) === nativeConversationId(target)
+              && current.agent_environment_id === target.agent_environment_id && agentDocsTabAccessible(current, 'write')
+              && childCleanupCandidates(scope, { onlyIds: [id], lockedTabId: id })[0]?.cleanup_review.result_message_id === input.reviewed_result_id;
+          };
+          const deferred = { ...result, code: 'child_close_not_ready', reason: '子标签有后续工作、状态未确认或验收结果已变化，请核对后再关闭' };
+          if (!reviewed()) return deferred;
+          if (['running', 'detached'].includes(target.status)) {
+            const idle = await readAgentRuntime(target).then(async runtime => runtime.state === 'idle'
+              && !runtime.compaction && !runtime.pending_question_count && !runtime.pending_questions?.length && !runtime.queued_answer_count
+              && !await agentForSession(target).input.hasQueuedFollowUp?.(sessionAgentContext(target))).catch(() => false);
+            if (!idle || !reviewed()) return deferred;
+          }
         }
         if (input.delete_history) {
           try {
@@ -768,7 +798,8 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
         if (!canQueueSessionRecordDeletion(id)) throw Error('标签页关闭状态待确认');
         removeSessionTabs(id, { userId: scope.userId, projectId: scope.projectId });
         return { tab_id: id, status: 'closed', history_status: 'retained' };
-      });
+      };
+      return mutate(scope, 'delete', input, () => input.reviewed_result_id ? withOrderedDelivery(id, close) : close());
     });
 
     scoped.post('/tabs', async (req, reply) => {

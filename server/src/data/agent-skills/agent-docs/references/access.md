@@ -20,7 +20,7 @@ python3 scripts/platform_api.py capabilities
 | `read-message` | `GET /inbox/{message_id}` | 读取自己已收到的指定消息完整正文。 |
 | `execution-options` | `GET /execution-options` | 按需查询当前标签页绑定的 Provider、模型和额度。 |
 | `create-tab` | `POST /tabs` | 以创建者身份启动新标签页并可选投递首条任务。 |
-| `delete-tab` | `POST /tabs/{tab_id}/delete` | 关闭其他同用户同项目的标签页，可明确请求永久删除历史。 |
+| `delete-tab` | `POST /tabs/{tab_id}/delete` | 关闭同用户同项目的其他标签页。用已验收的结果 ID 可关闭空闲直属子标签并保留历史。 |
 | `stop-child-turn` | `POST /tabs/{tab_id}/stop` | 按已确认的原生会话和轮次停止直属子标签执行。 |
 | `send-message` | `POST /messages` | 向一个或多个同项目标签页投递工作、问题或结果。 |
 | `open-batch` | `POST /batches` | 开启本轮并行任务的回传批次。 |

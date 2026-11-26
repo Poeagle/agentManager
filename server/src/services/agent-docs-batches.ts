@@ -152,10 +152,8 @@ export function agentDocsBatchScheduler(wake: Wake, logError: (error: unknown) =
     const resultCount = snapshot.tasks.filter(task => task.state === 'result').length;
     const unavailable = snapshot.tasks.filter(task => task.state === 'unavailable').length;
     const pending = batch.task_count - resultCount - unavailable;
-    const sources = [...new Set(snapshot.tasks.flatMap(task => task.source_label ? [task.source_label.replace(/\s+/g, ' ').slice(0, 120)] : []))];
     const text = `协作批次 ${batch.id}${ready ? '已收齐' : '已到等待时限'}。结果 ${resultCount} 项，待回传 ${pending} 项，未能投递 ${unavailable} 项。\n`
-      + (sources.length ? `已回传来源：${sources.join('、')}。\n` : '')
-      + `使用 agent-docs 的 read-batch ${batch.id} 查看本批任务，再按 result_message_id 用 read-message 读取各项证据和来源。核对待跟进事项后汇总，按需沿用子标签页或在收尾后关闭。`;
+      + `用 agent-docs 的 read-batch ${batch.id} 核对结果。验收后立即关闭已空闲且无后续工作的子标签，保留历史，再汇总。`;
     const receipt = await wake(batch, text).catch(error => {
       logError(error);
       return { status: 'unknown', reason: undefined };

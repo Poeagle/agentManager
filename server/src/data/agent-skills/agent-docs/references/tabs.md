@@ -73,11 +73,22 @@ JSON
 python3 scripts/platform_api.py operation -- "$request_id"
 ```
 
+## 验收后关闭
+
+单项结果、批次回传或接手已有协作后，先核对该项证据。验收通过且没有跟进或明确待命用途时，在本轮汇总前关闭空闲的直属子标签。通过 `list-tabs --children --include-ended` 查 `cleanup_review`，用其中的 `result_message_id` 关闭：
+
+```sh
+python3 scripts/platform_api.py delete-tab --request-id="$request_id" \
+  --reviewed-result-id="$result_message_id" -- "$child_tab_id"
+```
+
+平台检查直属关系、最新结果、未回传任务、后代、当前执行与队列，关闭后保留历史。待子 Agent 的回传轮次结束前可能返回 `child_close_not_ready`。先处理其他验收项，再核对状态，用新的请求 ID 重试。仍未关闭的只记录具体原因，后续继续收尾。只把明确还有用途的标签保留到下次。
+
 ## 关闭或删除标签页
 
 `POST /tabs/{tab_id}/delete` 对应 `delete-tab`。根据用户或项目授权确认目标，优先用 `list-tabs --include-ended` 核对名称、ID、父级与 `can_delete`。接口处理当前用户在当前项目中有权操作的其他标签页。关闭会结束目标标签正在进行的工作。每次只处理指定标签页。
 
-子标签回传结果后，由父标签验收并决定是否关闭。需要追问、复验，或还有该标签页正在处理的其他请求时，保留标签页继续协作。详情见[多轮跟进与关闭](collaboration.md#多轮跟进与关闭)。
+任务收尾走[验收后关闭](#验收后关闭)。以下不带结果 ID 的命令用于明确要求关闭指定标签的场景。
 
 ```sh
 python3 scripts/platform_api.py delete-tab --request-id="$request_id" -- "$target_tab_id"

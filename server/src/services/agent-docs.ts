@@ -13,7 +13,8 @@ import type { AgentSession } from './agents/types.js';
 export const agentDocsRoot = new URL('../data/agent-skills/agent-docs/', import.meta.url);
 export const agentDocsApiPath = '/api/agent-docs';
 export const agentDocsLiveStates = ['running', 'pending', 'launching', 'detached', 'released'];
-export const CHILD_AGENT_INSTRUCTIONS = 'Use agent-docs for all collaboration. Report questions, blockers and errors to your parent tab through the internal protocol. Do not ask the user, use user input tools, or request approvals directly. Only the top-level coordinating Agent communicates with the user.';
+const skillPath = fileURLToPath(new URL('SKILL.md', agentDocsRoot));
+export const CHILD_AGENT_INSTRUCTIONS = `You are a child Agent. Read ${skillPath} before working and use its internal collaboration protocol.`;
 export const CHILD_AGENT_INPUT_ERROR = '子 Agent 通过协作协议接收任务和回复，请在负责协调的 Agent 标签页沟通。';
 const audience = 'agent-docs:tab:v1';
 let cachedSecret: { path: string; value: Buffer } | undefined;
@@ -75,11 +76,10 @@ export function verifyAgentDocsToken(session: AgentSession, token: string) {
 /** Call only for a platform-owned Agent launch. The credential stays in process configuration. */
 export function agentDocsLaunch(session: AgentSession) {
   if (!agentDocsAllowed(session)) return undefined;
-  const root = fileURLToPath(agentDocsRoot);
   const ipv6Only = config.host.includes(':') && config.host !== '::';
   const host = ipv6Only ? '[::1]' : '127.0.0.1';
   return {
-    instructions: agentDocsLaunchInstructions(`${root}SKILL.md`) + (session.parent_session_id ? `\n${CHILD_AGENT_INSTRUCTIONS}` : ''),
+    instructions: agentDocsLaunchInstructions(skillPath) + (session.parent_session_id ? `\n${CHILD_AGENT_INSTRUCTIONS} Route questions and requests for approval to your parent tab.` : ''),
     environment: {
       AGENT_MANAGER_COLLABORATION_URL: `http://${host}:${config.port}${agentDocsApiPath}`,
       AGENT_MANAGER_COLLABORATION_SESSION: `ad1.${session.id}.${signature(session)}`,

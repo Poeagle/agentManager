@@ -51,7 +51,9 @@ def parse_args():
     removal = commands.add_parser("delete-tab", help="Close a tab and optionally delete its history")
     removal.add_argument("tab_id")
     removal.add_argument("--request-id", required=True)
-    removal.add_argument("--delete-history", action="store_true")
+    removal_mode = removal.add_mutually_exclusive_group()
+    removal_mode.add_argument("--delete-history", action="store_true")
+    removal_mode.add_argument("--reviewed-result-id", help="Close an idle direct child using its accepted result ID")
     stop = commands.add_parser("stop-child-turn", help="Stop a confirmed turn in a direct child tab")
     stop.add_argument("tab_id")
     stop.add_argument("--request-id", required=True)
@@ -104,6 +106,8 @@ def make_request(args):
         route = "/tabs/" + quote(args.tab_id, safe="")
         if command == "delete-tab":
             body = {"request_id": args.request_id, "delete_history": args.delete_history}
+            if args.reviewed_result_id:
+                body["reviewed_result_id"] = args.reviewed_result_id
             return route + "/delete", "", json.dumps(body).encode()
         if command == "stop-child-turn":
             body = {"request_id": args.request_id, "native_id": args.native_id, "turn_id": args.turn_id}

@@ -31,4 +31,4 @@ python3 scripts/platform_api.py read-batch -- "$batch_id"
 python3 scripts/platform_api.py read-message -- "$result_message_id"
 ```
 
-`read-batch` 返回每项的委派 `message_id`、目标、状态和可用的 `result_message_id`。读取结果正文可核对来源及证据。若批次到期，按读到的状态汇报。若唤醒被拒绝或结果不明，用 `wake_status`、`wake_error` 及收件箱核对，避免重复派发。父标签页决定是否沿用子标签页追问或复验，收尾后再按授权关闭。
+`read-batch` 返回每项的委派 `message_id`、目标、状态和可用的 `result_message_id`。读取结果正文可核对来源及证据。若批次到期，按读到的状态汇报。若唤醒被拒绝或结果不明，用 `wake_status`、`wake_error` 及收件箱核对，避免重复派发。父标签页核对每项结果，在汇总前[关闭已验收且无后续工作的空闲直属子标签](tabs.md#验收后关闭)。待回传或待复验的标签继续保留。
