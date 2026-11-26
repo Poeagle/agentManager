@@ -225,6 +225,36 @@ describe('scheduled task API', () => {
     expect(source).toMatchObject({kind:'scheduled',label:'终端巡检'});expect(submit.mock.calls[0][2]).toBe(source.client_id);
   });
 
+  it('moves an exhausted scheduled Codex task to an authorized account after reading history',async()=>{
+    const db=getDb(),agent=getAgent('codex'),target='account:backup';
+    db.prepare("UPDATE users SET role='admin' WHERE id=?").run(ownerId);
+    db.prepare("INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES (?,'codex','Backup','account',1,?,?)")
+      .run(target,JSON.stringify({username:'backup'}),JSON.stringify([ownerId]));
+    const source={id:'quota-schedule',project_id:'project-1',created_by_user_id:ownerId,status:'running',mode:'session',cli_type:'codex',native_session_id:'old-quota'};
+    db.prepare("INSERT INTO sessions(id,project_id,task,status,mode,cli_type,native_session_id,created_by_user_id) VALUES (?,?,'Scheduled','running','session','codex',?,?)")
+      .run(source.id,source.project_id,source.native_session_id,ownerId);
+    manager.getSession.mockReturnValue(source);
+    vi.spyOn(agent.quota,'accountRemaining').mockReturnValue(0);
+    vi.spyOn(agent.quota,'alternateAccount').mockReturnValue({id:target,label:'Backup'});
+    readHistory.mockResolvedValue({available:true,has_more:false,reset:false,generation:'fixture',
+      messages:[{id:'earlier',role:'user',text:'检查旧版本',timestamp:null}]});
+    manager.newSessionConversation.mockImplementation(async(id,_preference,_migration,native,env)=>{
+      expect(readHistory).toHaveBeenCalled();
+      expect([id,native,env]).toEqual([source.id,source.native_session_id,target]);
+      manager.getSession.mockReturnValue({...source,native_session_id:'new-quota',agent_environment_id:env});
+      return {ok:true};
+    });
+    const submit=vi.spyOn(agent.input,'submit').mockResolvedValue(true);
+    const created=await app.inject({method:'POST',url:'/api/scheduled-tasks',headers:{cookie},payload:{
+      project_id:'project-1',name:'配额巡检',prompt:'检查新版本',schedule_kind:'daily',schedule_value:'09:00',
+      target_type:'existing',target_session_id:source.id}});
+    const response=await app.inject({method:'POST',url:`/api/scheduled-tasks/${created.json().task.id}/run`,headers:{cookie}});
+    expect(response.json().run).toMatchObject({status:'success',sessionId:source.id});
+    expect(submit).toHaveBeenCalledOnce();
+    expect(submit.mock.calls[0][0].nativeId).toBe('new-quota');
+    expect(parseBriefContext(submit.mock.calls[0][1])).toMatchObject({input:'检查新版本',context:{turns:[{input:'检查旧版本'}]}});
+  });
+
   it.each(['codex','claude'])('starts a fresh %s conversation with brief history before submitting a scheduled input',async(agent)=>{
     const native='019ff001-1111-7111-8111-111111111111',fresh='019ff001-2222-7222-8222-222222222222';
     const session={id:'brief-tab',project_id:'project-1',created_by_user_id:ownerId,status:'running',mode:'session',cli_type:agent,native_session_id:native};

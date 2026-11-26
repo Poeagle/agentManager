@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import {randomUUID} from 'crypto';
 import type {AgentStreamFrame as ConversationStreamFrame} from './agents/events.js';
 import {agentForSession} from './agents/index.js';
+import {AgentSubmissionError} from './agents/submission.js';
 import {sessionAgentContext} from './agents/session.js';
 import {conversationErrorMessage} from './conversation-error.js';
 import {broadcastEphemeral} from './event-store.js';
@@ -11,7 +12,8 @@ const DELAYS=[10_000,20_000,40_000] as const;
 export type RetryStatus='waiting'|'submitting'|'running'|'succeeded'|'exhausted'|'cancelled'|'unknown';
 export interface ConversationRetry {
   session_id:string;native_id:string;root_turn_id:string;failed_turn_ids:string[];
-  user_id:string;attempt:number;max_attempts:3;status:RetryStatus;
+  user_id:string;attempt:number;max_attempts:1|3;status:RetryStatus;
+  action?:'quota_handoff';
   next_retry_at:string|null;retry_turn_id:string|null;client_id:string|null;
   stop_reason?:string;
 }
@@ -24,6 +26,10 @@ export interface RetryDependencies {
   retryable?:(nativeId:string,error:unknown)=>boolean;
   start?:(nativeId:string,failedTurnId:string,clientId:string)=>Promise<string>;
   observe?:AgentRetryObserver;
+  quotaHandoff?: {
+    matches:(sessionId:string,error:unknown)=>boolean;
+    run:(job:ConversationRetry,current:()=>boolean)=>Promise<void>;
+  };
 }
 
 /** Deliberately narrow: permanent errors and uncertain transport outcomes never
@@ -42,6 +48,7 @@ export class RetrySuperseded extends Error {constructor(readonly reason:string){
  * Active jobs retain their observer when a browser disconnects. */
 export class ConversationRetryManager {
   private jobs=new Map<string,ConversationRetry>();
+  private quotaJobs=new Map<string,ConversationRetry>();
   private timers=new Map<string,ReturnType<typeof setTimeout>>();
   private observers=new Map<string,ReturnType<AgentRetryObserver>>();
   private listeners=new Map<string,Set<(frame:ConversationRetryFrame)=>void>>();
@@ -63,6 +70,10 @@ export class ConversationRetryManager {
     for(const row of db.prepare('SELECT data FROM conversation_retries ORDER BY updated_at').all() as {data:string}[]) {
       try {const job=JSON.parse(row.data) as ConversationRetry;
         if(!['waiting','submitting','running'].includes(job.status))continue;
+        if(job.action==='quota_handoff'){
+          // A prior process may have changed the binding or sent the continuation.
+          this.save({...job,status:'unknown',next_retry_at:null});continue;
+        }
         this.jobs.set(job.session_id,job);this.watch(job);
         if(job.status==='waiting')this.arm(job);else void this.reconcile(job);
       }catch{/* A corrupt entry must never authorize another execution. */}
@@ -73,7 +84,7 @@ export class ConversationRetryManager {
   monitor(sessionId:string,userId:string,nativeId:string) {
     if(this.stopped||!this.deps.allowed(sessionId,userId,nativeId))return;
     const existing=this.monitors.get(sessionId);if(existing?.nativeId===nativeId)return;
-    if(existing){clearTimeout(existing.timer);existing.stop();this.monitors.delete(sessionId);}
+    if(existing)this.unmonitor(sessionId);
     const stop=this.observe(nativeId,frame=>{
       const entry=this.monitors.get(sessionId);if(!entry||entry.nativeId!==nativeId)return;
       if(!this.deps.allowed(sessionId,userId,nativeId)||frame.type==='unavailable'&&!frame.retrying){
@@ -86,6 +97,13 @@ export class ConversationRetryManager {
     },(turnId,error,willRetry)=>this.failure(sessionId,userId,nativeId,turnId,error,willRetry));
     this.monitors.set(sessionId,{nativeId,stop});
   }
+  unmonitor(sessionId:string) {
+    const entry=this.monitors.get(sessionId);
+    if(!entry)return;
+    this.monitors.delete(sessionId);
+    clearTimeout(entry.timer);
+    entry.stop();
+  }
   subscribe(sessionId:string,nativeId:string,emit:(frame:ConversationRetryFrame)=>void) {
     let set=this.listeners.get(sessionId);if(!set)this.listeners.set(sessionId,set=new Set());set.add(emit);
     for(const row of this.db.prepare('SELECT data FROM conversation_retries WHERE session_id=? AND native_id=? ORDER BY updated_at DESC LIMIT 20').all(sessionId,nativeId) as {data:string}[]){try{emit({type:'retry',retry:JSON.parse(row.data)});}catch{}}
@@ -93,7 +111,13 @@ export class ConversationRetryManager {
   }
   failure(sessionId:string,userId:string,nativeId:string,turnId:string,error:unknown,willRetry:boolean) {
     if(this.stopped||willRetry||!this.deps.allowed(sessionId,userId,nativeId))return;
-    try{if(!this.retryable(nativeId,error))return;}catch{return;}
+    try{
+      if(this.deps.quotaHandoff?.matches(sessionId,error)){
+        this.handoffQuotaFailure(sessionId,userId,nativeId,turnId);
+        return;
+      }
+      if(!this.retryable(nativeId,error))return;
+    }catch{return;}
     const active=this.jobs.get(sessionId);
     if(active) {
       if(active.native_id===nativeId&&active.status==='running'&&active.retry_turn_id===turnId)this.failed(active,turnId);
@@ -106,11 +130,38 @@ export class ConversationRetryManager {
     const job:ConversationRetry={session_id:sessionId,native_id:nativeId,root_turn_id:turnId,failed_turn_ids:[turnId],user_id:userId,attempt:0,max_attempts:3,status:'waiting',next_retry_at:new Date(Date.now()+DELAYS[0]).toISOString(),retry_turn_id:null,client_id:null};
     this.jobs.set(sessionId,job);this.save(job);this.watch(job);this.arm(job);
   }
+  private handoffQuotaFailure(sessionId:string,userId:string,nativeId:string,turnId:string) {
+    const key=JSON.stringify([sessionId,nativeId]);
+    if(this.quotaJobs.has(key))return;
+    const previous=this.db.prepare('SELECT data FROM conversation_retries WHERE session_id=? AND native_id=? AND root_turn_id=?')
+      .get(sessionId,nativeId,turnId) as {data:string}|undefined;
+    if(previous && (JSON.parse(previous.data) as ConversationRetry).action==='quota_handoff')return;
+    const active=this.jobs.get(sessionId);
+    if(active?.native_id===nativeId)this.finish(active,'cancelled','quota_exhausted');
+    const job:ConversationRetry={session_id:sessionId,native_id:nativeId,root_turn_id:turnId,
+      failed_turn_ids:[turnId],user_id:userId,action:'quota_handoff',attempt:1,max_attempts:1,status:'submitting',
+      next_retry_at:null,retry_turn_id:null,client_id:`quota-handoff-${randomUUID()}`};
+    this.save(job);
+    this.quotaJobs.set(key,job);
+    const current=()=>!this.stopped&&this.quotaJobs.get(key)===job;
+    void this.deps.quotaHandoff!.run(job,current).then(
+      ()=>{if(current())this.save({...job,status:'succeeded'});},
+      (error:unknown)=>{
+        if(!current())return;
+        const reason=error instanceof RetrySuperseded?error.reason:
+          error instanceof AgentSubmissionError&&error.submission==='rejected'?'quota_handoff_rejected':undefined;
+        this.save({...job,status:reason?'cancelled':'unknown',stop_reason:reason});
+      },
+    ).finally(()=>{if(current())this.quotaJobs.delete(key);});
+  }
   cancel(sessionId:string,nativeId:string,reason='user_cancelled') {
     const job=this.jobs.get(sessionId);if(job?.native_id===nativeId)this.finish(job,'cancelled',reason);
+    const key=JSON.stringify([sessionId,nativeId]);
+    const handoff=this.quotaJobs.get(key);
+    if(handoff){this.quotaJobs.delete(key);this.save({...handoff,status:'cancelled',stop_reason:reason});}
   }
   close() {
-    this.stopped=true;for(const entry of this.monitors.values()){clearTimeout(entry.timer);entry.stop();}this.monitors.clear();
+    this.stopped=true;this.quotaJobs.clear();for(const entry of this.monitors.values()){clearTimeout(entry.timer);entry.stop();}this.monitors.clear();
     for(const timer of this.timers.values())clearTimeout(timer);this.timers.clear();
     for(const stop of this.observers.values())stop();this.observers.clear();this.listeners.clear();
   }

@@ -166,6 +166,10 @@ export function connectStream() {
         void queryClientRef?.invalidateQueries({ queryKey: ['conversation-controls', event.session_id], exact: true });
         return;
       }
+      if(event.type==='session.environment'&&event.session_id){
+        void queryClientRef?.invalidateQueries({queryKey:['conversation-controls',event.session_id],exact:true});
+        void queryClientRef?.invalidateQueries({queryKey:['session-environments',event.session_id],exact:true});
+      }
       if(event.type==='session.retry')return;
       if(event.type==='session.runtime'&&event.session_id){
         const {runtime}=JSON.parse(event.data||'{}');if(!runtime?.session_id||!runtime.observed_at)return;

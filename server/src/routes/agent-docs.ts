@@ -358,7 +358,8 @@ async function submitHandoff(app: Parameters<typeof platformApi>[0], input: Hand
       guardAction = 'brief';
       response = await submit(prepared.text, prepared.native);
     }
-    return { status: response.status === 'queued' ? 'queued' : 'submitted', ...(guardAction && {guard_action: guardAction}) };
+    return { status: response.status === 'queued' ? 'queued' : 'submitted',
+      ...((guardAction || response.guard_action==='brief') && {guard_action: 'brief' as const}) };
   } catch (error) {
     if (error instanceof PlatformApiError && error.statusCode < 500 && error.submission !== 'unknown')
       return { status: 'rejected', reason: error.message };

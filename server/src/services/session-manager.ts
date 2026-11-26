@@ -2982,7 +2982,7 @@ export function compactSessionConversation(sessionId:string,expectedNativeId?:st
   },()=>({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'}));
 }
 
-export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference,replacement?:{environmentId:string;prepare:(context:import('./agents/types.js').AgentContext)=>Promise<string>},expectedNativeId?:string,targetEnvironmentId?:string,options?:{preserveHistory?:boolean}):Promise<SessionReloadResult&{history_id?:string;previous_conversation_deletion?:'pending'|'failed'}> {
+export function newSessionConversation(sessionId:string,preference?:import('./agents/types.js').ModelPreference,replacement?:{environmentId:string;prepare:(context:import('./agents/types.js').AgentContext)=>Promise<string>},expectedNativeId?:string,targetEnvironmentId?:string,options?:{preserveHistory?:boolean;verifySource?:()=>Promise<void>}):Promise<SessionReloadResult&{history_id?:string;previous_conversation_deletion?:'pending'|'failed'}> {
   if(sessionLifecyclePromises.has(sessionId))return Promise.resolve({ok:false,error:'此标签页正在处理其他会话操作，请稍后重试'});
   return runSessionLifecycle(sessionId,async()=>{
     const session=getSession(sessionId);
@@ -3045,6 +3045,8 @@ export function newSessionConversation(sessionId:string,preference?:import('./ag
           throw Error('准备期间原会话开始运行，未发送简要历史');
         checkSource();
       }
+      await options?.verifySource?.();
+      checkSource();
       if(cancelledSessionLifecycles.has(sessionId))throw Error('新开已取消');
       history=snapshotConversation(sessionId);
       // This row is the rollback source until the replacement is ready.

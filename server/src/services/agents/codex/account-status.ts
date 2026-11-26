@@ -5,9 +5,12 @@ import {runInCodexEngine} from './engine-context.js';
 import {withCodexConnection} from './stream.js';
 import {codexWeeklyQuotaFromResponse} from './quota.js';
 import {canControlEnvironment,canUseEnvironment} from '../environment-access.js';
+import {codexQuotaExhausted} from './quota-error.js';
 import type {AgentContext} from '../types.js';
 
 const pending=new Map<string,Promise<void>>();
+const exhaustedAccounts=new Map<string,number>();
+const SAMPLE_MAX_AGE=600000;
 const identity=(e:CodexEnvironment)=>JSON.stringify(e.kind==='account'?[e.connection?.username,e.connection?.codexHome]:['native',localHome(e)]);
 export function initAccountStatus(){getDb().exec(`CREATE TABLE IF NOT EXISTS codex_account_status(account TEXT PRIMARY KEY,identity TEXT NOT NULL,data TEXT,checked_at TEXT,error TEXT); CREATE TABLE IF NOT EXISTS codex_quota_samples(account TEXT NOT NULL,identity TEXT NOT NULL,email TEXT NOT NULL,checked_at TEXT NOT NULL,reset_at REAL NOT NULL,used REAL NOT NULL,PRIMARY KEY(account,checked_at)); CREATE INDEX IF NOT EXISTS codex_quota_samples_account ON codex_quota_samples(account,identity,checked_at);`);}
 /** Only the scheduler contacts account APIs. Both HTTP views read this snapshot. */
@@ -44,12 +47,30 @@ export async function collectAccountStatus(id:string,collectionStartedAt=new Dat
 export function cachedAccountStatus(id:string,environment=getCodexEnvironment(id)){
  const row=getDb().prepare('SELECT data,checked_at,error FROM codex_account_status WHERE account=? AND identity=?').get(id,identity(environment)) as {data:string|null;checked_at:string|null;error:string|null}|undefined;
  const data=row?.data?JSON.parse(row.data):{account:{email:null,plan:null},windows:[],resets:null,quota:null};
- const stale=!!row?.error||!!row?.checked_at&&Date.now()-Date.parse(row.checked_at)>600000;
+ const stale=!!row?.error||!!row?.checked_at&&Date.now()-Date.parse(row.checked_at)>SAMPLE_MAX_AGE;
  return {...data,quota:data.quota?{...data.quota,...stale?{stale:true}:{}}:null,checked_at:row?.checked_at??null,error:row?.error??null,stale,pending:!row?.data};
+}
+function quotaIdentity(environment: CodexEnvironment, status: ReturnType<typeof cachedAccountStatus>): string {
+ const email=typeof status.account?.email==='string'?status.account.email.trim().toLowerCase():null;
+ return email || JSON.stringify([environment.id,identity(environment)]);
+}
+export function codexSubscriptionExhausted(context: AgentContext, error: unknown) {
+ if(!codexQuotaExhausted(error))return false;
+ const environment=getCodexEnvironment(sessionEnvironmentId(context.session));
+ const status=cachedAccountStatus(environment.id,environment);
+ return environment.enabled&&environment.kind!=='provider'&&status.reason!=='not_applicable';
+}
+export function observeCodexExhaustion(context: AgentContext) {
+ const environment=getCodexEnvironment(sessionEnvironmentId(context.session)),now=Date.now();
+ for(const [key,time] of exhaustedAccounts)if(now-time>SAMPLE_MAX_AGE)exhaustedAccounts.delete(key);
+ exhaustedAccounts.set(quotaIdentity(environment,cachedAccountStatus(environment.id,environment)),now);
 }
 function quotaCapacity(environment: CodexEnvironment, now: number) {
  if(!environment.enabled||environment.kind==='provider')return null;
  const status=cachedAccountStatus(environment.id,environment);
+ const email=typeof status.account?.email==='string'?status.account.email.trim().toLowerCase():null;
+ const exhaustedAt=exhaustedAccounts.get(quotaIdentity(environment,status));
+ if(exhaustedAt!==undefined&&now-exhaustedAt<=SAMPLE_MAX_AGE)return {remaining:0,email};
  if(status.stale||!status.checked_at||!status.windows.length)return null;
  const windows=status.windows as Array<{usedPercent:number;resetsAt:number|null}>;
  const current=windows.filter(window=>window.resetsAt===null?window.usedPercent<100:window.resetsAt*1000>now);
@@ -57,7 +78,7 @@ function quotaCapacity(environment: CodexEnvironment, now: number) {
  // An exhausted window proves exhaustion. Positive capacity requires every
  // reported window to have a current sample.
  if(remaining!==0&&current.length!==windows.length)return null;
- return {remaining,email:typeof status.account?.email==='string'?status.account.email.trim().toLowerCase():null};
+ return {remaining,email};
 }
 
 export function codexAccountRemaining(context: AgentContext): number | null {

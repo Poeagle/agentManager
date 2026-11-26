@@ -198,6 +198,11 @@ export async function dispatchQuotedReply(app:FastifyInstance,conversation:Conve
       autoBrief=true;
     }
     acceptedOrUnknown=true;
+    if(sent.guard_action==='brief'&&typeof sent.native_id==='string'&&sent.native_id!==route.native_id){
+      const current=getSession(session.id);
+      if(current&&nativeConversationId(current)===sent.native_id)session=current;
+      trackCursor=0;autoBrief=true;
+    }
     if(!['submitted','queued'].includes(sent.status))throw Error('Unknown input receipt');
     quietSuccess=true;
     const label=sessionPresenter(conversation.user_id)(session);

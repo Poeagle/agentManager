@@ -4,7 +4,7 @@ import {validateBatch,rememberBatch} from '../services/conversation-batches.js';
 import {conversationQuestionReply} from '../services/conversation-question-reply.js';
 import {closeAccountTransports} from '../services/agents/codex/account-transport.js';
 import {canControlEnvironment,assertEnvironmentUse,watchSessionEnvironment} from '../services/agents/environment-access.js';
-import {AgentSubmissionError} from '../services/agents/submission.js';
+import {AgentQuotaExhaustedError,AgentSubmissionError} from '../services/agents/submission.js';
 import {sendAgentQuota} from '../services/agents/quota-response.js';
 import {withTerminalInput} from '../services/agents/terminal-input.js';
 import {observeAgentConversation} from '../services/agents/host.js';
@@ -31,13 +31,14 @@ import {loadRecentAgentMessages,loadRecentPromptContext,nativeConversationFile,t
 import {sessionPresenter} from '../services/session-labels.js';
 import {randomUUID} from 'crypto';
 import {readConversation} from '../services/conversation-reader.js';
-import {broadcastEphemeral} from '../services/event-store.js';
+import {broadcastEphemeral,subscribe} from '../services/event-store.js';
 import {config} from '../config.js';
 
 import {personalQuestionRuntime} from '../services/question-attention.js';
 import {decorateConversationAttachments,rememberConversationAttachments,formatConversationInput,nativeConversationInput,validateConversationAttachments,validateConversationAnswerAttachments} from '../services/conversation-attachments.js';
 import {observeConversationFile} from '../services/conversation-file-stream.js';
-import {ConversationRetryManager} from '../services/conversation-retry.js';
+import {ConversationRetryManager,RetrySuperseded} from '../services/conversation-retry.js';
+import {matchesQuotaHandoff,resumeQuotaFailedTurn,switchExhaustedConversation} from '../services/conversation-quota-handoff.js';
 import {ConversationProjection} from '../services/conversation-projection.js';
 import {rememberFirstSessionTask} from '../services/conversation-session-task.js';
 import {notificationInputBoundary,settleNotificationsForInput} from '../services/notifications.js';
@@ -115,7 +116,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.46.0',
+    version:'3.47.0',
     updatedAt:'2026-11-26',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -387,19 +388,19 @@ export function getAgentApiContract() {
         category: 'Session control',
         method: 'POST',
         path: '/api/sessions/:id/input',
-        description: 'Submit a follow-up immediately, including while busy or another execute request is waiting. Uses bracketed paste plus Enter, like typing in the dashboard. Does not cancel the current operation, reset output, or wait for an agent reply. Session ownership and project write access are required. Direct input to child Agent tabs is rejected with 403; use an authorized Agent Docs handoff.',
+        description: 'Submit a follow-up immediately, including while busy or another execute request is waiting. Uses bracketed paste plus Enter, like typing in the dashboard. Does not cancel the current operation, reset output, or wait for an agent reply. Session ownership and project write access are required. Direct input to child Agent tabs is rejected with 403; use an authorized Agent Docs handoff. On a confirmed Codex subscription exhaustion, conversation input may be briefly compacted and delivered on an authorized alternate account in the same tab. Successful switches return guard_action=brief and the resulting native_id.',
         request: {
           input: {type:'string',required:true,description:'Text, at most 64 KiB; may be empty when attachments are present.'},
           after_current_turn: {type:'boolean',required:false,description:'Use true with conversation source to dispatch through the native queue without falling back to terminal text. A busy target without queue capacity rejects the input.'},
           source: {type:'string',required:false,description:'Use conversation to submit directly to the bound native engine when available. Codex may reconnect once before dispatch. A lost receipt after dispatch remains unknown without automatic replay.'},
           client_id: {type:'string',required:false,description:'Client correlation ID for matching the native user-message echo. IDs already reserved by platform submissions are rejected with 409.'},
           expected_environment_id:{type:'string',required:false,description:'Expected Agent environment ID; defaults on existing sessions are native. A changed environment is rejected with 409 submission=rejected.'},
-          expected_native_id:{type:'string',required:false,description:'Opaque native conversation ID expected by a notification reply. A changed or missing binding is rejected before input submission with 409 submission=rejected.'},
-          guard_token:{type:'string',required:false,description:'Short-lived input-check confirmation token, bound to user, native session, exact input/attachments/batch and current policy. Valid tokens acknowledge reminders only. An automatic rule or a missing/mismatched confirmation returns 409 with submission=rejected and send_guard before dispatch.'},
+          expected_native_id:{type:'string',required:false,description:'Opaque native conversation ID expected by the caller, including after input-check. A changed or missing binding is rejected before input submission with 409 submission=rejected.'},
+          guard_token:{type:'string',required:false,description:'Short-lived input-check confirmation token, bound to user, native session, exact input/attachments/batch and current policy. Valid tokens acknowledge reminders only. An unresolved automatic rule or a missing/mismatched reminder confirmation returns 409 with submission=rejected and send_guard before dispatch.'},
           batch: {type:'array',required:false,description:'Optional 1–100 {length,attachments} segments of the input (UTF-16 lengths, attachment counts), separated by two newlines. Requires source=conversation and client_id. Persisted as message.batch parts for history and streaming cards.'},
           attachments: {type:'array',required:false,description:'Up to 8 {kind: image|file, name, path} references returned by this session’s paste-image/paste-file endpoints. New uploads are stored outside project/Git directories; paths are opaque and project-authorized. Existing project-local attachments remain readable. Images total at most 10 MiB, each file and all attachments at most 500 MiB. Session file uploads above 100 MiB use application/octet-stream with the filename query parameter.'},
         },
-        response: {id:'Session id',status:'submitted — handed to the terminal; not proof of agent acceptance or task completion'},
+        response: {id:'Session id',status:'submitted or queued; use the native user-message receipt for confirmation',guard_action:'brief when automatic quota rollover occurred',native_id:'New native conversation ID when automatic quota rollover occurred'},
       },
       {
         category:'Session control',method:'POST',path:'/api/sessions/:id/conversation/stop',
@@ -438,7 +439,7 @@ export function getAgentApiContract() {
         path: '/api/context',
         description: 'Return a concise, low-token summary of the logged-in user\'s active sessions.',
       },
-      {category:'Session control',method:'POST',path:'/api/sessions/:id/input-check',description:'Read-only sending-risk preflight for an accessible session. Accepts input, attachments and batch. Rules apply to all Providers or the selected Provider identities for the session. With send protection enabled, confirmed account exhaustion requires an account switch before delivery. A matching fresh-conversation rule selects the action, otherwise the platform carries brief history when available. Other automatic rules take precedence over reminders. Recheck the target conversation after the operation before submitting input.',
+      {category:'Session control',method:'POST',path:'/api/sessions/:id/input-check',description:'Read-only sending-risk preflight for an accessible session. Accepts input, attachments and batch. Rules apply to all Providers or the selected Provider identities for the session. With send protection enabled, confirmed account exhaustion requires an account switch before delivery. Submit the original payload with the checked expected_native_id to the input endpoint so the server can prepare brief history and switch accounts. Other automatic rules take precedence over reminders.',
         response:{needs_confirmation:'Whether a reminder or an automatic rule matched',required_action:'new | brief | compact | null. A non-null action requires resolving the matched rule before input can be sent.',token:'Short-lived confirmation token, or null when an automatic rule matches',switch_account:'True when send protection is enabled and the current account has confirmed zero remaining quota. This does not require a configured rule.',target_account:'Authorized alternative {id, label} with current available quota, or null',account_remaining_percent:'Remaining capacity in the most constrained current subscription window, or null',cache_miss_estimate:'Reminder-only scenario for the next request. {tokens, cost: {amount, unit} | null} compares charging the previous cached input at the ordinary input rate with retaining its cache hits, using recorded rates. Null if no positive cache count can be estimated.',can_compact:'Whether native compaction is currently available',can_new:'Whether a fresh conversation can currently be created',context_percent:'Latest observed context occupancy or null',idle_minutes:'Minutes since the last completed turn or null'}},
       {category:'Session control',method:'POST',path:'/api/sessions/:id/compact',description:'Request native compaction in the same conversation. Requires an administrator who owns the session and has agent write permission. Await native completion before sending new input.',
         request:{expected_native_id:{type:'string',required:false,description:'Native conversation identity from input-check. If it changed, the compaction request is rejected.'}}},
@@ -576,7 +577,7 @@ export function getAgentApiContract() {
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs',description:'Create and launch one tab in the source project using the same Agent, Provider and account as the source tab. Body: request_id, name, optional execution, initial_message, batch_id (requires initial_message) and retain_child_tab_ids. A child_cleanup_required 409 includes cleanup_candidates and means the operation has not started. A different agent_id or environment_id is rejected before launch. The platform checks model settings before sending the first task.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs/:id/delete',description:'Close another authorized tab belonging to the same user and project. Body: request_id and optional delete_history (default false). Explicit history removal runs in the background and can be tracked via GET /api/agent-docs/operations/:id. No cascade to child tabs.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs/:id/stop',description:'Stop a confirmed native turn in a direct child tab using request_id, native_id and turn_id. Use the identities from an internal blocker. Accepted means interruption requested; verify the current turn is finished before reassigning.'},
-      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text to target_tab_ids or to the original sender using reply_to. Body: request_id, text, optional intent and batch_id (only with direct task dispatch), retain_child_tab_ids for reviewed children to keep, and after_current_turn=true to queue a direct delivery through the native follow-up API. Direct task dispatch can return child_cleanup_required before submission. If a send protection rule matches, the platform attempts brief compaction in the target tab, preserves the old history and account, and retries once with the same message ID. Successful direct deliveries report guard_action=brief. Replies to a batched task are stored immediately. A blocker reply additionally attempts immediate input and reports wake_status. An ordinary reply outside a batch is delivered immediately.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text to target_tab_ids or to the original sender using reply_to. Body: request_id, text, optional intent and batch_id (only with direct task dispatch), retain_child_tab_ids for reviewed children to keep, and after_current_turn=true to queue a direct delivery through the native follow-up API. Direct task dispatch can return child_cleanup_required before submission. If a send protection rule matches, the platform attempts brief compaction in the target tab, preserves the old history, and retries with the same message ID. Confirmed Codex subscription exhaustion can switch to an authorized account with available quota. Successful direct deliveries report guard_action=brief. Replies to a batched task are stored immediately. A blocker reply additionally attempts immediate input and reports wake_status. An ordinary reply outside a batch is delivered immediately.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/operations/:id',description:'Read settled or partial receipts for a request_id owned by the source tab.'},
       {
         category: 'Agents', method: 'GET', path: '/api/codex/environments',
@@ -657,12 +658,31 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const providers=new Set(rows.map(row=>agentForSession(row).descriptor.id));if(providers.size!==1||!rows.length)throw Error('重试目标不明确');
     const session=rows[0];return {adapter:agentForSession(session),context:sessionAgentContext(session)};
   };
-  const retries=new ConversationRetryManager(getDb(),{inspect:native=>retryAgent(native).adapter.retry.inspect(native),start:(native,failed,client)=>retryAgent(native).adapter.retry.start(native,failed,client),observe:(native,emit,onFailure)=>{const {adapter,context}=retryAgent(native);return adapter.stream.observe({...context,streamFormat:'state'},emit,onFailure);},allowed:(id,userId,nativeId)=>{
+  const retries=new ConversationRetryManager(getDb(),{quotaHandoff:{
+    matches:(id,error)=>{const session=getSession(id);return !!session&&matchesQuotaHandoff(session,error);},
+    run:resumeQuotaFailedTurn,
+  },inspect:native=>retryAgent(native).adapter.retry.inspect(native),start:(native,failed,client)=>retryAgent(native).adapter.retry.start(native,failed,client),observe:(native,emit,onFailure)=>{const {adapter,context}=retryAgent(native);return adapter.stream.observe({...context,streamFormat:'state'},emit,onFailure);},allowed:(id,userId,nativeId)=>{
     const session=getSession(id);
     return !!session&&agentForSession(session).descriptor.capabilities.retry&&nativeConversationId(session)===nativeId&&session.status==='running'&&canAccessAgentSession(userId,id)&&userHasPermission(userId,'agent_api','write');
   }});
-  app.addHook('onClose',async()=>retries.close());
-  app.addHook('onListen',async()=>{for(const session of getDb().prepare("SELECT * FROM sessions WHERE status='running' AND created_by_user_id IS NOT NULL").all() as import('../services/session-manager.js').Session[])if(agentForSession(session).descriptor.capabilities.retry&&nativeConversationId(session))retries.monitor(session.id,session.created_by_user_id!,nativeConversationId(session)!);});
+  const monitorSession=(session: ReturnType<typeof getSession>)=>{
+    if(!session?.created_by_user_id||!agentForSession(session).descriptor.capabilities.retry)return;
+    const native=nativeConversationId(session);
+    if(native)retries.monitor(session.id,session.created_by_user_id,native);
+  };
+  const stopMonitoringChanges=subscribe(event=>{
+    if(!event.session_id)return;
+    if(event.type==='session_end'){
+      if(getSession(event.session_id)?.status!=='running')retries.unmonitor(event.session_id);
+    }else if(['session.identity','session_start','session_resume','session_reconnect','conversation_new'].includes(event.type)){
+      monitorSession(getSession(event.session_id));
+    }
+  });
+  app.addHook('onClose',async()=>{stopMonitoringChanges();retries.close();});
+  app.addHook('onListen',async()=>{
+    for(const session of getDb().prepare("SELECT * FROM sessions WHERE status='running' AND created_by_user_id IS NOT NULL").all() as NonNullable<ReturnType<typeof getSession>>[])
+      monitorSession(session);
+  });
   app.addHook('onListen',async()=>{
     void import('../services/agents/codex/environments.js').then(({restoreActiveTerminalTransports})=>restoreActiveTerminalTransports()).catch(()=>{});
     if(!config.manageCodexEngines)return;
@@ -992,7 +1012,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const guardToken=req.body?.guard_token;
     if(target&&guarded){
       const check=await checkSendGuardSubmission(target,req.user!.id,guardPayload,guardToken);
-      if(check)return reply.code(409).send({error:check.required_action?'当前会话命中发送保护自动规则，处理后才能发送':'请确认当前会话上下文用量后再发送',submission:'rejected',send_guard:check});
+      if(check&&!(check.switch_account&&check.can_new&&check.target_account))
+        return reply.code(409).send({error:check.required_action?'当前会话命中发送保护自动规则，处理后才能发送':'请确认当前会话上下文用量后再发送',submission:'rejected',send_guard:check});
     }
     if(req.body?.source==='conversation'&&attachments.length&&target&&!agentForSession(target).descriptor.capabilities.attachments)return reply.code(409).send({error:'此 Agent 不支持附件',submission:'rejected'});
     // The server can restart after the browser's last ready snapshot. Reattach
@@ -1013,49 +1034,93 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     getTracker(id)?.recordInput();
     const prior = pendingInputs.get(id) || Promise.resolve();
     let recordInput: ReturnType<typeof beginSessionAction> | undefined;
+    let switchedAccount=false;
+    let switchedNativeId:string|null=null;
     const submission = prior.catch(() => {}).then(async () => {
-      const session=getSession(id);
+      let session=getSession(id);
       if(session?.parent_session_id&&!handoff)throw new AgentSubmissionError(CHILD_AGENT_INPUT_ERROR,'rejected');
       if(typeof expectedEnvironment==='string'&&(!session||(session.agent_environment_id||'native')!==expectedEnvironment))throw Object.assign(Error('标签页已更换账号，请引用最新通知'),{submission:'rejected'});
       if(typeof expectedNative==='string'&&(!session||nativeConversationId(session)!==expectedNative))throw Object.assign(Error('标签页已更换对话，请引用最新通知'),{submission:'rejected'});
+      let text=input,files=attachments,parts=batch;
+      const visitedAccounts=new Set<string>();
+      const switchAccount=async(definitiveError:boolean)=>{
+        if(!session)throw new AgentSubmissionError('目标会话已变化，消息尚未发送','rejected');
+        try{
+          visitedAccounts.add(session.agent_environment_id||'native');
+          const next=await switchExhaustedConversation(session,req.user!.id,
+            {input:text,attachments:files,batch:parts?.map(part=>({length:part.text.length,attachments:part.attachments.length}))},
+            {definitiveError,visited:visitedAccounts});
+          session=next.session;
+          switchedAccount=true;
+          const prefix=next.payload.input.slice(0,next.payload.input.length-text.length);
+          const headerLength=handoff&&text.startsWith('[Agent Manager handoff · ')?text.indexOf('\n')+1:0;
+          text=headerLength?text.slice(0,headerLength)+prefix+text.slice(headerLength):next.payload.input;
+          files=next.payload.attachments??files;
+          parts=validateBatch(next.payload.batch,text,files);
+        }catch(error){
+          if(error instanceof AgentSubmissionError)throw error;
+          const reason=error instanceof RetrySuperseded&&error.reason==='quota_no_account'
+            ?'当前账号额度已用尽，没有可确认有额度的其他账号'
+            :error instanceof Error&&!(error instanceof RetrySuperseded)?error.message:'会话已变化，无法自动换号';
+          throw new AgentSubmissionError(reason+'，消息尚未发送','rejected');
+        }
+      };
       if(session&&guarded){
         const check=await checkSendGuardSubmission(session,req.user!.id,guardPayload,guardToken,true);
         const nativeId=nativeConversationId(session);
         const latest=getSession(id);
-        if(check||!latest||nativeConversationId(latest)!==nativeId||latest.agent_environment_id!==session.agent_environment_id
+        if(check&&!(check.switch_account&&check.can_new&&check.target_account)||
+          !latest||nativeConversationId(latest)!==nativeId||latest.agent_environment_id!==session.agent_environment_id
           ||target&&(nativeConversationId(target)!==nativeId||target.agent_environment_id!==session.agent_environment_id))
           throw Object.assign(Error(check?.required_action?'当前会话命中发送保护自动规则，处理后才能发送':'会话或规则已变化，请重新检查后发送'),{submission:'rejected',send_guard:check});
+        if(check?.switch_account)await switchAccount(false);
       }
-      if(batch)rememberBatch(id,clientId as string,batch);
       if(req.body?.source==='conversation'&&session&&nativeConversationId(session)) {
-        if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,true);
-        if(typeof clientId==='string'){
-          const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
-          const raw=nativeConversationInput(input,attachments)[0].text,visible=conversationQuestionReply(raw)?.text??raw;
-          await rememberConversationInput(id,{...session,cli_type:session.cli_type||'claude',codex_session_id:session.codex_session_id||null,claude_session_id:session.claude_session_id||null,project_path:project?.path||null},clientId,visible).catch(()=>{});
-        }
-        const adapter=agentForSession(session),context=sessionAgentContext(session);
-        const identity=typeof clientId==='string'?clientId:attachments.length?attachmentClientId:undefined;
-        const message_id=identity?adapter.input.messageId?.(identity):undefined;
-        recordInput=beginSessionAction(context,'input',{message_id,client_id:identity});
-        if(afterCurrentTurn&&!adapter.input.supportsFollowUp)
-          throw new AgentSubmissionError('目标 Agent 未提供排队接口','rejected');
-        if(handoff) {
-          if(!afterCurrentTurn&&!adapter.input.supportsImmediate)throw new AgentSubmissionError('目标 Agent 不支持即时协作消息','rejected');
-          rememberInputSource(id,handoff.clientId,{kind:'agent_handoff',label:handoff.label});
-          if(message_id)bindInputSourceMessage(id,handoff.clientId,message_id);
-        }
-        const native=await adapter.input.submit(context,input,identity,attachments,afterCurrentTurn?{afterCurrentTurn}:handoff?{immediate:true}:undefined);
-        if(native){
+        const submitNative=async(bound:NonNullable<typeof session>)=>{
+          const adapter=agentForSession(bound),context=sessionAgentContext(bound,{actorUserId:req.user!.id});
+          if(afterCurrentTurn&&!adapter.input.supportsFollowUp)
+            throw new AgentSubmissionError('目标 Agent 未提供排队接口','rejected');
+          if(handoff&&!afterCurrentTurn&&!adapter.input.supportsImmediate)
+            throw new AgentSubmissionError('目标 Agent 不支持即时协作消息','rejected');
+          if(parts)rememberBatch(id,clientId as string,parts);
+          if(files.length)rememberConversationAttachments(id,attachmentClientId,text,files,true);
+          if(typeof clientId==='string'){
+            const raw=nativeConversationInput(text,files)[0].text,visible=conversationQuestionReply(raw)?.text??raw;
+            await rememberConversationInput(id,{...bound,cli_type:bound.cli_type||'claude',codex_session_id:bound.codex_session_id||null,claude_session_id:bound.claude_session_id||null,project_path:context.projectPath||null},clientId,visible).catch(()=>{});
+          }
+          const identity=typeof clientId==='string'?clientId:files.length?attachmentClientId:undefined;
+          const message_id=identity?adapter.input.messageId?.(identity):undefined;
+          recordInput=beginSessionAction(context,'input',{message_id,client_id:identity});
+          if(handoff){
+            rememberInputSource(id,handoff.clientId,{kind:'agent_handoff',label:handoff.label});
+            if(message_id)bindInputSourceMessage(id,handoff.clientId,message_id);
+          }
+          const native=await adapter.input.submit(context,text,identity,files,afterCurrentTurn?{afterCurrentTurn}:handoff?{immediate:true}:undefined);
           if(native==='queued')beginSessionAction(context,'queue',{message_id,client_id:identity})('accepted');
+          return native;
+        };
+        let native;
+        for(;;){
+          try{native=await submitNative(session);break;}
+          catch(error){
+            if(!guarded||!(error instanceof AgentQuotaExhaustedError)||!matchesQuotaHandoff(session,error))throw error;
+            recordInput?.('failed');
+            recordInput=undefined;
+            await switchAccount(true);
+          }
+        }
+        if(native){
+          if(switchedAccount)switchedNativeId=nativeConversationId(session);
           rememberFirstSessionTask(id,conversationQuestionReply(input)?.text??input);
           return native==='queued'?'queued':'submitted';
         }
-        if(adapter.descriptor.sessionHost==='managed')throw Object.assign(Error('Agent 服务未接受输入，消息尚未提交'),{submission:'rejected'});
+        if(switchedAccount||agentForSession(session).descriptor.sessionHost==='managed')
+          throw new AgentSubmissionError('Agent 服务未接受输入，消息尚未提交','rejected');
       }
       if(afterCurrentTurn)throw new AgentSubmissionError('原生队列不可用，消息尚未提交','rejected');
       if(handoff)throw new AgentSubmissionError('目标会话的即时输入尚未就绪，消息未发送','rejected');
       if(nativeCandidate&&!await attachExistingSession(id))throw new AgentSubmissionError('消息尚未发送：终端连接未就绪，请重连后重试','rejected');
+      if(batch&&!nativeCandidate)rememberBatch(id,clientId as string,batch);
       if(attachments.length)rememberConversationAttachments(id,attachmentClientId,input,attachments,false);
       if(req.body?.source==='conversation'&&typeof clientId==='string'&&session){
         const project=session.project_id?getDb().prepare('SELECT path FROM projects WHERE id=?').get(session.project_id) as {path:string}|undefined:undefined;
@@ -1074,7 +1139,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       const status=await submission;
       recordInput?.(status==='queued'?'requested':'accepted');
       try{if(target&&notificationBoundary.length)settleNotificationsForInput(target,req.user!.id,notificationBoundary);}catch{req.log.warn({session_id:id},'Could not settle notifications after accepted input');}
-      return reply.code(202).send({id,status:status==='queued'?'queued':'submitted'});
+      return reply.code(202).send({id,status:status==='queued'?'queued':'submitted',...(switchedNativeId?{guard_action:'brief',native_id:switchedNativeId}:{})});
     } catch(error) {
       recordInput?.((error as {submission?:string})?.submission==='rejected'?'failed':'unknown');
       if(handoff&&(error as {submission?:string})?.submission==='rejected')
@@ -1270,7 +1335,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       if(socket.readyState===1 && socket.bufferedAmount<1024*1024) socket.send(JSON.stringify(frame.type==='patch'?{...frame,upserts:decorateConversationAttachments(id,linkConversationInputs(id,nativeId,frame.upserts))}:['snapshot','history','queue'].includes(frame.type)?{...frame,messages:decorateConversationAttachments(id,linkConversationInputs(id,nativeId,frame.messages))}:frame));
       else if(socket.readyState===1) socket.close(1013,'Slow conversation client');
     };
-    if(adapter.descriptor.capabilities.retry)retries.monitor(id,req.user!.id,nativeId);
+    monitorSession(session);
     const stopRetry=adapter.descriptor.capabilities.retry?retries.subscribe(id,nativeId,send):()=>{};
     const stopProgress=adapter.history.file?observeConversationFile({...session,cli_type:adapter.descriptor.id,project_path:context.projectPath},frame=>{
       if(frame.type==='progress_statistics'||frame.type==='statistics'||frame.type==='session_metadata')send(frame);
@@ -1286,7 +1351,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const stop=observeAgentConversation(session,frame=>{
       send(frame);
       if(frame.type==='unavailable'&&frame.reconnect&&socket.readyState===1)socket.close(1012,'Native connection lost');
-    },(turnId,error,willRetry)=>retries.failure(id,req.user!.id,nativeId,turnId,error,willRetry),req.query.protocol==='2'?'incremental':'snapshot');
+    },(turnId,error,willRetry)=>retries.failure(id,session.created_by_user_id||req.user!.id,nativeId,turnId,error,willRetry),req.query.protocol==='2'?'incremental':'snapshot');
     socket.on('message',async bytes=>{
       let frame:any;try{const raw=bytes.toString();if(Buffer.byteLength(raw)>64*1024){socket.close(1009,'Interaction response too large');return;}frame=JSON.parse(raw);}catch{return;}
       if(frame?.type!=='interaction_response'||typeof frame.request_id!=='string')return;

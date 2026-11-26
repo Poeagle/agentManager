@@ -11,7 +11,7 @@ let client:QueryClient;
 function render(child:React.ReactElement) {
  return renderView(child,{wrapper:({children})=><QueryClientProvider client={client}>{children}</QueryClientProvider>});
 }
-function Harness({state=null,active=true,sessionId='s'}:{state?:CompactionPresentation|null;active?:boolean;sessionId?:string}){const guard=useConversationSendGuard(sessionId,active,{state,start},newSession);return <><output aria-label="后台等待">{String(guard.background)}</output><button onClick={()=>void guard.confirm({input:'draft'}).then(result=>done(result?.token??null))}>发送</button>{guard.dialog}{guard.notice}</>;}
+function Harness({state=null,active=true,sessionId='s',observeResult=false}:{state?:CompactionPresentation|null;active?:boolean;sessionId?:string;observeResult?:boolean}){const guard=useConversationSendGuard(sessionId,active,{state,start},newSession);return <><output aria-label="后台等待">{String(guard.background)}</output><button onClick={()=>void guard.confirm({input:'draft'}).then(result=>done(observeResult?result:result?.token??null))}>发送</button>{guard.dialog}{guard.notice}</>;}
 beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}});vi.spyOn(api.agent,'checkSend').mockResolvedValue(check);start.mockResolvedValue(undefined);newSession.mockResolvedValue('fresh');});
 afterEach(async()=>{cleanup();client.clear();await act(async()=>{});vi.restoreAllMocks();done.mockReset();start.mockReset();newSession.mockReset();});
 it('only submits after compaction completion, using a newly checked token',async()=>{
@@ -222,15 +222,13 @@ it('keeps the draft when quota is exhausted and no backup account is available',
  expect(done).not.toHaveBeenCalled();
 });
 
-it('stops a quota switch if the new account quota becomes unknown before sending',async()=>{
- vi.mocked(api.agent.checkSend)
-  .mockResolvedValueOnce({...check,required_action:'new',switch_account:true,target_account:{id:'account:backup',label:'备用账号'},account_remaining_percent:0,token:null})
-  .mockResolvedValueOnce({...check,native_id:'fresh',required_action:null,account_remaining_percent:null,token:'after'});
- render(<Harness/>);
+it('hands the original draft to the server for the quota switch',async()=>{
+ vi.mocked(api.agent.checkSend).mockResolvedValueOnce({...check,required_action:'brief',switch_account:true,target_account:{id:'account:backup',label:'备用账号'},account_remaining_percent:0,token:null});
+ render(<Harness observeResult/>);
  fireEvent.click(screen.getByRole('button',{name:'发送'}));
- expect(await screen.findByRole('alert')).toHaveTextContent('无法确认新账号有剩余额度');
- expect(newSession).toHaveBeenCalledExactlyOnceWith('native',undefined,'account:backup');
- expect(done).not.toHaveBeenCalled();
+ await waitFor(()=>expect(done).toHaveBeenCalledWith(expect.objectContaining({token:undefined,nativeId:'native',serverAccountSwitch:true})));
+ expect(newSession).not.toHaveBeenCalled();
+ expect(api.agent.checkSend).toHaveBeenCalledTimes(1);
 });
 
 it.each([

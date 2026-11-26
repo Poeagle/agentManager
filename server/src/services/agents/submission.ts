@@ -3,6 +3,10 @@
 export class AgentSubmissionError extends Error {
   constructor(message:string,readonly submission:'rejected'|'unknown'){super(message);}
 }
+export class AgentQuotaExhaustedError extends AgentSubmissionError {
+  readonly code='usage_limit_exceeded';
+  constructor() {super('当前订阅账号额度已用尽，消息尚未发送','rejected');}
+}
 export class AgentQueueOccupiedError extends AgentSubmissionError {
   constructor() {
     super('目标标签页已有排队消息，跳过本次发送', 'rejected');

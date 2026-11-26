@@ -1861,7 +1861,7 @@ export function SessionConversation({
       return;
     }
     const guardVersion=draftVersion.current,guardEntries=JSON.stringify(composerRef.current.value.entries.map(e=>e.id));
-    let guardToken:string|undefined,sendNativeId=agentNativeId(session);
+    let guardToken:string|undefined,sendNativeId=agentNativeId(session),serverAccountSwitch=false;
     let sendPayload:SendGuardPayload={input,attachments:shiftInputOffsets(attached,prefix.length),...fromBatch?{batch:composerRef.current.value.entries.map(e=>({length:e.text.length,attachments:e.attachments.length}))}:{}};
     const inputIdentity=JSON.stringify(sendPayload);
     const savedBrief=(!fromQuestion||fromBatch)?composerRef.current.value.briefContext:undefined;
@@ -1871,7 +1871,7 @@ export function SessionConversation({
       try{sendPayload=prependBriefPayload(sendPayload,savedBrief.prefix);}catch(failure){setSendError(failure instanceof Error?failure.message:'简要历史不可用');return;}
     }
     if(!fromQuestion||fromBatch){
-      try{const confirmation=await sendGuard.confirm(sendPayload,brief?'brief':undefined);if(confirmation===null)return;guardToken=confirmation.token;sendNativeId=confirmation.nativeId??sendNativeId;sendPayload=confirmation.payload;}
+      try{const confirmation=await sendGuard.confirm(sendPayload,brief?'brief':undefined);if(confirmation===null)return;guardToken=confirmation.token;serverAccountSwitch=confirmation.serverAccountSwitch===true;sendNativeId=confirmation.nativeId??sendNativeId;sendPayload=confirmation.payload;}
       catch(failure){setSendError(failure instanceof Error?failure.message:'发送前检查失败，草稿已保留');return;}
     }
     if(!fromQuestion&&draftVersion.current!==guardVersion||fromBatch&&guardEntries!==JSON.stringify(composerRef.current.value.entries.map(e=>e.id))){setSendError('输入内容已变化，请重新发送以检查最新草稿。');return;}
@@ -1990,10 +1990,16 @@ export function SessionConversation({
     try {
       const response = accepted
         ? { status: accepted.queued ? "queued" : "submitted" }
-        : await (guardToken?api.agent.sendInput(session.id,sendText,clientId,sendAttachments,sendPayload.batch,guardToken):batchParts?api.agent.sendInput(session.id,sendText,clientId,sendAttachments,sendPayload.batch):sendAttachments.length
+        : await (serverAccountSwitch?api.agent.sendInput(session.id,sendText,clientId,sendAttachments,sendPayload.batch,undefined,sendNativeId??undefined):guardToken?api.agent.sendInput(session.id,sendText,clientId,sendAttachments,sendPayload.batch,guardToken):batchParts?api.agent.sendInput(session.id,sendText,clientId,sendAttachments,sendPayload.batch):sendAttachments.length
             ? api.agent.sendInput(session.id, sendText, clientId, sendAttachments)
             : api.agent.sendInput(session.id, sendText, clientId));
       acknowledged(response.status);
+      if ('native_id' in response && response.native_id && response.native_id!==sendNativeId) {
+        updateWaitingInputs(sendWaitingKey,previous=>previous.filter(item=>!matchesPending(item)));
+        setMessages(previous=>previous.filter(item=>!matchesPending(item)));
+        void queryClient.invalidateQueries({queryKey:['conversation-controls',session.id]});
+        void queryClient.invalidateQueries({queryKey:['session-environments',session.id]});
+      }
     } catch (failure) {
       // A successful native echo is stronger evidence than a late HTTP error.
       const echoed = timelineRef.current.find(

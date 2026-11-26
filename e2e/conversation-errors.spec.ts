@@ -50,5 +50,11 @@ test('native retries recover on live tool activity and terminal failures survive
   await page.getByRole('button',{name:'对话',exact:true}).click();await expect(chat.getByRole('alert')).toHaveCount(1);
   await page.screenshot({path:testInfo.outputPath('capacity-error.png')});
   await page.setViewportSize({width:390,height:844});await expect(alert).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  const quotaTurn='quota-turn';
+  push(JSON.stringify({type:'snapshot',messages:[{...failure,id:'quota-error',turn_id:quotaTurn,text:"You've hit your usage limit.",
+    error:{code:'usage_limit_exceeded',will_retry:false}}],busy:false,stage:'idle',turn_id:quotaTurn}));
+  push(JSON.stringify({type:'retry',retry:{session_id:session.id,native_id:native,root_turn_id:quotaTurn,failed_turn_ids:[quotaTurn],
+    attempt:1,max_attempts:1,action:'quota_handoff',status:'submitting',next_retry_at:null}}));
+  await expect(chat.getByText('正在简要压缩并切换账号…')).toBeVisible();
   await page.request.delete(`/api/sessions/${session.id}`);
 });

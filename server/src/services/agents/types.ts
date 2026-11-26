@@ -644,6 +644,10 @@ export interface AgentProgressStatistics {turn_id:string;revision?:number;tokens
 export interface AgentQuotaPort {
   /** Cached, current remaining capacity of the session's account across its applicable windows. */
   accountRemaining?(context: AgentContext): number | null;
+  /** Match a definitive provider-side subscription exhaustion. */
+  exhausted?(context: AgentContext, error: unknown): boolean;
+  /** Record authoritative exhaustion while the background sample catches up. */
+  observeExhaustion?(context: AgentContext): void;
   /** Authorized alternative with confirmed capacity for a fresh conversation. */
   alternateAccount?(context: AgentContext): {id:string;label:string} | null;
   shutdown?(): void | Promise<void>;
@@ -665,6 +669,7 @@ export interface AgentRetrySnapshot {
     id: string;
     status: "running" | "completed" | "failed" | "interrupted" | "unknown";
     retryable: boolean;
+    quota_exhausted?: boolean;
     has_final: boolean;
     user_client_ids: Array<string | null>;
   } | null;

@@ -23,7 +23,7 @@ import {ensureCodexTerminalBridge} from './terminal-bridge.js';
 import {codexCollaborationOptions,validateCodexCollaborationLaunch} from './collaboration.js';
 import {codexManagement} from './management.js';
 import {codexSessionFacts} from './session-facts.js';
-import {alternateCodexAccount,codexAccountRemaining} from './account-status.js';
+import {alternateCodexAccount,codexAccountRemaining,codexSubscriptionExhausted,observeCodexExhaustion} from './account-status.js';
 import {applyManagedCommandDefaults} from '../management-store.js';
 export const codexAdapter: AgentAdapter = {
     descriptor: { launchCommand: 'codex --dangerously-bypass-approvals-and-sandbox', terminal: { composer: true, repaintOnResize: true }, sessionHost: 'terminal', id: 'codex', label: 'Codex', presentation: { icon: 'codex', order: 20, color: '#60a5fa' }, capabilities: capabilities(['history', 'runtime', 'input', 'cancelQueuedInput', 'stream', 'controls', 'serviceTier', 'model', 'effort', 'compact', 'newConversation', 'reload', 'interrupt', 'stopTurn', 'questions', 'usage', 'statistics', 'retry', 'launch', 'resume', 'attachments', 'sharedResources', 'quota']) },
@@ -72,6 +72,8 @@ export const codexAdapter: AgentAdapter = {
     quota: {
         read: async (force) => (await import('./quota.js')).readCodexWeeklyQuota({ force }),
         accountRemaining: codexAccountRemaining,
+        exhausted: codexSubscriptionExhausted,
+        observeExhaustion: observeCodexExhaustion,
         alternateAccount: alternateCodexAccount,
     },
     retry: { retryable:retryableConversationError,inspect: async (id) => inCodexThread(id,async()=>(await import('./retry.js')).inspectCodexRetry(id)), start: async (id, failed, client) => inCodexThread(id,async()=>(await import('./retry.js')).startRetryTurn(id, failed, client)) },
@@ -115,7 +117,7 @@ export const codexAdapter: AgentAdapter = {
                 (): void;
                 respond(id: string, answer: unknown): unknown;
             }) | undefined;
-            void inCodexThread(requireNative(context),async()=>{const module=await import('./stream.js');if(!stopped)stop=module.observeCodexConversation(requireNative(context),emit,onFailure,{incremental:true});}).catch(()=>{if(!stopped)emit({type:'unavailable',reason:'对应模型服务的实时引擎暂不可用',retrying:true});});
+            void inCodexThread(requireNative(context),async()=>{const module=await import('./stream.js');if(!stopped)stop=module.observeCodexConversation(requireNative(context),emit,onFailure,{incremental:true});}).catch(()=>{if(!stopped)emit({type:'unavailable',reason:'对应模型服务的实时引擎暂不可用',reconnect:true,retrying:false});});
             return Object.assign(() => { stopped = true; stop?.(); }, { respond: (id: string, answer: unknown) => { if (!stop)
                     throw Error('实时连接尚未就绪'); return stop.respond(id, answer); } });
         } },

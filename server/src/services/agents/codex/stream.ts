@@ -1,5 +1,5 @@
 import {rememberCodexTitle} from './thread-title.js';
-import {AgentQueueOccupiedError,AgentSubmissionError,submissionFailure} from '../submission.js';
+import {AgentQueueOccupiedError,AgentQuotaExhaustedError,AgentSubmissionError,submissionFailure} from '../submission.js';
 import {rememberCodexSettings} from './settings-state.js';
 import {currentCodexEngine,rememberCodexThread} from './engine-context.js';
 import {readCodexBaseline,markOversizedBaseline} from './baseline.js';
@@ -13,6 +13,7 @@ import {setTimeout as delay} from 'timers/promises';
 import {conversationImagePaths,nativeConversationInput,type ConversationAttachment} from '../../conversation-attachments.js';
 import {extractAgentMessages} from '../../prompt-context.js';
 import {conversationMessageId,type ConversationMessage} from '../../conversation-reader.js';
+import {codexQuotaExhausted} from './quota-error.js';
 import {conversationErrorMessage} from '../../conversation-error.js';
 import {activityResultPreview,conversationActivity,type ConversationActivity} from '../../conversation-activity.js';
 import {nativeUsageFrame} from '../../conversation-usage.js';
@@ -32,7 +33,15 @@ export function publicCodexRpcMessage(value:string):string {
   .replace(/https?:\/\/[^\s"']+/g,url=>{try{const u=new URL(url);u.username='';u.password='';u.search='';u.hash='';return u.toString();}catch{return '[URL]';}})
   .replace(/sk-[A-Za-z0-9_-]{12,}/g,'[redacted]').slice(0,1000)) || '原生 Codex 暂未接受此操作，请稍后重试';
 }
-export class CodexRpcError extends Error {readonly submission='rejected';constructor(readonly nativeMessage:string){super(publicCodexRpcMessage(nativeMessage));}}
+export class CodexRpcError extends Error {
+  readonly submission='rejected';
+  readonly quotaExhausted:boolean;
+  constructor(readonly nativeMessage:string, details?:unknown) {
+    super(publicCodexRpcMessage(nativeMessage));
+    const data=details && typeof details==='object'?details:{};
+    this.quotaExhausted=codexQuotaExhausted({...data,message:nativeMessage});
+  }
+}
 class CodexConnectionLost extends Error {}
 const interruptedSocketCodes = new Set(['ECONNREFUSED','ECONNRESET','EPIPE','ENOENT','ETIMEDOUT']);
 function socketFailure(cause: NodeJS.ErrnoException, message: string): Error {
@@ -78,7 +87,7 @@ export async function withCodexConnection<T>(action:(request:CodexRequest,server
   socket.on('message',bytes=>{
     let frame:any;try{frame=JSON.parse(bytes.toString());}catch{return;}
     const waiting=!frame.method?pending.get(frame.id):undefined;if(!waiting)return;pending.delete(frame.id);clearTimeout(waiting.timer);
-    if(frame.error) waiting.reject(new CodexRpcError(typeof frame.error.message==='string'?frame.error.message.slice(0,1000):''));else {if(frame.result?.thread)rememberCodexThread(frame.result.thread);waiting.resolve(frame.result);}
+    if(frame.error) waiting.reject(new CodexRpcError(typeof frame.error.message==='string'?frame.error.message.slice(0,1000):'',frame.error.data));else {if(frame.result?.thread)rememberCodexThread(frame.result.thread);waiting.resolve(frame.result);}
   });
   try {
     await opened;
@@ -209,6 +218,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
       catch(error){
         if(error instanceof CodexRpcError){
           ownCodexQueuedInput(threadId,identity,true);
+          if(error.quotaExhausted)throw new AgentQuotaExhaustedError();
           throw new AgentSubmissionError('原生队列拒绝了消息，本次未发送','rejected');
         }
         throw error;
@@ -242,6 +252,7 @@ export function submitStreamingCodexInput(threadId:string,text:string,clientId?:
     }catch(error){
       // Only an explicit rejection permits a second delivery path. Ordinary
       // running work is steered immediately, never put behind the whole turn.
+      if(error instanceof CodexRpcError&&error.quotaExhausted)throw new AgentQuotaExhaustedError();
       if(error instanceof CodexRpcError&&/cannot steer a compact turn|busy compacting|compact.*(?:active|running|progress)|already.*(?:turn|running|processing)|(?:turn|thread).*(?:active|running|busy)/i.test(error.nativeMessage)){
         dispatched=false;
         if(immediate)throw new AgentSubmissionError('目标会话当前无法插入消息，本次未发送','rejected');
@@ -322,7 +333,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       pending.set(id,{resolve,reject,timer});socket.send(JSON.stringify({id,method,params}));
     });
   }
-  function unavailable(reconnect=false) {if(!closed) emit({type:'unavailable',reconnect,reason:'当前会话尚未连接实时事件，已完成的回复仍会自动更新。'});}
+  function unavailable(reconnect=false,retrying=false) {if(!closed) emit({type:'unavailable',reconnect,...retrying?{retrying:true}:{},reason:'当前会话尚未连接实时事件，已完成的回复仍会自动更新。'});}
   function reportError(id:string,error:unknown,willRetry:boolean,timestamp:string|null,live=false) {
     const message=conversationErrorMessage(id,error,willRetry,timestamp);if(!message)return;
     if(live)onFailure?.(id,error,willRetry);
@@ -437,7 +448,7 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
       if(closed) return;
       // Embedded CLI engines cannot be observed through a different daemon.
       // Do not load a second engine from their rollout just to obtain events.
-      if(current.thread?.status?.type==='notLoaded') {unavailable();retry=setTimeout(()=>void attach(),2000);return;}
+      if(current.thread?.status?.type==='notLoaded') {unavailable(false,true);retry=setTimeout(()=>void attach(),2000);return;}
       const settings=await request('thread/resume',{threadId,excludeTurns:true});rememberCodexSettings(threadId,settings);
       if(closed) return;
       void readQueue();
@@ -471,7 +482,13 @@ export function observeCodexConversation(threadId:string,emit:(frame:Conversatio
           else if(['commandExecution','mcpToolCall','dynamicToolCall','fileChange','webSearch','contextCompaction'].includes(item.type))stage='tools';
         }
         if(!busy&&!newer)for(const item of turn.items||[])if(item.type==='contextCompaction'){acceptActivity(item,true,true);if(compaction&&turn.status==='interrupted')compaction={...compaction,status:'interrupted'};}
-        if(turn.error&&!newer)reportError(turn.id,turn.error,false,typeof turn.completedAt==='number'?new Date(turn.completedAt*1000).toISOString():null);
+        if(turn.error&&!newer){
+          const ended=typeof turn.completedAt==='number'?turn.completedAt*1000:null;
+          // Recover only a recent terminal quota failure if the live frame was missed.
+          const age=ended===null?Infinity:Date.now()-ended;
+          const recentQuota=turn.status==='failed'&&age>=0&&age<=5*60_000&&codexQuotaExhausted(turn.error);
+          reportError(turn.id,turn.error,false,ended===null?null:new Date(ended).toISOString(),recentQuota);
+        }
         // The baseline is an ordered prefix; fresh events may already have
         // inserted later items while the request was in flight.
         const ordered=new Map<string,StreamItem>();

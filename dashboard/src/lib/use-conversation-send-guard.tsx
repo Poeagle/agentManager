@@ -20,12 +20,12 @@ function cacheMissWarning(estimate: SendGuardCheck['cache_miss_estimate']) {
  return `原样发送时，若上次命中的缓存这次全部失效，约有 ${estimateTokens.format(tokens)} 个输入 Token 改按普通输入计费，${amount}。`;
 }
 
-interface Confirmation {token:string;nativeId:string|null;payload:SendGuardPayload}
+interface Confirmation {token:string|undefined;serverAccountSwitch?:true;nativeId:string|null;payload:SendGuardPayload}
 interface Pending {sessionId:string;payload:SendGuardPayload;resolve:(result:Confirmation|null)=>void;reject:(error:unknown)=>void;controller:AbortController;check:SendGuardCheck|null;phase:'checking'|'choice'|'select'|'preparing'|'compacting'|'new'|'unknown';action?:SendGuardAction;automatic?:SendGuardAction;error?:string;startedAt?:number}
 export function useConversationSendGuard(sessionId:string,active:boolean,compaction:{state:CompactionPresentation|null;start:(expectedNativeId?:string)=>Promise<void>},onNew?:(expectedNativeId?:string,preference?:AgentModelPreference,environmentId?:string)=>Promise<string|void>){
  const current=useRef<Pending|null>(null),[view,setView]=useState<Pending|null>(null);
  const publish=useCallback((p:Pending)=>{if(current.current===p)setView({...p});},[]);
- const finish=useCallback((p:Pending,token:string|null)=>{if(current.current!==p)return;current.current=null;setView(null);p.controller.abort();p.resolve(token===null?null:{token,nativeId:p.check?.native_id??null,payload:p.payload});},[]);
+ const finish=useCallback((p:Pending,token:string|null|undefined)=>{if(current.current!==p)return;current.current=null;setView(null);p.controller.abort();p.resolve(token===null?null:{token,...(p.check?.switch_account&&token===undefined?{serverAccountSwitch:true as const}:{}),nativeId:p.check?.native_id??null,payload:p.payload});},[]);
  async function confirm(payload:SendGuardPayload,preferredAction?:'brief'):Promise<Confirmation|null>{
   if(current.current)return null;
   return new Promise((resolve,reject)=>{
@@ -36,7 +36,7 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
      p.automatic=check.required_action;
      p.action=check.required_action;
      p.phase='choice';
-     const canRun=p.automatic==='compact'?check.can_compact:check.can_new&&!!onNew;
+     const canRun=check.switch_account?check.can_new:p.automatic==='compact'?check.can_compact:check.can_new&&!!onNew;
      const missingAccount=check.switch_account&&!check.target_account;
      if(!canRun||!check.native_id||missingAccount){
       p.phase='unknown';
@@ -45,7 +45,8 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
       publish(p);
       return;
      }
-     void choose(p.automatic,{environmentId:check.target_account?.id});
+     if(check.switch_account)finish(p,undefined);
+     else void choose(p.automatic,{});
      return;
     }
     // Disabled send protection does not collect runtime; the new-session
@@ -64,8 +65,6 @@ export function useConversationSendGuard(sessionId:string,active:boolean,compact
    if(fresh&&(!check.native_id||check.native_id===p.check?.native_id||expectedFreshId&&check.native_id!==expectedFreshId))
     throw Error('新会话身份尚未确认，消息未发送，请关闭后核对会话状态。');
    if(check.required_action)throw Error('处理后仍命中自动规则，消息尚未发送，草稿已保留。');
-   if(p.check?.switch_account&&(check.account_remaining_percent===null||check.account_remaining_percent<=0))
-    throw Error('无法确认新账号有剩余额度，消息尚未发送，草稿已保留。');
    if(!check.token)throw Error('发送确认未取得，草稿已保留。');
    p.check=check;
    finish(p,check.token);

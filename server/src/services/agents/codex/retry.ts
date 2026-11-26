@@ -1,3 +1,4 @@
+import {codexQuotaExhausted} from './quota-error.js';
 import { withCodexConnection } from './stream.js';
 import { disqualified, RetrySuperseded, instruction,retryableConversationError } from '../../conversation-retry.js';
 export async function inspectRetryThread(nativeId: string): Promise<{state:string;turn:any;queued:boolean}> {
@@ -36,6 +37,7 @@ export function normalizeCodexRetry(snapshot:{state:string;turn:any;queued:boole
  return {state:['idle','systemError'].includes(snapshot.state)?'idle':snapshot.state==='active'?'busy':'unavailable',queued:snapshot.queued,turn:turn?{
   id:turn.id,status:turn.status==='inProgress'?'running':['completed','failed','interrupted'].includes(turn.status)?turn.status:'unknown',
   retryable:retryableConversationError(turn.error),
+  quota_exhausted:codexQuotaExhausted(turn.error),
   has_final:!!turn.items?.some((item:any)=>item.type==='agentMessage'&&item.phase==='final_answer'&&item.delivery!=='async'&&!(Array.isArray(item.questions)&&item.questions.length)&&item.text?.trim()),
   user_client_ids:(turn.items||[]).filter((item:any)=>item.type==='userMessage').map((item:any)=>item.clientId??null),
  }:null};

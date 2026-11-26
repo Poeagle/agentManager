@@ -113,27 +113,24 @@ it('releases a closed source tab without sending its preserved draft',async()=>{
   expect(api.agent.sendInput).not.toHaveBeenCalled();expect(loadComposer(composerKey('local','source')).draft).toBe('source draft');
 });
 
-it('carries the draft and brief history to the selected account in the original tab exactly once',async()=>{
- vi.mocked(api.agent.conversation).mockImplementation(async(id,query)=>({session_id:id,messages:query?.limit?[{id:'old',role:'user',text:'旧账号上的任务',timestamp:null}]:[],statistics:[],has_more:false,reset:false,available:true,generation:id,native_id:`${id}-native`,session_active:true,session_status:'running',runtime:{state:'idle'},interaction:null}) as unknown as ConversationPage);
+it('keeps a server-managed account switch bound to the original tab while switching tabs',async()=>{
  const sourceCheck={...check,can_new:true,required_action:'brief' as const,switch_account:true,target_account:{id:'account:backup',label:'备用账号'},account_remaining_percent:0,token:null};
- vi.mocked(api.agent.checkSend).mockResolvedValueOnce(sourceCheck).mockResolvedValueOnce({...check,needs_confirmation:false,native_id:'backup-native',account_remaining_percent:70,token:'backup-token'});
- let release!:(id:string)=>void;
- const onNew=vi.fn(()=>new Promise<string>(resolve=>{release=resolve;}));
+ vi.mocked(api.agent.checkSend).mockResolvedValueOnce(sourceCheck);
+ let release!:(receipt:{status:string;native_id:string;guard_action:'brief'})=>void;
+ vi.mocked(api.agent.sendInput).mockReturnValueOnce(new Promise(resolve=>{release=resolve;}));
+ const onNew=vi.fn();
  await mount(onNew);
  input('继续原来的工作');
  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
- await waitFor(()=>expect(onNew).toHaveBeenCalledExactlyOnceWith(undefined,'source-native','account:backup'));
+ await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledOnce());
+ expect(api.agent.sendInput).toHaveBeenCalledWith('source','继续原来的工作',expect.any(String),[],undefined,undefined,'source-native');
+ expect(onNew).not.toHaveBeenCalled();
  expect(screen.queryByRole('dialog')).toBeNull();
- expect(screen.getByText(/自动简要压缩 · 备用账号/)).toBeVisible();
- expect(api.agent.sendInput).not.toHaveBeenCalled();
  fireEvent.click(screen.getByRole('button',{name:'其他会话',exact:true}));
  await waitFor(()=>expect(Socket.sessions.get('other')?.onmessage).toBeTruthy());
  input('另一标签的草稿');
- await act(async()=>release('backup-native'));
- await waitFor(()=>expect(api.agent.sendInput).toHaveBeenCalledOnce());
- const [tab,text,,,,token]=vi.mocked(api.agent.sendInput).mock.calls[0];
- expect([tab,parseBriefContext(text)?.input,token]).toEqual(['source','继续原来的工作','backup-token']);
- expect(text).toContain('旧账号上的任务');
+ await act(async()=>release({status:'submitted',native_id:'backup-native',guard_action:'brief'}));
+ expect(api.agent.sendInput).toHaveBeenCalledOnce();
  expect(screen.getByRole('textbox',{name:'发送给当前 Agent 的消息'})).toHaveTextContent('另一标签的草稿');
 });
 

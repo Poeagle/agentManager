@@ -50,7 +50,7 @@ export async function inspectSendGuard(session:AgentSession,userId:string,payloa
  const rule=automatic.find(rule=>evaluateSendGuard(rule.conditions,values)===true);
  const switchAccount=accountRemaining===0;
  const requiredAction:SendGuardAction|null=switchAccount
-  ? (rule?.action==='new'||runtime?.state==='ready'?'new':'brief')
+  ? (runtime?.state==='ready'?'new':'brief')
   : rule?.action??null;
  const matched=requiredAction?true:evaluateSendGuard({operator:'or',conditions:reminders.map(rule=>rule.conditions)},values);
  const canTransform=isAdmin(userId)&&session.created_by_user_id===userId;

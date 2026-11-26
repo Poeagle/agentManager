@@ -15,8 +15,10 @@ import {decorateConversationAttachments} from './conversation-attachments.js';
 import {readConversation} from './conversation-reader.js';
 import {prepareBriefSend} from '../shared/conversation-brief.js';
 import {readAgentRuntime,sessionAgentContext} from './agents/session.js';
-import {AgentQueueOccupiedError,AgentSubmissionError} from './agents/submission.js';
+import {AgentQueueOccupiedError,AgentQuotaExhaustedError,AgentSubmissionError} from './agents/submission.js';
 import {withTerminalInput} from './agents/terminal-input.js';
+import {matchesQuotaHandoff,switchExhaustedConversation} from './conversation-quota-handoff.js';
+import {sendGuardPolicy} from './conversation-send-guard.js';
 import {nativeConversationId} from './session-identity.js';
 
 import {getTracker} from './session-state.js';
@@ -349,14 +351,30 @@ async function sendToExistingSession(task: ScheduledTaskRow, sessionId:string): 
   }
   assertExecutionWindow(task);
   await assertStartConditions(task);
-  let current=sessionManager.getSession(session.id);
-  if(!current||current.created_by_user_id!==task.user_id||current.project_id!==task.project_id||agentForSession(current).descriptor.id!==cliType)
+  const initial=sessionManager.getSession(session.id);
+  if(!initial||initial.created_by_user_id!==task.user_id||initial.project_id!==task.project_id||agentForSession(initial).descriptor.id!==cliType)
     throw new TargetUnavailableError('目标标签页已变化，本次提示词未发送');
+  let current=initial;
   if(!canUseSessionEnvironment(current,task.user_id))throw Error('用户已无权使用目标标签页的 Agent 环境');
   let prompt=task.prompt;
   const nativeId=nativeConversationId(current);
   let followUp = !!nativeId && await needsScheduledFollowUp(current);
-  if(nativeId && !followUp){
+  let switched=false;
+  const switchAccount=async (definitiveError:boolean)=>{
+    const verify=async()=>{await assertStartConditions(task);assertExecutionWindow(task);};
+    const next=await switchExhaustedConversation(current,task.user_id,{input:prompt},{definitiveError,verify});
+    current=next.session;
+    prompt=next.payload.input;
+    switched=true;
+    await verify();
+  };
+  const quota=agentForSession(current).quota;
+  let exhausted=false;
+  try{exhausted=sendGuardPolicy().enabled&&quota.accountRemaining?.(sessionAgentContext(current))===0;}
+  catch{/* An unavailable background sample is not a quota rejection. */}
+  if(nativeId&&!followUp&&exhausted){
+    await switchAccount(false);
+  }else if(nativeId && !followUp){
     const adapter=agentForSession(current);
     const binding={...current,cli_type:current.cli_type??null,codex_session_id:current.codex_session_id??null,claude_session_id:current.claude_session_id??null,project_path:sessionAgentContext(current).projectPath??null};
     const prepared=await prepareBriefSend(session.id,nativeId,{input:prompt},async({before,limit})=>{
@@ -395,7 +413,7 @@ async function sendToExistingSession(task: ScheduledTaskRow, sessionId:string): 
   if (followUp && (!input.supportsFollowUp || !input.supportsClientIdentity)) {
     throw new ScheduledTargetBusyError('目标 Agent 暂不支持排队发送，本次未发送');
   }
-  const expected=current;
+  let expected=current;
   const assertCurrentTarget=(clientId?:string)=>{
     try{
       const latest=sessionManager.getSession(session.id);
@@ -414,21 +432,38 @@ async function sendToExistingSession(task: ScheduledTaskRow, sessionId:string): 
   };
   let fallback:{clientId:string;binding:Parameters<typeof rememberConversationInput>[1]}|undefined;
   if(mode==='session'||!!nativeConversationId(current)) {
-    const context=sessionAgentContext(current),adapter=agentForSession(current);
+    const adapter=agentForSession(current);
     const clientId=randomUUID();
-    rememberInputSource(session.id,clientId,{kind:'scheduled',label:task.name});
-    const messageId=adapter.input.messageId?.(clientId);
-    if(messageId)bindInputSourceMessage(session.id,clientId,messageId);
-    const binding={...current,cli_type:current.cli_type||'claude',codex_session_id:current.codex_session_id||null,claude_session_id:current.claude_session_id||null,project_path:context.projectPath};
-    if(context.nativeId && adapter.input.supportsClientIdentity)await rememberConversationInput(session.id,binding,clientId,prompt).catch(()=>false);
+    const bind=async ()=>{
+      const context=sessionAgentContext(expected);
+      rememberInputSource(session.id,clientId,{kind:'scheduled',label:task.name});
+      const messageId=adapter.input.messageId?.(clientId);
+      if(messageId)bindInputSourceMessage(session.id,clientId,messageId);
+      const binding={...expected,cli_type:expected.cli_type||'claude',codex_session_id:expected.codex_session_id||null,claude_session_id:expected.claude_session_id||null,project_path:context.projectPath};
+      if(context.nativeId && adapter.input.supportsClientIdentity)await rememberConversationInput(session.id,binding,clientId,prompt).catch(()=>false);
+      return {context,binding};
+    };
+    let {context,binding}=await bind();
     if(context.nativeId && adapter.input.supportsClientIdentity) {
-      assertCurrentTarget(clientId);
-      const result = await (adapter.input.supportsFollowUp
-        ? adapter.input.submit(context,prompt,clientId,undefined,{afterCurrentTurn:true})
-        : adapter.input.submit(context,prompt,clientId)).catch(error=>{
-        if(error instanceof AgentSubmissionError && error.submission==='rejected')discardScheduledInput(session.id,clientId);
-        throw error;
-      });
+      const submit=async()=>{
+        assertCurrentTarget(clientId);
+        try{return await (adapter.input.supportsFollowUp
+          ? adapter.input.submit(context,prompt,clientId,undefined,{afterCurrentTurn:true})
+          : adapter.input.submit(context,prompt,clientId));}
+        catch(error){
+          if(error instanceof AgentSubmissionError&&error.submission==='rejected')discardScheduledInput(session.id,clientId);
+          throw error;
+        }
+      };
+      let result;
+      try{result=await submit();}
+      catch(error){
+        if(switched||followUp||!(error instanceof AgentQuotaExhaustedError)||!matchesQuotaHandoff(expected,error))throw error;
+        await switchAccount(true);
+        expected=current;
+        ({context,binding}=await bind());
+        result=await submit();
+      }
       if(result)return {sessionId:session.id,queued:result==='queued'};
       if(followUp){
         discardScheduledInput(session.id,clientId);

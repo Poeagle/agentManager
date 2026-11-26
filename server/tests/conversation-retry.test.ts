@@ -1,14 +1,16 @@
 import {normalizeCodexRetry} from '../src/services/agents/codex/retry.js';
+import {codexQuotaExhausted} from '../src/services/agents/codex/quota-error.js';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import Database from 'better-sqlite3';
 import {ConversationRetryManager,retryableConversationError,type ConversationRetryFrame,type RetryDependencies} from '../src/services/conversation-retry.js';
 import type {ConversationStreamFrame,observeCodexConversation} from '../src/services/agents/codex/stream.js';
+const quota={message:"You've hit your usage limit. Try again later.",codexErrorInfo:'UsageLimitExceeded'};
 const capacity={message:'Selected model is at capacity. Please try a different model.',codexErrorInfo:'ServerOverloaded'};
 let db:Database.Database,manager:ConversationRetryManager,allowed:boolean;
 let native:{state:string;turn:any;queued:boolean};
 let emit:((frame:ConversationStreamFrame)=>void),failed:((turnId:string,error:unknown,willRetry:boolean)=>void)|undefined;
 let start:ReturnType<typeof vi.fn>,frames:ConversationRetryFrame[],stops:ReturnType<typeof vi.fn>,inspect:ReturnType<typeof vi.fn>;
-function create(retryable?:RetryDependencies['retryable']){return new ConversationRetryManager(db,{retryable,allowed:()=>allowed,inspect,start,observe:((_id,callback,onFailure)=>{emit=callback;failed=onFailure;return Object.assign(stops,{respond:vi.fn()});}) as typeof observeCodexConversation});}
+function create(retryable?:RetryDependencies['retryable'],quotaHandoff?:RetryDependencies['quotaHandoff']){return new ConversationRetryManager(db,{retryable,quotaHandoff,allowed:()=>allowed,inspect,start,observe:((_id,callback,onFailure)=>{emit=callback;failed=onFailure;return Object.assign(stops,{respond:vi.fn()});}) as typeof observeCodexConversation});}
 const failure=()=>manager.failure('session','user','native','initial',capacity,false);
 const status=()=>frames.at(-1)?.retry;
 const readJob=()=>JSON.parse((db.prepare('SELECT data FROM conversation_retries ORDER BY rowid DESC LIMIT 1').get() as {data:string}).data);
@@ -88,6 +90,31 @@ describe('bounded durable conversation retries',()=>{
   failure();await vi.advanceTimersByTimeAsync(10000);native.state='idle';native.turn.status='interrupted';snapshot();await settle();expect(status()?.status).toBe('cancelled');await vi.advanceTimersByTimeAsync(100000);expect(start).toHaveBeenCalledTimes(1);
  });
  it('does not start with revoked permissions',async()=>{allowed=false;failure();await vi.advanceTimersByTimeAsync(100000);expect(start).not.toHaveBeenCalled();expect(frames).toEqual([]);});
+ it('continues an explicitly quota-failed turn once even without a browser',async()=>{
+  const run=vi.fn(async()=>{});
+  manager.close();manager=create(undefined,{matches:(_session,error)=>codexQuotaExhausted(error),run});
+  manager.monitor('session','user','native');
+  native.turn.error=quota;
+  failed!('initial',quota,true);
+  expect(run).not.toHaveBeenCalled();
+  failed!('initial',quota,false);failed!('initial',quota,false);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(run).toHaveBeenCalledOnce();
+  expect(run.mock.calls[0]?.[0]).toMatchObject({native_id:'native',root_turn_id:'initial',action:'quota_handoff'});
+  expect(readJob()).toMatchObject({status:'succeeded'});
+  expect(start).not.toHaveBeenCalled();
+  manager.close();manager=create(undefined,{matches:(_session,error)=>codexQuotaExhausted(error),run});
+  manager.failure('session','user','native','initial',quota,false);
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(run).toHaveBeenCalledOnce();
+ });
+ it('recognizes subscription exhaustion without treating generic throttling or API billing as a switch signal',()=>{
+  expect(codexQuotaExhausted(quota)).toBe(true);
+  expect(codexQuotaExhausted({message:'Request failed',codexErrorInfo:{usageLimitExceeded:{}}})).toBe(true);
+  expect(codexQuotaExhausted({message:"You've hit your usage limit. Upgrade to Pro."})).toBe(true);
+  for(const message of ['429 Rate limit exceeded','Rate limit reached, check your billing','insufficient_quota','Server overloaded','Invalid credentials'])
+   expect(codexQuotaExhausted({message})).toBe(false);
+ });
  it('only classifies explicit temporary service overloads',()=>{
   expect(retryableConversationError(capacity)).toBe(true);for(const message of ['Unauthorized','Rate limit reached, check your billing','Invalid model','Network request timed out'])expect(retryableConversationError({message})).toBe(false);
  });

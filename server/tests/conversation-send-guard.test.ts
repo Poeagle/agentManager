@@ -15,6 +15,11 @@ import * as stream from '../src/services/agents/codex/stream.js';
 import * as manager from '../src/services/session-manager.js';
 import {updateAgentManagement} from '../src/services/agents/management-store.js';
 import {initAccountStatus} from '../src/services/agents/codex/account-status.js';
+import * as environments from '../src/services/agents/codex/environments.js';
+import * as history from '../src/services/conversation-reader.js';
+import {AgentQuotaExhaustedError} from '../src/services/agents/submission.js';
+import {parseBriefContext} from '../src/shared/conversation-brief.js';
+import {resumeQuotaFailedTurn} from '../src/services/conversation-quota-handoff.js';
 import {setRoleGrants,setUserRoles} from '../src/services/rbac.js';
 let app:ReturnType<typeof Fastify>,cleanup:()=>void,cookie:string,userId:string;
 beforeEach(async()=>{
@@ -190,25 +195,82 @@ it('selects a funded account immediately after a failed turn on a depleted accou
  expect(check.idle_minutes).toBeLessThan(1);
 });
 
-it('blocks dispatch if quota is exhausted after a reminder was confirmed, even with the default policy',async()=>{
- const remaining=vi.spyOn(codexAdapter.quota,'accountRemaining').mockReturnValue(25);
- vi.spyOn(codexAdapter.quota,'alternateAccount').mockReturnValue({id:'account:backup',label:'备用账号'});
+function stubQuotaHandoff() {
+ const read=vi.spyOn(history,'readConversation').mockResolvedValue({available:true,has_more:false,reset:false,generation:'fixture',
+   messages:[{id:'previous',role:'user',text:'整理项目文件',timestamp:null,turn_id:'last-turn'}],statistics:[],metadata:null,cache_drops:[]});
+ const candidate={id:'account:backup',label:'备用账号'};
+ getDb().prepare("INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES (?,'codex',?,'account',1,?,?)")
+   .run(candidate.id,candidate.label,JSON.stringify({username:'fixture'}),JSON.stringify([userId]));
+ vi.spyOn(environments,'engineForEnvironment').mockResolvedValue({socket:'/fixture/backup-socket',environmentId:candidate.id});
+ vi.spyOn(codexAdapter.quota,'alternateAccount').mockReturnValue(candidate);
+ vi.spyOn(codexAdapter.quota,'exhausted').mockImplementation((_context,error)=>error instanceof AgentQuotaExhaustedError);
+ vi.spyOn(codexAdapter.quota,'observeExhaustion').mockImplementation(()=>{});
+ const replace=vi.spyOn(manager,'newSessionConversation').mockImplementation(async(id,_model,_replacement,expected,environment,options)=>{
+   expect(read).toHaveBeenCalled();
+   expect(expected).toBe('native');
+   expect(options?.preserveHistory).toBe(true);
+   await options?.verifySource?.();
+   getDb().prepare("UPDATE sessions SET native_session_id='fresh',codex_session_id='fresh',agent_environment_id=? WHERE id=?").run(environment,id);
+   return {ok:true};
+ });
+ return {read,replace,candidate};
+}
+
+it.each(['cached','native rejection','uncertain'] as const)('recovers eligible quota exhaustion during input with evidence %s',async evidence=>{
+ const {replace,candidate}=stubQuotaHandoff();
+ const remaining=vi.spyOn(codexAdapter.quota,'accountRemaining').mockImplementation(context=>context.nativeId==='fresh'?50:25);
  const checked=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
- expect(checked.json()).toMatchObject({required_action:null,token:expect.any(String)});
- remaining.mockReturnValue(0);
- const denied=await app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{...input,guard_token:checked.json().token}});
- expect(denied.statusCode).toBe(409);
- expect(denied.json()).toMatchObject({submission:'rejected',send_guard:{required_action:'brief',switch_account:true,token:null}});
- expect(stream.submitStreamingCodexInput).not.toHaveBeenCalled();
+ if(evidence==='cached')remaining.mockImplementation(context=>context.nativeId==='fresh'?50:0);
+ if(evidence==='native rejection')vi.mocked(stream.submitStreamingCodexInput).mockRejectedValueOnce(new AgentQuotaExhaustedError());
+ if(evidence==='uncertain')vi.mocked(stream.submitStreamingCodexInput).mockRejectedValueOnce(new Error('socket closed'));
+ const result=await app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:{...input,expected_native_id:'native',guard_token:checked.json().token}});
+ if(evidence==='uncertain'){
+   expect(result.statusCode).toBe(503);
+   expect(replace).not.toHaveBeenCalled();
+   expect(stream.submitStreamingCodexInput).toHaveBeenCalledOnce();
+   return;
+ }
+ expect(result.statusCode).toBe(202);
+ expect(result.json()).toMatchObject({native_id:'fresh',guard_action:'brief',status:'submitted'});
+ expect(manager.getSession('s')?.agent_environment_id).toBe(candidate.id);
+ expect(replace).toHaveBeenCalledOnce();
+ expect(stream.submitStreamingCodexInput).toHaveBeenCalledTimes(evidence==='cached'?1:2);
+ const [native,text,client]=vi.mocked(stream.submitStreamingCodexInput).mock.calls.at(-1)!;
+ expect([native,client]).toEqual(['fresh',input.client_id]);
+ expect(parseBriefContext(text)).toMatchObject({input:'hello',context:{turns:[{input:'整理项目文件'}]}});
 });
 
-it.each([['new','new'],['compact','brief']] as const)('resolves a matched %s rule as %s when switching away from an exhausted account',async(action,requiredAction)=>{
+it.each(['unfinished','has final','queued','newer turn','stale history'] as const)('resumes a quota-failed task only when safe (%s)',async condition=>{
+ const {replace,read}=stubQuotaHandoff();
+ if(condition==='stale history')read.mockResolvedValue({available:true,has_more:false,reset:false,generation:'fixture',
+   messages:[{id:'previous',role:'user',text:'另一个轮次的任务',timestamp:null,turn_id:'older'}],statistics:[],metadata:null,cache_drops:[]});
+ vi.spyOn(codexAdapter.retry,'inspect').mockResolvedValue({
+   state:'idle',queued:condition==='queued',turn:{id:condition==='newer turn'?'another':'last-turn',status:'failed',
+     quota_exhausted:true,retryable:false,has_final:condition==='has final',user_client_ids:['original']},
+ });
+ const job={session_id:'s',native_id:'native',root_turn_id:'last-turn',failed_turn_ids:['last-turn'],user_id:userId,
+   action:'quota_handoff',attempt:1,max_attempts:1,status:'submitting',client_id:'quota-handoff-test',
+   next_retry_at:null,retry_turn_id:null} as const;
+ if(condition!=='unfinished'){
+   await expect(resumeQuotaFailedTurn({...job,failed_turn_ids:[...job.failed_turn_ids]},()=>true)).rejects.toThrow();
+   expect(replace).not.toHaveBeenCalled();
+   expect(stream.submitStreamingCodexInput).not.toHaveBeenCalled();
+   return;
+ }
+ await resumeQuotaFailedTurn({...job,failed_turn_ids:[...job.failed_turn_ids]},()=>true);
+ expect(replace).toHaveBeenCalledOnce();
+ const [native,text,client]=vi.mocked(stream.submitStreamingCodexInput).mock.calls.at(-1)!;
+ expect([native,client]).toEqual(['fresh','quota-handoff-test']);
+ expect(parseBriefContext(text)).toMatchObject({input:expect.stringContaining('避免重复执行'),context:{turns:[{input:'整理项目文件'}]}});
+});
+
+it.each(['new','compact'] as const)('prioritizes a brief on depletion over a matched %s rule',async action=>{
  vi.spyOn(codexAdapter.quota,'accountRemaining').mockReturnValue(0);
  vi.spyOn(codexAdapter.quota,'alternateAccount').mockReturnValue({id:'account:backup',label:'备用账号'});
  const policy={enabled:true,rules:[{action,conditions:{operator:'and',conditions:[{type:'context_percent',value:80}]}}]};
  getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY,JSON.stringify(policy));
  const response=await app.inject({method:'POST',url:'/api/sessions/s/input-check',headers:{cookie},payload:{input:'hello'}});
- expect(response.json()).toMatchObject({required_action:requiredAction,switch_account:true,target_account:{id:'account:backup'}});
+ expect(response.json()).toMatchObject({required_action:'brief',switch_account:true,target_account:{id:'account:backup'}});
 });
 
 it('chooses a fresh conversation when a depleted account has yet to run its first turn',async()=>{

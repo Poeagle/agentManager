@@ -519,6 +519,39 @@ it('keeps the old child conversation when protected dispatch encounters outstand
   expect(manager.getSession(child)?.native_session_id).toBe(native);
 });
 
+it('briefly compacts and switches an exhausted collaboration target without changing the message identity', async()=>{
+  const target='dev-two',agent=getAgent('codex'),environment='account:backup',freshId='quota-fresh';
+  const db=getDb();
+  db.prepare("INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES (?,'codex','Backup','account',1,?,?)")
+    .run(environment,JSON.stringify({username:'backup'}),JSON.stringify([owner]));
+  db.prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY,JSON.stringify({enabled:true,rules:[]}));
+  vi.spyOn(agent.runtime,'read').mockResolvedValue({source:'fixture',session_id:native,state:'idle',
+    observed_at:new Date().toISOString(),last_activity_at:null,reason:''});
+  vi.spyOn(agent.quota,'accountRemaining').mockImplementation(context=>context.nativeId===freshId?80:0);
+  vi.spyOn(agent.quota,'alternateAccount').mockReturnValue({id:environment,label:'Backup'});
+  vi.spyOn(history,'readConversation').mockResolvedValue({available:true,generation:'fixture',has_more:false,reset:false,
+    statistics:[],metadata:null,cache_drops:[],messages:[{id:'prior',role:'user',text:'核对旧版本',timestamp:null}]});
+  const replace=vi.spyOn(manager,'newSessionConversation').mockImplementation(async(id,_model,_replacement,_native,account)=>{
+    db.prepare('UPDATE sessions SET native_session_id=?,agent_environment_id=? WHERE id=?').run(freshId,account,id);
+    return {ok:true};
+  });
+  const submit=vi.spyOn(agent.input,'submit').mockResolvedValue(true);
+  const send=()=>app.inject({method:'POST',url:base+'/messages',headers:header('dev-one'),
+    payload:{request_id:'quota-handoff',target_tab_ids:[target],text:'复核新版本'}});
+  const result=(await send()).json();
+  const receipt=result.result.results[0];
+  expect(receipt).toMatchObject({status:'submitted',guard_action:'brief',message_id:expect.any(String)});
+  expect((await send()).json()).toEqual(result);
+  expect(replace).toHaveBeenCalledOnce();
+  expect(submit).toHaveBeenCalledOnce();
+  const [context,text,clientId]=submit.mock.calls[0];
+  expect(context.nativeId).toBe(freshId);
+  expect(clientId).toBe(receipt.message_id);
+  const headerEnd=text.indexOf('\n');
+  expect(text.slice(0,headerEnd)).toContain('source_tab_id=dev-one');
+  expect(parseBriefContext(text.slice(headerEnd+1))).toMatchObject({input:'复核新版本',context:{turns:[{input:'核对旧版本'}]}});
+});
+
 it.each(['busy', 'exhausted', 'unreadable', 'still-matches'])('bounds protected handoff when the target is %s', async situation => {
   const target = 'dev-two', adapter = getAgent('codex'), freshId = 'guarded-fresh-id';
   getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY, JSON.stringify({

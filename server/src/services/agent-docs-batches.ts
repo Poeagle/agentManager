@@ -69,9 +69,10 @@ export function getAgentDocsBatch(id: string, tabId: string) {
 }
 
 /** Only platform-initiated brief handoffs continue active batches in the fresh conversation. */
-export function rebindActiveAgentDocsBatches(tabId: string, oldNative: string, newNative: string, environmentId: string) {
-  getDb().prepare(`UPDATE agent_docs_batches SET native_id=? WHERE tab_id=? AND native_id=?
-    AND environment_id=? AND wake_status IN ('waiting','submitting')`).run(newNative, tabId, oldNative, environmentId);
+export function rebindActiveAgentDocsBatches(tabId: string, oldNative: string, newNative: string, environmentId: string, newEnvironmentId=environmentId) {
+  if(!getDb().prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_docs_batches'").get())return;
+  getDb().prepare(`UPDATE agent_docs_batches SET native_id=?,environment_id=? WHERE tab_id=? AND native_id=?
+    AND environment_id=? AND wake_status IN ('waiting','submitting')`).run(newNative, newEnvironmentId, tabId, oldNative, environmentId);
 }
 
 /** Called within the same transaction that records the idempotent dispatch operation. */
