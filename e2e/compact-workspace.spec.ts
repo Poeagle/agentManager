@@ -43,9 +43,14 @@ test('compact workspace preserves readable labels, activity details and keyboard
   } finally {db.close();}
   const schedule = await page.request.post('/api/scheduled-tasks', { data: {
     project_id: projects[0].id, target_type: 'existing', target_session_id: 'compact-23',
-    name: '会话绑定验证', prompt: 'fixture', schedule_kind: 'daily', schedule_value: '09:00', timezone: 'UTC', enabled: false,
+    name: '会话绑定验证', prompt: 'fixture', schedule_kind: 'interval', schedule_value: '60', timezone: 'UTC', enabled: false,
   } });
   expect(schedule.ok()).toBeTruthy();
+  const secondSchedule = await page.request.post('/api/scheduled-tasks', { data: {
+    project_id: projects[0].id, target_type: 'existing', target_session_id: 'compact-23',
+    name: '同一标签页的停用任务', prompt: 'fixture', schedule_kind: 'interval', schedule_value: '60', timezone: 'UTC', enabled: false,
+  } });
+  expect(secondSchedule.ok()).toBeTruthy();
   await page.request.put('/api/user-state/app',{data:{value:{projectTabs:projects.map(project=>({projectId:project.id,projectName:project.name})),activeTab:`project-${projects[0].id}`}}});
   await page.request.put(`/api/user-state/${encodeURIComponent(`project:${projects[0].id}`)}`,{data:{value:{
     activeMode:'terminal',terminalInstances:labels.map((label,index)=>({id:`compact-${index}`,label,customLabel:label})),
@@ -103,7 +108,10 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await firstBranch.getByRole('button',{name:'展开其余 31 个会话'}).click();
   await expect(sessionRows).toHaveCount(36);
   const scheduledRow = sessions.locator('[data-session-id="compact-23"]');
-  await expect(scheduledRow.getByText('定时', { exact: true })).toBeVisible();
+  const scheduledBadge = scheduledRow.getByText('定时', { exact: true });
+  await expect(scheduledBadge).toHaveAttribute('title', '定时任务已停用');
+  const stoppedBackground = 'color(srgb 0.927451 0.834314 0.729412)';
+  await expect(scheduledBadge).toHaveCSS('background-color', stoppedBackground);
   await expect(scheduledRow.getByText('界面审查账号', { exact: true })).toBeVisible();
   await expect(scheduledRow.getByRole('button', { name: '并行任务 16 定时' })).toHaveAccessibleDescription('账号：界面审查账号');
   const accountBounds = (await scheduledRow.getByText('界面审查账号', { exact: true }).boundingBox())!;
@@ -112,6 +120,17 @@ test('compact workspace preserves readable labels, activity details and keyboard
   expect(accountBounds.y).toBe(scheduledBounds.y);
   await expect(sessions.getByRole('button', { name: 'jira', exact: true }).getByText('本机账号', { exact: true })).toBeVisible();
   await expect(sessions.getByText('定时', { exact: true })).toHaveCount(1);
+  await toolbar.getByRole('button', { name: '定时任务' }).click();
+  const scheduleMenu = page.getByRole('button', { name: '会话绑定验证 的更多操作' });
+  await scheduleMenu.click();
+  await page.getByRole('menuitem', { name: '启用', exact: true }).click();
+  await expect(scheduledBadge).toHaveAttribute('title', '定时任务已启用');
+  await expect(scheduledBadge).toHaveCSS('background-color', 'color(srgb 0.736275 0.877451 0.796078)');
+  await scheduleMenu.click();
+  await page.getByRole('menuitem', { name: '暂停', exact: true }).click();
+  await expect(scheduledBadge).toHaveAttribute('title', '定时任务已停用');
+  await expect(scheduledBadge).toHaveCSS('background-color', stoppedBackground);
+  await toolbar.getByRole('button', { name: 'Terminal', exact: true }).click();
   const firstRow = (await sessionRows.nth(0).boundingBox())!;
   const secondRow = (await sessionRows.nth(1).boundingBox())!;
   expect(firstRow.x).toBe(secondRow.x);
@@ -254,6 +273,7 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await switcher.click();
   const scheduledResult = dialog.getByRole('button', { name: '并行任务 16 定时', exact: true });
   await expect(scheduledResult).toHaveAttribute('aria-current', 'true');
+  await expect(scheduledResult.getByTitle('定时任务已停用')).toHaveCSS('background-color', stoppedBackground);
   await expect(scheduledResult.getByText('界面审查账号', { exact: true })).toBeVisible();
   await search.fill('missing-tab');
   await expect(dialog.getByText('没有匹配的会话')).toBeVisible();

@@ -1315,9 +1315,15 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
     enabled: (active || !!sessionNavigationExpanded) && workspaceTabs.length > 0,
     retry: false,
   });
-  const scheduledSessionIds = useMemo(() => new Set(
-    scheduledData?.tasks.flatMap(task => task.target_type === 'existing' && task.target_session_id ? [task.target_session_id] : []),
-  ), [scheduledData]);
+  const scheduledSessionStates = useMemo(() => {
+    const states = new Map<string, boolean>();
+    for (const task of scheduledData?.tasks ?? []) {
+      const sessionId = task.target_session_id;
+      if (task.target_type !== 'existing' || !sessionId) continue;
+      states.set(sessionId, Boolean(task.enabled || states.get(sessionId)));
+    }
+    return states;
+  }, [scheduledData]);
 
   useEffect(() => {
     if (!active || !sessionSidebarOpen || sessionFilter || !activeWorkspaceTab) return;
@@ -1796,7 +1802,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                   {tabIcon}
                   {isHarness ? <span className="truncate">{label}</span>
                     : <SessionTabLabel session={sigSession} label={label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session || {}).label}`} activityAt={activityAt} />}
-                  {!isHarness && <SessionTabBadges account={account} scheduled={scheduledSessionIds.has(inst.id)} activityAt={nestedSessionNavigation ? activityAt : null} />}
+                  {!isHarness && <SessionTabBadges account={account} scheduledEnabled={scheduledSessionStates.get(inst.id)} activityAt={nestedSessionNavigation ? activityAt : null} />}
                 </button>
               )}
               <button
@@ -2045,7 +2051,7 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         tabs={sortedWorkspaceTabs.map(({ tab }) => ({
           id: tab.id,
           label: tab.customLabel?.trim() || tab.label,
-          scheduled: scheduledSessionIds.has(tab.id),
+          scheduledEnabled: scheduledSessionStates.get(tab.id),
           account: allSessionLookup.get(tab.id)?.agent_account_label,
         }))}
         activeId={activeWorkspaceTab}

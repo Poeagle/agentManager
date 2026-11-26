@@ -171,9 +171,13 @@
   color: var(--text-secondary);
 }
 .workspace-session-scheduled {
+  --scheduled-badge-color: var(--warning);
   flex-shrink: 0;
-  background: color-mix(in srgb, var(--accent) 12%, var(--bg-secondary));
+  background: color-mix(in srgb, var(--scheduled-badge-color) 25%, var(--bg-secondary));
   color: var(--text-primary);
+}
+.workspace-session-scheduled[data-enabled="true"] {
+  --scheduled-badge-color: var(--success);
 }
 .workspace-session-age {
   flex-shrink: 0;

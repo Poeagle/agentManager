@@ -12,15 +12,16 @@ function TabLabel({ label, activityAt, detail }: { label: string; activityAt: nu
   return <span className="truncate" title={title}>{label}</span>;
 }
 
-export function SessionTabBadges({ account, scheduled, activityAt }: {
+export function SessionTabBadges({ account, scheduledEnabled, activityAt }: {
   account?: string;
-  scheduled?: boolean;
+  scheduledEnabled?: boolean;
   activityAt?: number | null;
 }) {
-  if (!account && !scheduled && activityAt == null) return null;
+  if (!account && scheduledEnabled === undefined && activityAt == null) return null;
   return <span className="workspace-session-badges">
     {account && <span className="workspace-session-account" title={account} aria-hidden="true">{account}</span>}
-    {scheduled ? <span className="workspace-session-scheduled">定时</span>
+    {scheduledEnabled !== undefined ? <span className="workspace-session-scheduled" data-enabled={scheduledEnabled}
+      title={scheduledEnabled ? '定时任务已启用' : '定时任务已停用'}>定时</span>
       : activityAt != null && <span className="workspace-session-age" aria-hidden="true">{formatActivityAge(activityAt)}</span>}
   </span>;
 }
