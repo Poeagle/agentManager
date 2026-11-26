@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProjectSessionCreateDialog } from '../src/components/ProjectSessionCreateDialog';
 import { api, type Project, type Session } from '../src/lib/api';
+import { builtinAgentDescriptors } from '../src/lib/agents';
 
 vi.mock('../src/lib/api', async (original) => {
   const actual = await original<typeof import('../src/lib/api')>();
@@ -27,8 +28,11 @@ describe('shared project creation dialog', () => {
     const user = userEvent.setup(), mounted = mount();
     try {
       expect(screen.queryByRole('table')).not.toBeInTheDocument();
-      expect(screen.queryByRole('radio', { name: 'Claude' })).not.toBeInTheDocument();
-      expect(screen.getByRole('radio', { name: 'Codex' })).toBeChecked();
+      expect(screen.queryByRole('option', { name: 'Claude' })).not.toBeInTheDocument();
+      const mode = screen.getByRole('combobox', { name: '选择打开方式' });
+      expect(mode).toHaveValue('codex');
+      expect(mode).toHaveFocus();
+      expect(screen.queryAllByRole('radio')).toHaveLength(0);
       await user.click(screen.getByRole('button', { name: '取消' }));
       expect(mounted.onClose).toHaveBeenCalled(); expect(api.sessions.create).not.toHaveBeenCalled();
     } finally { mounted.dispose(); }
@@ -70,25 +74,37 @@ describe('shared project creation dialog', () => {
   it('creates Terminal without a client or task flag', async () => {
     const user = userEvent.setup(), mounted = mount();
     try {
-      await user.click(screen.getByRole('radio', { name: 'Terminal' }));
+      await user.selectOptions(screen.getByRole('combobox', { name: '选择打开方式' }), 'terminal');
       const submit=screen.getByRole('button',{name:'新建会话'});await waitFor(()=>expect(submit).toBeEnabled());await user.click(submit);
       await waitFor(() => expect(api.sessions.create).toHaveBeenCalledWith({ project_id: 'p1', project_path: project.path, mode: 'terminal' }));
     } finally { mounted.dispose(); }
   });
-  it('passes one stable initial identity to Claude and not to Codex', async () => {
-    const p: Project = {...project,tool_access:{can_session:true,can_terminal:false,session_clients:['codex','claude']}};
-    vi.spyOn(api.claudeEnvironments,'list').mockResolvedValueOnce({environments:[
-      {id:'claude-provider:anthropic',name:'Anthropic',kind:'native',enabled:true},
-    ]} as any);
+  it('waits for the Claude Provider after switching from Codex and submits its identity', async () => {
+    const supported = builtinAgentDescriptors();
+    const p: Project = {
+      ...project,
+      agent_catalog: ['codex', 'claude'].map(id => supported.find(agent => agent.id === id)!),
+      tool_access: { can_session: true, can_terminal: false, session_clients: ['codex', 'claude'] },
+    };
+    let resolveClaude!: (value: Awaited<ReturnType<typeof api.claudeEnvironments.list>>) => void;
+    vi.spyOn(api.claudeEnvironments,'list').mockImplementationOnce(() => new Promise(resolve => { resolveClaude = resolve; }));
     const client = new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
     const view=render(<QueryClientProvider client={client}><ProjectSessionCreateDialog project={p} onClose={vi.fn()} onSessionCreated={vi.fn()}/></QueryClientProvider>);
     try {
-      await waitFor(()=>expect(screen.getByRole('radio',{name:'Claude'})).toBeInTheDocument());
-      fireEvent.click(screen.getByRole('radio',{name:'Claude'}));
+      const submit = screen.getByRole('button', { name: '新建会话' });
+      await waitFor(() => expect(submit).toBeEnabled());
+      fireEvent.change(screen.getByRole('combobox', { name: '选择打开方式' }), { target: { value: 'claude' } });
+      expect(submit).toBeDisabled();
+      fireEvent.click(submit);
+      expect(api.sessions.create).not.toHaveBeenCalled();
+      resolveClaude({
+        current: 'claude-provider:anthropic',
+        environments: [{ id: 'claude-provider:anthropic', name: 'Anthropic', kind: 'native', enabled: true, allowed_user_ids: null }],
+      });
       await waitFor(()=>expect(screen.getByRole('combobox',{name:'新会话 Claude Provider'})).toHaveValue('claude-provider:anthropic'));
       await waitFor(()=>expect(screen.getByRole('button',{name:'新建会话'})).toBeEnabled());
       fireEvent.click(screen.getByRole('button',{name:'新建会话'}));
-      await waitFor(()=>expect(api.sessions.create).toHaveBeenCalledWith(expect.objectContaining({cli_type:'claude',client_id:expect.stringMatching(/^[a-f0-9]{32}$/)})));
+      await waitFor(()=>expect(api.sessions.create).toHaveBeenCalledWith(expect.objectContaining({cli_type:'claude',environment_id:'claude-provider:anthropic',client_id:expect.stringMatching(/^[a-f0-9]{32}$/)})));
     } finally {view.unmount();client.clear();}
   });
 });

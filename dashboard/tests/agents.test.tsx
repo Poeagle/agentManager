@@ -16,6 +16,6 @@ describe('agent capabilities in shared UI',()=>{
  it('builds authorized creation choices from the registered provider catalog',()=>{
   const project={id:'p',name:'Plugin project',path:'/project',agent_catalog:[provider],tool_access:{can_session:true,can_terminal:false,session_clients:['third_agent']}} as Project;
   expect(projectOpenModes(project).map(option=>({id:option.id,label:option.label,cli:option.cli}))).toEqual([{id:'third_agent',label:'Third Agent',cli:'third_agent'}]);
-  render(<ProjectOpenDialog project={project} onClose={()=>{}} onOpen={()=>{}}/>);expect(screen.getByRole('radio',{name:'Third Agent'})).toBeVisible();expect(screen.queryByText('Claude')).not.toBeInTheDocument();
+  render(<ProjectOpenDialog project={project} onClose={()=>{}} onOpen={()=>{}}/>);expect(screen.getByRole('combobox',{name:'选择打开方式'})).toHaveDisplayValue('Third Agent');expect(screen.queryByRole('option',{name:'Claude'})).not.toBeInTheDocument();
  });
 });

@@ -45,6 +45,10 @@ export function ProjectSessionCreateDialog({ project, onClose, onSessionCreated,
     },
   });
   return <ProjectOpenDialog project={project} harnessUrl={onHarnessOpen ? harnessUrl : undefined} title={title} onClose={onClose} busy={mutation.isPending} error={mutation.error?.message}
+    onModeChange={() => {
+      setEnvironmentId(undefined);
+      setEnvironmentReady(false);
+    }}
     renderOptions={(mode,cli)=>
       mode==='session'&&cli==='codex'
         ? <CodexCreateEnvironment projectId={project.id} onChange={chooseEnvironment} onReady={markEnvironmentReady}/>

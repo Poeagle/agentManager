@@ -94,7 +94,7 @@ async function openHarness(page: Page, name: string, throughPlus = false) {
   } else {
     await page.getByRole('button', { name: '打开项目 ' + name }).click();
   }
-  await page.getByRole('radio', { name: 'DeepSeek Harness' }).check();
+  await page.getByRole('combobox', { name: '选择打开方式' }).selectOption('deepseek-harness');
   await page.getByRole('button', { name: '打开标签页' }).click();
 }
 

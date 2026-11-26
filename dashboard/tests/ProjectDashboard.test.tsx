@@ -169,8 +169,8 @@ describe('project table interactions', () => {
     const user = userEvent.setup(); const open = await mount();
     await user.click(screen.getByRole('button', { name: '打开项目 Alpha' }));
     const dialog = screen.getByRole('dialog', { name: '打开项目 · Alpha' });
-    expect(within(dialog).queryByRole('radio', { name: 'Claude' })).not.toBeInTheDocument();
-    expect(within(dialog).getByRole('radio', { name: 'Codex' })).toBeChecked();
+    expect(within(dialog).queryByRole('option', { name: 'Claude' })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('combobox', { name: '选择打开方式' })).toHaveValue('codex');
     expect(api.sessions.create).not.toHaveBeenCalled();
     await user.click(within(dialog).getByRole('button', { name: '新建会话' }));
     await waitFor(() => expect(api.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ project_id: 'p2', mode: 'session', cli_type: 'codex' })));
@@ -182,7 +182,7 @@ describe('project table interactions', () => {
   it('creates Terminal without a session-client flag or task', async () => {
     const user = userEvent.setup(); await mount();
     await user.click(screen.getByRole('button', { name: '打开项目 Alpha' }));
-    await user.click(screen.getByRole('radio', { name: 'Terminal' }));
+    await user.selectOptions(screen.getByRole('combobox', { name: '选择打开方式' }), 'terminal');
     await user.click(screen.getByRole('button', { name: '新建会话' }));
     await waitFor(() => expect(api.sessions.create).toHaveBeenCalledWith({ project_id: 'p2', project_path: '/workspace/Alpha', mode: 'terminal' }));
   });

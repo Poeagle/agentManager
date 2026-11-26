@@ -84,6 +84,9 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await desktopCreate.press('Enter');
   const desktopCreateDialog = page.getByRole('dialog', { name: '新建会话 · dolphindb_manager' });
   await expect(desktopCreateDialog).toBeVisible();
+  const desktopMode = desktopCreateDialog.getByRole('combobox', { name: '选择打开方式' });
+  await expect(desktopMode).toBeFocused();
+  await expect(desktopCreateDialog.getByRole('radio')).toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(desktopCreateDialog).toHaveCount(0);
   await expect(desktopCreate).toBeFocused();
@@ -266,7 +269,13 @@ test('compact workspace preserves readable labels, activity details and keyboard
   const targetDialog = page.getByRole('dialog', { name: '新建会话 · octoally-app' });
   await expect(targetDialog).toBeVisible();
   await expect(target).not.toHaveAttribute('aria-current', 'page');
-  await targetDialog.getByRole('radio', { name: 'Terminal', exact: true }).check();
+  const targetMode = targetDialog.getByRole('combobox', { name: '选择打开方式' });
+  await expect(targetMode).toBeInViewport();
+  const modeBounds = (await targetMode.boundingBox())!;
+  const modeLabelBounds = (await targetDialog.getByText('选择打开方式', { exact: true }).boundingBox())!;
+  expect(modeLabelBounds.x + modeLabelBounds.width).toBeLessThan(modeBounds.x);
+  expect(modeBounds.x + modeBounds.width).toBeLessThan(390);
+  await targetMode.selectOption('terminal');
   const creation = page.waitForResponse(response =>
     new URL(response.url()).pathname === '/api/sessions' && response.request().method() === 'POST');
   await targetDialog.getByRole('button', { name: '新建会话', exact: true }).click();

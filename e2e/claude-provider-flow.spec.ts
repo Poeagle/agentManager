@@ -158,8 +158,9 @@ test('creates, discovers, edits and selects the same Claude Provider in a new se
  }}});
  await page.goto('/');
  await page.getByRole('button',{name:'在 Claude Provider flow 新建标签页'}).click();
- await page.locator('label.project-open-option').filter({hasText:'Claude'}).click();
- await expect(page.locator('input[name="project-open-mode"][value="claude"]')).toBeChecked();
+ const mode=page.getByRole('combobox',{name:'选择打开方式'});
+ await mode.selectOption('claude');
+ await expect(mode).toHaveValue('claude');
  const providerSelect=page.getByRole('combobox',{name:'新会话 Claude Provider'});
  await expect(providerSelect).toHaveValue('anthropic');
  await providerSelect.selectOption('claude-provider:xindu-real');
