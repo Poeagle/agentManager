@@ -54,27 +54,74 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
-  it.each(['claude','codex'] as const)('shows live usage without editing in the %s child conversation', async agent => {
+  it.each(['claude','codex'] as const)('keeps the %s child composer and settings available while blocking user sends', async agent => {
     const target:Session={...session,agent_id:agent,cli_type:agent,parent_session_id:'parent',native_session_id:'native'};
     const existing=await api.agent.conversation(session.id);
     vi.mocked(api.agent.conversation).mockResolvedValue({...existing,messages:[
       {id:'progress',role:'assistant',phase:'commentary',text:'已核对交付条件',timestamp:'2026-11-26T04:03:00Z'},
     ]});
+    const models=['model-a','model-b'].map(model=>({model,name:model,defaultEffort:'high',efforts:[{value:'high',description:''}]}));
     vi.mocked(api.agent.controls).mockResolvedValue({
-      ...controls,agent:sessionAgent(target),usage:{total:{total_tokens:1000},last:{total_tokens:100},window:1000},
+      ...controls,agent:sessionAgent(target),model:'model-a',effort:'high',models,
+      usage:{total:{total_tokens:1000},last:{total_tokens:100},window:1000},
     });
+    const currentEnvironment=agent==='claude'?'anthropic':'native';
+    const nextEnvironment=agent==='claude'?'claude-provider:other':'account:other';
+    vi.mocked(api.codexEnvironments.forSession).mockResolvedValue({current:currentEnvironment,environments:[
+      {id:currentEnvironment,name:'当前环境',kind:'native',enabled:true,allowed_user_ids:null,can_control:true},
+      {id:nextEnvironment,name:'目标环境',kind:agent==='claude'?'provider':'account',enabled:true,allowed_user_ids:null,can_control:true},
+    ]});
+    const setControls=vi.spyOn(api.agent,'setControls').mockResolvedValue({ok:true,pending:null,model:'model-b',effort:'high'});
+    const submit=vi.spyOn(api.agent,'sendInput').mockResolvedValue({status:'submitted'} as SendResult);
+    const preflight=vi.spyOn(api.codexEnvironments,'sessionPreflight').mockResolvedValue({
+      ok:true,checks:[{stage:'project_access',ok:true,message:'可访问项目'}],models,
+    });
+    const transfer=vi.spyOn(api.codexEnvironments,'transfer').mockResolvedValue({ok:true});
     await mount(target);
     act(() => Socket.latest.emit({type:'snapshot', messages:[], busy:false, stage:'idle', interactions:[
       {id:'question',turn_id:'turn',kind:'question',title:'Agent 需要回答',detail:'需要用户决定',blocking:true,submitted:false},
     ]}));
-    expect(await screen.findByText('子 Agent 通过协作协议工作。请在负责协调的 Agent 标签页沟通。')).toBeInTheDocument();
     expect(await screen.findByText('已核对交付条件')).toBeInTheDocument();
-    expect(screen.queryByRole('textbox', {name:'发送给当前 Agent 的消息'})).not.toBeInTheDocument();
+    const editor=input('这是保留在子标签页的草稿');
+    expect(editor).toHaveAttribute('contenteditable','true');
+    const sendButton=screen.getByRole('button',{name:'发送消息'});
+    expect(sendButton).toBeDisabled();
+    fireEvent.click(sendButton);
+    fireEvent.keyDown(editor,{key:'Enter'});
+    fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true});
+    fireEvent.keyDown(editor,{key:'Enter',metaKey:true});
+    fireEvent.submit(editor.closest('form')!);
+    expect(api.agent.checkSend).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    expect(editor).toHaveTextContent('这是保留在子标签页的草稿');
     expect(screen.queryByText('Agent 需要回答')).not.toBeInTheDocument();
+
+    const model=await screen.findByRole('combobox',{name:'选择模型'});
+    fireEvent.change(model,{target:{value:within(model).getByRole<HTMLOptionElement>('option',{name:'model-b'}).value}});
+    await waitFor(()=>expect(setControls).toHaveBeenCalledWith(target.id,{model:'model-b',effort:'high'}));
+    const environment=await screen.findByRole('combobox',{name:agent==='claude'?'选择 Claude Provider':'选择 Codex 账号环境'});
+    expect(environment).toBeEnabled();
+    fireEvent.change(environment,{target:{value:nextEnvironment}});
+    const dialog=screen.getByRole('dialog',{name:agent==='claude'?'切换 Claude Provider':'保留上下文切换 Codex 环境'});
+    fireEvent.click(within(dialog).getByRole('button',{name:agent==='claude'?'读取 Provider 模型':'预检连接、登录、模型与项目权限'}));
+    expect(await within(dialog).findByRole('combobox',{name:'目标环境模型'})).toHaveValue(within(dialog).getByRole<HTMLOptionElement>('option',{name:'model-a'}).value);
+    fireEvent.click(within(dialog).getByRole('button',{name:agent==='claude'?'切换 Provider':'复制历史并切换'}));
+    await waitFor(()=>expect(transfer).toHaveBeenCalledWith(target.id,expect.objectContaining({environment_id:nextEnvironment,model:'model-a'})));
+    expect(preflight).toHaveBeenCalledWith(target.id,nextEnvironment,{});
+    await waitFor(()=>expect(dialog).not.toBeInTheDocument());
+    expect(editor).toHaveTextContent('这是保留在子标签页的草稿');
+
+    fireEvent.change(screen.getByRole('combobox',{name:'发送模式'}),{target:{value:'batch'}});
+    fireEvent.click(screen.getByRole('button',{name:'加入批量'}));
+    const batch=screen.getByRole('complementary',{name:'批量待发内容'});
+    expect(batch).toHaveTextContent('这是保留在子标签页的草稿');
+    expect(within(batch).getByRole('button',{name:'发送批量内容'})).toBeDisabled();
+    fireEvent.keyDown(editor,{key:'Enter',ctrlKey:true});
+    expect(api.agent.checkSend).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
     const usage=await screen.findByLabelText('Cumulative token usage');
     expect(usage).toHaveTextContent('1K');
     expect(screen.getByRole('button',{name:'Details'})).toBeVisible();
-    expect(screen.queryByLabelText('会话操作')).not.toBeInTheDocument();
     act(() => Socket.latest.emit({
       type:'usage',native_id:'native',observed_at:'2026-11-26T04:04:00Z',
       usage:{total:{total_tokens:2000},last:{total_tokens:200},window:1000},

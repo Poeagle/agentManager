@@ -356,8 +356,11 @@ test('toggles nested session tabs after refresh and keeps children visible when 
   const usage = childConversation.getByLabel('Model and session status');
   await expect(usage.getByRole('button', { name: 'View context token details' })).toHaveText('Context 40K | 30%');
   await expect(usage.getByRole('button', { name: 'Details', exact: true })).toBeVisible();
-  await expect(childConversation.getByLabel('会话操作')).toHaveCount(0);
-  await expect(childConversation.getByRole('textbox', { name: '发送给当前 Agent 的消息' })).toHaveCount(0);
+  await expect(childConversation.getByRole('combobox', { name: '选择模型' })).toBeVisible();
+  await expect(childConversation.getByRole('combobox', { name: '选择 Codex 账号环境' })).toBeVisible();
+  await expect(childConversation.getByRole('textbox', { name: '发送给当前 Agent 的消息' })).toBeVisible();
+  await expect(childConversation.getByRole('button', { name: '发送消息' })).toBeDisabled();
+  await expect(childConversation.getByText('请在协调 Agent 标签页发送')).toBeVisible();
   async function expectAligned(first: typeof parent, second: typeof parent) {
     for (const selector of ['.workspace-tab-signal', '.workspace-tab-icon']) {
       const firstBox = (await first.locator(selector).boundingBox())!;
