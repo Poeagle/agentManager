@@ -68,6 +68,12 @@ export function getAgentDocsBatch(id: string, tabId: string) {
   return getDb().prepare('SELECT * FROM agent_docs_batches WHERE id=? AND tab_id=?').get(id, tabId) as AgentDocsBatch | undefined;
 }
 
+/** Only platform-initiated brief handoffs continue active batches in the fresh conversation. */
+export function rebindActiveAgentDocsBatches(tabId: string, oldNative: string, newNative: string, environmentId: string) {
+  getDb().prepare(`UPDATE agent_docs_batches SET native_id=? WHERE tab_id=? AND native_id=?
+    AND environment_id=? AND wake_status IN ('waiting','submitting')`).run(newNative, tabId, oldNative, environmentId);
+}
+
 /** Called within the same transaction that records the idempotent dispatch operation. */
 export function reserveAgentDocsBatch(id: string, tabId: string, count: number) {
   return getDb().prepare(`UPDATE agent_docs_batches SET task_count=task_count+? WHERE id=? AND tab_id=?

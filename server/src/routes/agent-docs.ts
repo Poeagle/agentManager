@@ -5,7 +5,7 @@ import { findUserById, userCanUseToolForProject } from '../auth.js';
 import { getDb } from '../db/index.js';
 import { agentDocsAllowed, agentDocsTabAccessible, verifyAgentDocsToken, withAgentDocsCreation, withAgentDocsHandoff } from '../services/agent-docs.js';
 import { agentDocsBatchLimits, agentDocsBatchScheduler, agentDocsBatchSnapshot, getAgentDocsBatch,
-  initAgentDocsBatches, openAgentDocsBatch, reserveAgentDocsBatch, sealAgentDocsBatch, type AgentDocsBatch } from '../services/agent-docs-batches.js';
+  initAgentDocsBatches, openAgentDocsBatch, rebindActiveAgentDocsBatches, reserveAgentDocsBatch, sealAgentDocsBatch, type AgentDocsBatch } from '../services/agent-docs-batches.js';
 import { agentForSession, getAgent } from '../services/agents/index.js';
 import { canUseSessionEnvironment } from '../services/agents/environment-access.js';
 import { executionSettingsPatch, inPlaceModelChoices } from '../services/agents/model-preferences.js';
@@ -237,11 +237,11 @@ async function mutate(scope: Scope, kind: string, input: { request_id: string },
 
 const deliveryTails = new Map<string, { tail: Promise<unknown>; depth: number }>();
 
-async function deliver(app: Parameters<typeof platformApi>[0], scope: Scope, id: string, text: string, requestId: string, replyTo?: string, intent?: string, batchId?: string, afterCurrentTurn?: boolean) {
+async function withOrderedDelivery<T>(id: string, deliver: () => Promise<T>) {
   const queue = deliveryTails.get(id) || { tail: Promise.resolve(), depth: 0 };
   if (queue.depth >= LIMITS.pending_submissions) return { tab_id: id, status: 'rejected', reason: '目标会话当前有太多待投递消息' };
   queue.depth++;
-  const next = queue.tail.catch(() => {}).then(() => deliverOrdered(app, scope, id, text, requestId, replyTo, intent, batchId, afterCurrentTurn));
+  const next = queue.tail.catch(() => {}).then(deliver);
   queue.tail = next;
   deliveryTails.set(id, queue);
   try { return await next; }
@@ -249,6 +249,10 @@ async function deliver(app: Parameters<typeof platformApi>[0], scope: Scope, id:
     queue.depth--;
     if (queue.depth === 0) deliveryTails.delete(id);
   }
+}
+
+function deliver(app: Parameters<typeof platformApi>[0], scope: Scope, id: string, text: string, requestId: string, replyTo?: string, intent?: string, batchId?: string, afterCurrentTurn?: boolean) {
+  return withOrderedDelivery(id, () => deliverOrdered(app, scope, id, text, requestId, replyTo, intent, batchId, afterCurrentTurn));
 }
 
 function deliveryBlocked(target: Session | undefined, id: string) {
@@ -272,73 +276,80 @@ interface HandoffSubmission {
   afterCurrentTurn?: boolean;
 }
 
-async function prepareGuardedDispatch(app: Parameters<typeof platformApi>[0], scope: Scope, input: HandoffSubmission, action: 'new' | 'brief') {
-  const reject = (message: string) => new PlatformApiError(message, 409, 'rejected');
+const rejectHandoff = (reason: string) => new PlatformApiError(reason, 409, 'rejected');
+
+async function prepareGuardedHandoff(app: Parameters<typeof platformApi>[0], input: HandoffSubmission, scope?: Scope) {
   const assertTarget = (expectedNative?: string) => {
-    const source = ownedTab(scope, scope.source.id);
-    const target = ownedTab(scope, input.targetId);
-    if (!source || !agentDocsAllowed(source, 'write') || !target || target.parent_session_id !== source.id
+    const source = scope && ownedTab(scope, scope.source.id);
+    const target = getSession(input.targetId);
+    if (!target || target.created_by_user_id !== input.userId || !agentDocsAllowed(target, 'write')
+      || (scope && (!source || !agentDocsAllowed(source, 'write') || target.project_id !== scope.projectId))
       || (target.agent_environment_id || 'native') !== input.environment || !canUseSessionEnvironment(target, input.userId)
       || (expectedNative && nativeConversationId(target) !== expectedNative) || deliveryBlocked(target, target.id))
-      throw reject('派工的来源、目标会话或账号已变化，消息尚未发送');
+      throw rejectHandoff('消息来源、目标会话或账号已变化，消息尚未发送');
     return target;
   };
   const target = assertTarget(input.native);
+  const agent = agentForSession(target);
+  if (!(input.afterCurrentTurn ? agent.input.supportsFollowUp : agent.input.supportsImmediate))
+    throw rejectHandoff('目标 Agent 不支持本次投递方式，消息尚未发送');
   const unfinished = getDb().prepare(`
     SELECT 1 FROM agent_docs_handoffs task
     WHERE ${trackedTask} AND task.id<>? AND NOT EXISTS (${matchingTaskResult}) LIMIT 1
   `);
   const assertNoOtherTasks = () => {
-    if (unfinished.get(target.id, input.clientId)) throw reject('已有任务待回传，暂缓新开会话，本条任务尚未发送');
+    if (unfinished.get(target.id, input.clientId)) throw rejectHandoff('目标已有任务待回传，暂缓简要压缩，消息尚未发送');
   };
   assertNoOtherTasks();
+  const policy = sendGuardPolicy();
   const path = `/api/sessions/${encodeURIComponent(target.id)}`;
   let text = input.text;
-  if (action === 'brief') {
-    try {
-      const prepared = await prepareBriefSend(target.id, input.native, { input: text }, query =>
-        platformApi(app, input.userId, 'GET', `${path}/conversation?${new URLSearchParams(query)}`));
-      // History projection strips the trusted header and reveals the brief card.
+  try {
+    const prepared = await prepareBriefSend(target.id, input.native, { input: text }, query =>
+      platformApi(app, input.userId, 'GET', `${path}/conversation?${new URLSearchParams(query)}`));
+    // History projection strips the trusted header and reveals the brief card.
+    if (text.startsWith('[Agent Manager handoff · ')) {
       const headerLength = text.indexOf('\n') + 1;
       text = text.slice(0, headerLength) + prepared.input.slice(0, -text.length) + text.slice(headerLength);
-    } catch (error) {
-      throw reject(error instanceof Error ? error.message : '简要压缩失败，任务尚未发送');
-    }
+    } else text = prepared.input;
+  } catch (error) {
+    throw rejectHandoff(error instanceof Error ? error.message : '简要压缩失败，消息尚未发送');
   }
 
-  const policy = sendGuardPolicy();
   const check = await inspectSendGuard(assertTarget(input.native), input.userId, { input: input.text, attachments: [], batch: null }, policy);
-  if (check.required_action !== action || !check.can_new || check.switch_account || JSON.stringify(policy) !== JSON.stringify(sendGuardPolicy()))
-    throw reject('发送保护规则或会话状态已变化，任务尚未发送');
+  if (!check.needs_confirmation || !check.can_new || check.switch_account || JSON.stringify(policy) !== JSON.stringify(sendGuardPolicy()))
+    throw rejectHandoff('发送保护规则或会话状态已变化，消息尚未发送');
   assertTarget(input.native);
   assertNoOtherTasks();
   const fresh = await newSessionConversation(target.id, undefined, undefined, input.native, undefined, { preserveHistory: true });
-  if (!fresh.ok) throw reject(fresh.error || '无法新开会话，任务尚未发送');
-  broadcastEphemeral({ type: 'session.started', session_id: target.id, project_id: scope.projectId });
+  if (!fresh.ok) throw rejectHandoff(fresh.error || '无法完成简要压缩，消息尚未发送');
   const next = assertTarget();
   const native = nativeConversationId(next);
-  if (!native || native === input.native || agentForSession(next) !== agentForSession(target))
-    throw reject('新会话身份未确认，任务尚未发送');
+  if (!native || native === input.native || agentForSession(next) !== agent)
+    throw rejectHandoff('新会话身份未确认，消息尚未发送');
+  rebindActiveAgentDocsBatches(target.id, input.native, native, input.environment);
+  broadcastEphemeral({ type: 'session.started', session_id: target.id, project_id: target.project_id! });
   return { text, native };
 }
 
-async function submitHandoff(app: Parameters<typeof platformApi>[0], input: HandoffSubmission, dispatchScope?: Scope) {
+async function submitHandoff(app: Parameters<typeof platformApi>[0], input: HandoffSubmission, scope?: Scope) {
   const submit = (text: string, native: string) => withAgentDocsHandoff(input, () =>
     platformApi(app, input.userId, 'POST', `/api/sessions/${encodeURIComponent(input.targetId)}/input`, {
       input: text, source: 'conversation', client_id: input.clientId, expected_native_id: native,
       expected_environment_id: input.environment, ...(input.afterCurrentTurn && { after_current_turn: true }),
     }));
   try {
-    let response, guardAction: 'new' | 'brief' | undefined;
+    let response, guardAction: 'brief' | undefined;
     try {
       response = await submit(input.text, input.native);
     } catch (error) {
       const guard = error instanceof PlatformApiError ? error.sendGuard : undefined;
-      const action = guard?.required_action;
-      if (!dispatchScope || !(error instanceof PlatformApiError) || error.statusCode !== 409 || error.submission !== 'rejected'
-        || guard?.native_id !== input.native || !guard.can_new || guard.switch_account || (action !== 'new' && action !== 'brief')) throw error;
-      const prepared = await prepareGuardedDispatch(app, dispatchScope, input, action);
-      guardAction = action;
+      if (!(error instanceof PlatformApiError) || error.statusCode !== 409 || error.submission !== 'rejected'
+        || guard?.native_id !== input.native || !guard.needs_confirmation) throw error;
+      if (guard.switch_account) throw rejectHandoff('目标账号额度已用尽，消息尚未发送');
+      if (!guard.can_new) throw rejectHandoff('目标会话当前无法简要压缩，请核对会话状态和权限，消息尚未发送');
+      const prepared = await prepareGuardedHandoff(app, input, scope);
+      guardAction = 'brief';
       response = await submit(prepared.text, prepared.native);
     }
     return { status: response.status === 'queued' ? 'queued' : 'submitted', ...(guardAction && {guard_action: guardAction}) };
@@ -360,10 +371,9 @@ async function deliverOrdered(app: Parameters<typeof platformApi>[0], scope: Sco
   const label = sessionPresenter(scope.userId)(source).tab_name;
   db.prepare(`INSERT INTO agent_docs_handoffs(id,target_tab_id,source_tab_id,source_label,request_id,reply_to,status,content,intent,batch_id)
     VALUES(?,?,?,?,?,?, 'unknown', ?,?,?)`).run(messageId, id, source.id, label, requestId, replyTo || null, text, intent || 'note', batchId ?? null);
-  const dispatchScope = intent === 'task' && !replyTo && target.parent_session_id === source.id ? scope : undefined;
   const receipt = await submitHandoff(app, { targetId: id, userId: scope.userId, clientId: messageId, label,
     text: handoffText(source.id, messageId, text, replyTo), native: nativeConversationId(target)!, afterCurrentTurn,
-    environment: target.agent_environment_id || 'native' }, dispatchScope);
+    environment: target.agent_environment_id || 'native' }, scope);
   db.prepare('UPDATE agent_docs_handoffs SET status=? WHERE id=?').run(receipt.status, messageId);
   return { tab_id: id, message_id: messageId, ...receipt };
 }
@@ -382,18 +392,23 @@ async function deliverBatchReply(app: Parameters<typeof platformApi>[0], scope: 
   if (input.intent !== 'blocker') return stored;
 
   const receipt = await wakeBatchParent(app, batch, messageId, label, handoffText(source.id, messageId,
-    `本批有需立即协调的阻塞。\n${input.text}`, replyTo));
+    `本批有需立即协调的阻塞。\n${input.text}`, replyTo), scope);
   return { ...stored, wake_status: receipt.status, wake_error: receipt.reason };
 }
 
-async function wakeBatchParent(app: Parameters<typeof platformApi>[0], batch: AgentDocsBatch, clientId: string, label: string, text: string) {
-  const target = getSession(batch.tab_id);
-  if (!target?.created_by_user_id || !agentDocsAllowed(target, 'write'))
-    return { status: 'rejected', reason: '父标签已关闭或权限已变化' };
-  const blocked = deliveryBlocked(target, target.id);
-  if (blocked) return { status: 'rejected', reason: blocked };
-  return submitHandoff(app, { targetId: target.id, userId: target.created_by_user_id, clientId, label, text,
-    native: batch.native_id, environment: batch.environment_id });
+function wakeBatchParent(app: Parameters<typeof platformApi>[0], batch: AgentDocsBatch, clientId: string, label: string, text: string, scope?: Scope) {
+  return withOrderedDelivery(batch.tab_id, async () => {
+    const current = getAgentDocsBatch(batch.id, batch.tab_id);
+    const target = getSession(batch.tab_id);
+    const source = scope && ownedTab(scope, scope.source.id);
+    if (!current || !target?.created_by_user_id || !agentDocsAllowed(target, 'write')
+      || (scope && (!source || !agentDocsAllowed(source, 'write') || target.created_by_user_id !== scope.userId || target.project_id !== scope.projectId)))
+      return { status: 'rejected', reason: '来源或父标签权限已变化' };
+    const blocked = deliveryBlocked(target, target.id);
+    if (blocked) return { status: 'rejected', reason: blocked };
+    return submitHandoff(app, { targetId: target.id, userId: target.created_by_user_id, clientId, label, text,
+      native: current.native_id, environment: current.environment_id }, scope);
+  });
 }
 
 export const agentDocsRoutes: FastifyPluginAsync = async app => {
@@ -453,7 +468,7 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
       const user = findUserById(scope.userId);
       const operations = ['list-tabs', 'read-tab', 'tab-controls', 'inbox', 'read-message', 'execution-options', 'operation', 'read-batch'];
       if (agentDocsAllowed(scope.source, 'write')) operations.push('create-tab', 'update-tab-controls', 'send-message', 'delete-tab', 'open-batch', 'seal-batch');
-      return { version: '1.6.0', source_tab_id: scope.source.id, project_id: scope.projectId,
+      return { version: '1.7.0', source_tab_id: scope.source.id, project_id: scope.projectId,
         user: { id: user?.id, display_name: user?.display_name || user?.username }, operations, limits: LIMITS };
     });
 
