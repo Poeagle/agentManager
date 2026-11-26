@@ -3,7 +3,8 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { findUserById, userCanUseToolForProject } from '../auth.js';
 import { getDb } from '../db/index.js';
-import { agentDocsAllowed, agentDocsTabAccessible, verifyAgentDocsToken, withAgentDocsCreation, withAgentDocsHandoff } from '../services/agent-docs.js';
+import { agentDocsAllowed, agentDocsTabAccessible, CHILD_AGENT_INSTRUCTIONS, verifyAgentDocsToken, withAgentDocsCreation, withAgentDocsHandoff } from '../services/agent-docs.js';
+import type { NotificationInput, NotificationSession } from '../services/notifications.js';
 import { agentDocsBatchLimits, agentDocsBatchScheduler, agentDocsBatchSnapshot, getAgentDocsBatch,
   initAgentDocsBatches, openAgentDocsBatch, rebindActiveAgentDocsBatches, reserveAgentDocsBatch, sealAgentDocsBatch, type AgentDocsBatch } from '../services/agent-docs-batches.js';
 import { agentForSession, getAgent } from '../services/agents/index.js';
@@ -48,6 +49,11 @@ const updateTabControls = z.object({
 const deleteTab = z.object({
   request_id: tabId,
   delete_history: z.boolean().default(false),
+}).strict();
+const stopChildTurn = z.object({
+  request_id: tabId,
+  native_id: z.string().min(1).max(2048),
+  turn_id: z.string().min(1).max(512).regex(/^[^\x00-\x1f\x7f]+$/),
 }).strict();
 const send = z.object({
   request_id: tabId,
@@ -261,8 +267,8 @@ function deliveryBlocked(target: Session | undefined, id: string) {
   if (tracker?.isPermission || tracker?.promptType === 'choice' || tracker?.promptType === 'confirmation') return '目标正在等待用户交互';
 }
 
-function handoffText(sourceId: string, messageId: string, text: string, replyTo?: string) {
-  return `[Agent Manager handoff · source_tab_id=${sourceId} · message_id=${messageId}${replyTo ? ` · reply_to=${replyTo}` : ''}]\n${text}`;
+function handoffText(sourceId: string, messageId: string, text: string, replyTo?: string, child = false) {
+  return `[Agent Manager handoff · source_tab_id=${sourceId} · message_id=${messageId}${replyTo ? ` · reply_to=${replyTo}` : ''}${child ? ` · child_tab=${CHILD_AGENT_INSTRUCTIONS}` : ''}]\n${text}`;
 }
 
 interface HandoffSubmission {
@@ -372,10 +378,43 @@ async function deliverOrdered(app: Parameters<typeof platformApi>[0], scope: Sco
   db.prepare(`INSERT INTO agent_docs_handoffs(id,target_tab_id,source_tab_id,source_label,request_id,reply_to,status,content,intent,batch_id)
     VALUES(?,?,?,?,?,?, 'unknown', ?,?,?)`).run(messageId, id, source.id, label, requestId, replyTo || null, text, intent || 'note', batchId ?? null);
   const receipt = await submitHandoff(app, { targetId: id, userId: scope.userId, clientId: messageId, label,
-    text: handoffText(source.id, messageId, text, replyTo), native: nativeConversationId(target)!, afterCurrentTurn,
+    text: handoffText(source.id, messageId, text, replyTo, !!target.parent_session_id), native: nativeConversationId(target)!, afterCurrentTurn,
     environment: target.agent_environment_id || 'native' }, scope);
   db.prepare('UPDATE agent_docs_handoffs SET status=? WHERE id=?').run(receipt.status, messageId);
   return { tab_id: id, message_id: messageId, ...receipt };
+}
+
+/** Native issues are durable internal messages before any wake-up is attempted. */
+export async function relayChildAgentAttention(app: Parameters<typeof platformApi>[0], observed: NotificationSession, notice: NotificationInput) {
+  const child = getSession(observed.id);
+  const native = child && nativeConversationId(child);
+  if (!child?.parent_session_id || !native || native !== nativeConversationId(observed) || !child.created_by_user_id || !child.project_id
+    || !agentDocsTabAccessible(child)) return;
+  const scope = { source: child, userId: child.created_by_user_id, projectId: child.project_id };
+  const parent = ownedTab(scope, child.parent_session_id, true);
+  if (!parent || parent.id === child.id || !agentDocsTabAccessible(parent, 'write')) return;
+  const label = sessionPresenter(scope.userId)(child).tab_name;
+  const id = 'child-' + createHash('sha256').update(JSON.stringify([child.id, native, parent.id, notice.kind, notice.source_id])).digest('hex');
+  const db = getDb();
+  const tasks = db.prepare(`SELECT task.id,task.batch_id FROM agent_docs_handoffs task
+    WHERE ${trackedTask} AND task.source_tab_id=? AND NOT EXISTS (${matchingTaskResult}) LIMIT 2`)
+    .all(child.id, parent.id) as { id: string; batch_id: string | null }[];
+  const task = tasks.length === 1 ? tasks[0] : undefined;
+  const guidance = notice.kind === 'approval' ? '原生工具权限仍需遵守平台授权。请协调已授权的替代做法，必要时在你自己的会话向用户请示。'
+    : '请先核查并协调。确需用户决定时，在你的会话集中提问，再通过 agent-docs 把结论回传给子 Agent。';
+  const text = `${notice.title}\n\n${notice.body.slice(0, 10000)}\n\n来源子标签页 ID：${child.id}${notice.turn_id ? `\n原生会话 ID：${native}\n执行轮次 ID：${notice.turn_id}` : ''}\n${guidance}`;
+  const stored = db.prepare(`INSERT OR IGNORE INTO agent_docs_handoffs(id,target_tab_id,source_tab_id,source_label,request_id,reply_to,status,content,intent,batch_id)
+    VALUES(?,?,?,?,?,?,'stored',?,'blocker',?)`).run(id, parent.id, child.id, label, id, task?.id ?? null, text, task?.batch_id ?? null);
+  if (!stored.changes) return;
+  await withOrderedDelivery(parent.id, async () => {
+    const target = ownedTab(scope, parent.id), targetNative = target && nativeConversationId(target);
+    if (!target || !targetNative || !agentDocsAllowed(target, 'write') || deliveryBlocked(target, target.id)) return;
+    const wake = `子 Agent 有待协调事项。用 agent-docs 的 read-message ${id} 查看详情，按协作协议处理。`;
+    const receipt = await submitHandoff(app, { targetId: target.id, userId: scope.userId, clientId: id, label, native: targetNative,
+      text: handoffText(child.id, id, wake, task?.id, !!target.parent_session_id), environment: target.agent_environment_id || 'native' });
+    if (receipt.status === 'submitted' || receipt.status === 'queued')
+      db.prepare('UPDATE agent_docs_handoffs SET status=? WHERE id=?').run(receipt.status, id);
+  });
 }
 
 async function deliverBatchReply(app: Parameters<typeof platformApi>[0], scope: Scope, batch: AgentDocsBatch,
@@ -392,7 +431,7 @@ async function deliverBatchReply(app: Parameters<typeof platformApi>[0], scope: 
   if (input.intent !== 'blocker') return stored;
 
   const receipt = await wakeBatchParent(app, batch, messageId, label, handoffText(source.id, messageId,
-    `本批有需立即协调的阻塞。\n${input.text}`, replyTo), scope);
+    `本批有需立即协调的阻塞。\n${input.text}`, replyTo, !!target.parent_session_id), scope);
   return { ...stored, wake_status: receipt.status, wake_error: receipt.reason };
 }
 
@@ -406,7 +445,8 @@ function wakeBatchParent(app: Parameters<typeof platformApi>[0], batch: AgentDoc
       return { status: 'rejected', reason: '来源或父标签权限已变化' };
     const blocked = deliveryBlocked(target, target.id);
     if (blocked) return { status: 'rejected', reason: blocked };
-    return submitHandoff(app, { targetId: target.id, userId: target.created_by_user_id, clientId, label, text,
+    return submitHandoff(app, { targetId: target.id, userId: target.created_by_user_id, clientId, label,
+      text: !scope && target.parent_session_id ? `${CHILD_AGENT_INSTRUCTIONS}\n\n${text}` : text,
       native: current.native_id, environment: current.environment_id }, scope);
   });
 }
@@ -467,8 +507,8 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
       const scope = readScope(req);
       const user = findUserById(scope.userId);
       const operations = ['list-tabs', 'read-tab', 'tab-controls', 'inbox', 'read-message', 'execution-options', 'operation', 'read-batch'];
-      if (agentDocsAllowed(scope.source, 'write')) operations.push('create-tab', 'update-tab-controls', 'send-message', 'delete-tab', 'open-batch', 'seal-batch');
-      return { version: '1.7.0', source_tab_id: scope.source.id, project_id: scope.projectId,
+      if (agentDocsAllowed(scope.source, 'write')) operations.push('create-tab', 'update-tab-controls', 'send-message', 'delete-tab', 'stop-child-turn', 'open-batch', 'seal-batch');
+      return { version: '1.8.0', source_tab_id: scope.source.id, parent_tab_id: scope.source.parent_session_id ?? null, project_id: scope.projectId,
         user: { id: user?.id, display_name: user?.display_name || user?.username }, operations, limits: LIMITS };
     });
 
@@ -638,6 +678,26 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
     scoped.get<{ Params: { id: string } }>('/operations/:id', async (req, reply) => {
       const row = operation(readScope(req), req.params.id);
       return row ? operationView(req.params.id, row) : reply.code(404).send({ error: '找不到操作记录' });
+    });
+
+    scoped.post<{ Params: { id: string } }>('/tabs/:id/stop', async (req, reply) => {
+      const parsed = stopChildTurn.safeParse(req.body);
+      if (!parsed.success || !tabId.safeParse(req.params.id).success) return reply.code(400).send({ error: '无效的子 Agent 停止请求' });
+      const scope = readScope(req), id = req.params.id, input = { ...parsed.data, tab_id: id };
+      return mutate(scope, 'stop-child-turn', input, async () => {
+        const target = ownedTab(scope, id);
+        if (!target || target.parent_session_id !== scope.source.id || !agentDocsAllowed(target, 'write'))
+          return { status: 'rejected', reason: '只能停止直属子 Agent 的对应轮次' };
+        try {
+          await platformApi(app, scope.userId, 'POST', `/api/sessions/${encodeURIComponent(id)}/conversation/stop`, {
+            turn_id: input.turn_id, expected_native_id: input.native_id,
+          });
+          return { status: 'accepted', tab_id: id, turn_id: input.turn_id };
+        } catch (error) {
+          if (error instanceof PlatformApiError && error.statusCode < 500) return { status: 'rejected', reason: error.message };
+          throw error;
+        }
+      });
     });
 
     scoped.post('/messages', async (req, reply) => {

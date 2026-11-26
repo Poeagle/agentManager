@@ -39,6 +39,13 @@ python3 scripts/platform_api.py read-tab -- "$target_tab_id"
 
 回传后需要补证据或复验时，用原标签派发跟进任务。运行中的子标签有队列能力时，可用 [轮后派发](messages.md#投递) 把跟进安排在当前轮结束后。需要调整模型、推理强度或 Fast 时，使用 [原地更新](allocation.md#已有子标签页)。
 
+收到原生交互阻塞后，若该轮次无法继续，可以停止直属子标签的对应轮次。`stop-child-turn` 调用 `POST /tabs/{tab_id}/stop`，使用同一条内部阻塞消息里的原生会话 ID 和执行轮次 ID。回执 `accepted` 表示停止请求已受理，用 `read-tab` 确认执行已停止后再派发。结果待确认时，用原请求 ID 查询。
+
+```sh
+python3 scripts/platform_api.py stop-child-turn --request-id="$request_id" \
+  --native-id="$native_id" --turn-id="$turn_id" -- "$child_tab_id"
+```
+
 ## 创建并交付任务
 
 `POST /tabs` 对应 `create-tab`。新标签页继承创建者的 Agent 类型、Provider 和账号。先按[派工前核查](#派工前核查)确认暂无合适的已有标签，再按[派工上限](allocation.md#派工上限)在同一 Provider 内选配置。用有辨识度的任务或角色命名，例如 Jira 工单号。

@@ -5,6 +5,7 @@ import {userOwnsProject} from '../auth.js';
 import {listNotifications,markNotificationsRead,markVisibleNotifications,dismissNotifications,notificationPreferences,saveNotificationPreferences} from '../services/notifications.js';
 import {NotificationObserver} from '../services/notification-observer.js';
 import {getDb} from '../db/index.js';
+import {relayChildAgentAttention} from './agent-docs.js';
 
 const querySchema=z.object({filter:z.enum(['pending','unread','all']).optional(),project_id:z.string().min(1).max(256).optional(),before:z.coerce.number().int().positive().optional()}).strict();
 const readSchema=z.object({ids:z.array(z.number().int().positive()).max(200).default([]),through_id:z.number().int().positive().optional(),project_id:z.string().min(1).max(256).optional()}).strict().refine(value=>value.ids.length||value.through_id,{message:'请选择要标记的通知'});
@@ -14,7 +15,8 @@ const preferencesSchema=z.object({muted_project_ids:z.array(z.string().min(1).ma
 /** Personal dashboard routes. Sending input continues through the original
  * authenticated session APIs, including their current permissions and guards. */
 export const notificationRoutes:FastifyPluginAsync=async app=>{
-  const observer=new NotificationObserver(error=>app.log.warn({err:error},'Notification observer failed'));
+  const observer=new NotificationObserver(error=>app.log.warn({err:error},'Notification observer failed'),
+    (session,notice)=>relayChildAgentAttention(app,session,notice));
   app.addHook('onReady',async()=>observer.start());
   app.addHook('onClose',async()=>observer.stop());
   app.get('/notifications',async(req,reply)=>{

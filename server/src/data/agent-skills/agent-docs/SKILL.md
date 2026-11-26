@@ -7,6 +7,8 @@ description: 用于 Agent Manager 标签页间派工、查看进展、回传结�
 
 使用平台提供的标签页身份。只要你向其他标签页派工，就对这部分交付负责。在明确的项目范围和授权内拆解工作、确认先后依赖、制定验收条件，并持续处理阻塞和核对结果。
 
+**只有最上层负责协调的 Agent 与用户沟通。** 有 `parent_tab_id` 的子 Agent，通过 `agent-docs` 与父 Agent 和其他标签协作。需要澄清、遇到失败或缺少授权时，先[向父 Agent 回传](references/collaboration.md#问题与报错如何上报)，避免直接向用户发出问题或原生交互请求。父 Agent 先解决能自行处理的问题，再统一向用户请示必须由用户决定的事项，并通过协作消息把结论发回子 Agent。
+
 **Codex 子标签页派工最高用 `gpt-6.2-sol`，推理强度最高 `high`，统一关闭 Fast。** `gpt-6-luna` 的推理强度可用到 `max`。按任务难度选够用的配置。新建和复用子标签页都先按[配置分配](references/allocation.md#派工上限)核对模型、强度和速度，再投递任务。
 
 1. 在本技能目录执行 `python3 scripts/platform_api.py capabilities`。按响应中的 `source_tab_id`、`project_id`、`operations` 和 `limits` 确认自己能做什么。客户端自动使用运行时凭据。

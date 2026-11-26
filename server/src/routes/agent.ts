@@ -1,4 +1,4 @@
-import {agentDocsHandoff} from '../services/agent-docs.js';
+import {agentDocsHandoff,CHILD_AGENT_INPUT_ERROR} from '../services/agent-docs.js';
 import {inspectSendGuard,checkSendGuardSubmission} from '../services/conversation-send-guard.js';
 import {validateBatch,rememberBatch} from '../services/conversation-batches.js';
 import {conversationQuestionReply} from '../services/conversation-question-reply.js';
@@ -115,7 +115,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.45.0',
+    version:'3.46.0',
     updatedAt:'2026-11-26',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -387,7 +387,7 @@ export function getAgentApiContract() {
         category: 'Session control',
         method: 'POST',
         path: '/api/sessions/:id/input',
-        description: 'Submit a follow-up immediately, including while busy or another execute request is waiting. Uses bracketed paste plus Enter, like typing in the dashboard. Does not cancel the current operation, reset output, or wait for an agent reply. Session ownership and project write access are required.',
+        description: 'Submit a follow-up immediately, including while busy or another execute request is waiting. Uses bracketed paste plus Enter, like typing in the dashboard. Does not cancel the current operation, reset output, or wait for an agent reply. Session ownership and project write access are required. Direct input to child Agent tabs is rejected with 403; use an authorized Agent Docs handoff.',
         request: {
           input: {type:'string',required:true,description:'Text, at most 64 KiB; may be empty when attachments are present.'},
           after_current_turn: {type:'boolean',required:false,description:'Use true with conversation source to dispatch through the native queue without falling back to terminal text. A busy target without queue capacity rejects the input.'},
@@ -404,14 +404,14 @@ export function getAgentApiContract() {
       {
         category:'Session control',method:'POST',path:'/api/sessions/:id/conversation/stop',
         description:'Request interruption of the specified currently active native turn. Acceptance does not mean the turn has finished. A changed or inactive turn returns 409; only the session creator can stop it.',
-        request:{turn_id:{type:'string',required:true,description:'Opaque active turn identifier from the conversation stream.'}},
+        request:{turn_id:{type:'string',required:true,description:'Opaque active turn identifier from the conversation stream.'},expected_native_id:{type:'string',required:false,description:'Expected native conversation identity. A changed binding returns 409 before interruption.'}},
         response:{status:'accepted — interruption requested; observe the stream for completion'},
       },
       {
         category: 'Session control',
         method: 'POST',
         path: '/api/sessions/:id/execute',
-        description: 'Send input and get clean rendered output. Output is processed through a virtual terminal that handles all TUI cursor movements, screen redraws, and ANSI codes — you get readable text, not raw terminal data. Only one execute per session at a time (409 if busy).',
+        description: 'Send input and get clean rendered output. Output is processed through a virtual terminal that handles all TUI cursor movements, screen redraws, and ANSI codes — you get readable text, not raw terminal data. Only one execute per session at a time (409 if busy). Child Agent tabs accept input through Agent Docs handoffs.',
         request: {
           input: { type: 'string', required: true, description: 'Text to send (carriage return appended automatically). An empty string intentionally sends Enter.' },
           waitFor: { type: 'string', required: false, description: 'Literal text — resolve early when matched in output' },
@@ -561,13 +561,13 @@ export function getAgentApiContract() {
         category: 'Scheduled tasks', method: 'GET', path: '/api/scheduled-tasks/codex-models?project_id=:projectId&environment_id=:environmentId',
         description: 'Read the selected authorized Codex Engine model catalog for a permitted project.',
       },
-      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/capabilities',description:'With a launch-issued tab credential, return the source tab, owner, project, callable operations and limits.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/capabilities',description:'With a launch-issued tab credential, return the source tab, parent_tab_id, owner, project, callable operations and limits.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs',description:'List the owner’s Agent tabs in the same project, including parent_tab_id, can_delete and can_queue_follow_up. Optional cursor from next_cursor, children=true for direct children with optional cleanup_review evidence, and include_ended=true for ended tabs.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs/:id',description:'Read parent_tab_id, state and recent public conversation text for an accessible tab.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs/:id/controls',description:'Read the current execution, pending selection, supported fields and model choices for the authorized target tab’s current binding. can_update is true only for a writable direct child with editable controls.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs/:id/controls',description:'Update a direct child in place through its existing Provider and account. The current model request continues. Result status is applied, saved for recovery, submitted pending confirmation, unsupported, rejected or unknown.',
         request:{request_id:{type:'string',required:true},execution:{type:'object',required:true,description:'At least one of model_id, reasoning_effort or service_tier. Use model and tier IDs returned by GET; default resets the speed tier.'}}},
-      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox',description:'Read the current tab’s handoffs in receipt order with verified source, message id, reply reference, optional batch_id and next_cursor.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox',description:'Read the current tab’s handoffs in receipt order with verified source, message id, reply reference, optional batch_id and next_cursor. Native child questions, approval requests and errors are stored as internal blockers for the parent tab.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/inbox/:id',description:'Read one submitted, queued or stored handoff addressed to the source tab, including batch replies before the parent wakes.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/batches',description:'With a write-capable tab credential, open a result collection batch for the current tab. Body: request_id and optional timeout_seconds (default 1800). Result: batch_id and deadline_at.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/batches/:id/seal',description:'Close batch registration. Body: request_id. Once sealed, all terminal tasks trigger one summary input to the parent. The deadline can also trigger that input.'},
@@ -575,6 +575,7 @@ export function getAgentApiContract() {
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/execution-options',description:'Return source_execution and launch settings for the source tab’s bound Provider or account only. Optional agent_id filters results and include_quota=true adds available quota.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs',description:'Create and launch one tab in the source project using the same Agent, Provider and account as the source tab. Body: request_id, name, optional execution, initial_message, batch_id (requires initial_message) and retain_child_tab_ids. A child_cleanup_required 409 includes cleanup_candidates and means the operation has not started. A different agent_id or environment_id is rejected before launch. The platform checks model settings before sending the first task.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs/:id/delete',description:'Close another authorized tab belonging to the same user and project. Body: request_id and optional delete_history (default false). Explicit history removal runs in the background and can be tracked via GET /api/agent-docs/operations/:id. No cascade to child tabs.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs/:id/stop',description:'Stop a confirmed native turn in a direct child tab using request_id, native_id and turn_id. Use the identities from an internal blocker. Accepted means interruption requested; verify the current turn is finished before reassigning.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text to target_tab_ids or to the original sender using reply_to. Body: request_id, text, optional intent and batch_id (only with direct task dispatch), retain_child_tab_ids for reviewed children to keep, and after_current_turn=true to queue a direct delivery through the native follow-up API. Direct task dispatch can return child_cleanup_required before submission. If a send protection rule matches, the platform attempts brief compaction in the target tab, preserves the old history and account, and retries once with the same message ID. Successful direct deliveries report guard_action=brief. Replies to a batched task are stored immediately. A blocker reply additionally attempts immediate input and reports wake_status. An ordinary reply outside a batch is delivered immediately.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/operations/:id',description:'Read settled or partial receipts for a request_id owned by the source tab.'},
       {
@@ -609,6 +610,7 @@ export function getAgentApiContract() {
     tips: [
       'Agent Docs dispatch: GET /api/agent-docs/tabs?children=true&include_ended=true, review cleanup_review entries and reuse suitable tabs. Close finished tabs with history retained or name the children being retained in retain_child_tab_ids. Create a child only if no existing tab fits.',
       'Agent Docs send example: POST /api/agent-docs/messages with '+JSON.stringify({request_id:'send-review',target_tab_ids:['review-tab-id'],intent:'task',text:'Review the change and report the findings'})+'. A submitted receipt with guard_action=brief means the platform continued the target conversation with brief history and delivered the original message. Check the original request_id if the receipt is unknown.',
+      'Agent Docs child question example: send a blocker referencing the original task message. The parent resolves it internally or consolidates questions in its own conversation, then answers through an internal handoff.',
       'Agent Docs child tab example: POST /api/agent-docs/tabs with '+JSON.stringify({request_id:'child-review',name:'Review',initial_message:'Review the change and report the findings'})+'. Omit execution to inherit the source Agent, Provider and account.',
       'Agent Docs in-place settings example: GET /api/agent-docs/tabs/:id/controls, then POST to the same path with '+JSON.stringify({request_id:'raise-review-effort',execution:{reasoning_effort:'high'}})+' if the target model supports that effort.',
       'Agent Docs batch example: open via POST /api/agent-docs/batches with '+JSON.stringify({request_id:'open-reviews',timeout_seconds:1800})+', reuse result.batch_id on each task dispatch, then POST /api/agent-docs/batches/:id/seal with an independent request_id.',
@@ -954,6 +956,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
 
   app.post<{Params:{id:string};Body:{input?:unknown;attachments?:unknown;batch?:unknown}}>('/sessions/:id/input-check',async(req,reply)=>{
     const session=getSession(req.params.id);if(!session||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
+    if(session.parent_session_id)return reply.code(403).send({error:CHILD_AGENT_INPUT_ERROR});
     if(!requirePermission(req,reply,'agent_api','write'))return;
     if(typeof req.body?.input!=='string'||Buffer.byteLength(req.body.input)>MAX_EXECUTE_INPUT_BYTES)return reply.code(400).send({error:'Invalid input'});
     try{const attachments=await validateConversationAttachments(session.id,req.body.attachments);validateBatch(req.body.batch,req.body.input,attachments);return reply.header('Cache-Control','private, no-store').send(await inspectSendGuard(session,req.user!.id,{input:req.body.input,attachments,batch:req.body.batch??null}));}
@@ -963,6 +966,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   app.post<{Params:{id:string};Body:{input?:unknown;source?:unknown;client_id?:unknown;expected_native_id?:unknown;expected_environment_id?:unknown;attachments?:unknown;batch?:unknown;guard_token?:unknown;after_current_turn?:unknown}}>('/sessions/:id/input', async (req, reply) => {
     const {id} = req.params;
     if (!canAccessAgentSession(req.user!.id,id)) return reply.code(404).send({error:'Session not found'});
+    const clientId=req.body?.client_id;
+    const handoff=agentDocsHandoff(id,req.user!.id,clientId);
+    if(getSession(id)?.parent_session_id&&!handoff)return reply.code(403).send({error:CHILD_AGENT_INPUT_ERROR,submission:'rejected'});
     const input = req.body?.input;
     if (typeof input !== 'string' || (!input.trim() && !(Array.isArray(req.body?.attachments) && req.body.attachments.length)) || Buffer.byteLength(input) > MAX_EXECUTE_INPUT_BYTES) return reply.code(400).send({error:'input must be text of at most 64 KiB, with text or at least one attachment'});
     const afterCurrentTurn=req.body?.after_current_turn===true;
@@ -974,8 +980,6 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     if(typeof expectedEnvironment==='string'&&(getSession(id)?.agent_environment_id||'native')!==expectedEnvironment)return reply.code(409).send({error:'标签页已更换账号，请引用最新通知',submission:'rejected'});
     if(expectedNative!==undefined&&(typeof expectedNative!=='string'||!expectedNative||expectedNative.length>2048))return reply.code(400).send({error:'Invalid expected_native_id',submission:'rejected'});
     if(typeof expectedNative==='string'&&nativeConversationId(getSession(id)!)!==expectedNative)return reply.code(409).send({error:'标签页已更换对话，请引用最新通知',submission:'rejected'});
-    const clientId=req.body?.client_id;
-    const handoff=agentDocsHandoff(id,req.user!.id,clientId);
     if(clientId!==undefined && (typeof clientId!=='string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(clientId))) return reply.code(400).send({error:'Invalid client_id'});
     if(typeof clientId==='string'&&getDb().prepare('SELECT 1 FROM conversation_input_sources WHERE session_id=? AND client_id=?').get(id,clientId))return reply.code(409).send({error:'该输入标识已用于平台消息',submission:'rejected'});
     let attachments;try{attachments=await validateConversationAttachments(id,req.body?.attachments);}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'附件不可用'});}
@@ -1011,6 +1015,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     let recordInput: ReturnType<typeof beginSessionAction> | undefined;
     const submission = prior.catch(() => {}).then(async () => {
       const session=getSession(id);
+      if(session?.parent_session_id&&!handoff)throw new AgentSubmissionError(CHILD_AGENT_INPUT_ERROR,'rejected');
       if(typeof expectedEnvironment==='string'&&(!session||(session.agent_environment_id||'native')!==expectedEnvironment))throw Object.assign(Error('标签页已更换账号，请引用最新通知'),{submission:'rejected'});
       if(typeof expectedNative==='string'&&(!session||nativeConversationId(session)!==expectedNative))throw Object.assign(Error('标签页已更换对话，请引用最新通知'),{submission:'rejected'});
       if(session&&guarded){
@@ -1109,6 +1114,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     if (!canAccessAgentSession(req.user!.id, id)) {
       return reply.status(404).send({ error: 'Session not found or not running' });
     }
+    if (getSession(id)?.parent_session_id) return reply.code(403).send({error:CHILD_AGENT_INPUT_ERROR});
     if (!isSessionActive(id)) {
       return reply.status(404).send({ error: 'Session not found or not running' });
     }
@@ -1191,12 +1197,17 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     return tracker.state;
   });
 
-  app.post<{Params:{id:string};Body:{turn_id?:unknown}}>('/sessions/:id/conversation/stop',async(req,reply)=>{
+  app.post<{Params:{id:string};Body:{turn_id?:unknown;expected_native_id?:unknown}}>('/sessions/:id/conversation/stop',async(req,reply)=>{
     const session=getSession(req.params.id);
     if(!session||session.created_by_user_id!==req.user!.id||!canAccessAgentSession(req.user!.id,session.id))return reply.code(404).send({error:'Session not found'});
     if(!['running','detached'].includes(session.status))return reply.code(409).send({error:'会话当前未运行'});
     const turnId=req.body?.turn_id;
     if(typeof turnId!=='string'||!turnId.trim()||turnId.length>512||/[\x00-\x1f\x7f]/.test(turnId))return reply.code(400).send({error:'Invalid turn_id'});
+    const expectedNative=req.body?.expected_native_id;
+    if(expectedNative!==undefined){
+      if(typeof expectedNative!=='string'||!expectedNative||expectedNative.length>2048)return reply.code(400).send({error:'Invalid expected_native_id'});
+      if(nativeConversationId(session)!==expectedNative)return reply.code(409).send({error:'原生会话已变化，停止请求未提交'});
+    }
     const adapter=agentForSession(session);
     if(!adapter.descriptor.capabilities.stopTurn)return reply.code(409).send({error:'此 Agent 不支持停止当前执行'});
     if(!nativeConversationId(session))return reply.code(409).send({error:'当前会话尚未绑定原生会话'});
@@ -1281,7 +1292,10 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       if(frame?.type!=='interaction_response'||typeof frame.request_id!=='string')return;
       let error:string|undefined;
       try {
-        const authorize=()=>{if(getSessionUser(readSessionCookie(req)||'')?.id!==req.user!.id||!canAccessAgentSession(req.user!.id,id)||!userHasPermission(req.user!.id,'agent_api','write'))throw new Error('当前账号没有处理该会话交互的权限');};
+        const authorize=()=>{
+          if(getSessionUser(readSessionCookie(req)||'')?.id!==req.user!.id||!canAccessAgentSession(req.user!.id,id)||!userHasPermission(req.user!.id,'agent_api','write'))throw new Error('当前账号没有处理该会话交互的权限');
+          if(getSession(id)?.parent_session_id)throw new Error(CHILD_AGENT_INPUT_ERROR);
+        };
         authorize();let answer=frame.answer;
         if(frame.attachments!==undefined){
           if(!adapter.descriptor.capabilities.attachments)throw Error('此 Agent 不支持附件');
@@ -1577,6 +1591,10 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
 
         switch (msg.type) {
           case 'execute': {
+            if (getSession(id)?.parent_session_id) {
+              socket.send(JSON.stringify({ type: 'execute_result', requestId: msg.requestId, error: CHILD_AGENT_INPUT_ERROR }));
+              return;
+            }
             if (tracker.hasPendingExecute) {
               socket.send(JSON.stringify({
                 type: 'execute_result',

@@ -272,6 +272,7 @@ export interface AgentSession {
   project_path?: string | null;
   project_id?: string | null;
   created_by_user_id?: string | null;
+  parent_session_id?: string | null;
   status?: string;
 }
 export interface AgentContext {

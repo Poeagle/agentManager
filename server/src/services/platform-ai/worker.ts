@@ -562,13 +562,12 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
       const permanent = (error instanceof ChannelError && error.permanent) || (error instanceof PlatformApiError && [401,403,404].includes(error.statusCode));
       getDb().prepare(`UPDATE platform_ai_tasks SET observation_failures=?,next_observe_at=?,summary=?,status=? WHERE id=? AND status IN ('running','blocked','uncertain')`)
         .run(attempts, now + Math.min(300000, attempts * 15000), `状态读取暂不可用：${publicFailure(error)}`, permanent ? 'suspended' : task.status, task.id);
-      if ((attempts === 3 || permanent) && !isScheduledObservation(task)) enqueueNotice(task.conversation_id, `observation-error:${task.id}:${permanent ? 'suspended' : 'retry'}`, `「${taskLocation(task)}」的任务状态暂时无法读取。${permanent ? '访问权限、用户绑定或会话已变化，已暂停跟踪。' : '平台会继续重试，不会重复下发任务。'}`);
+      if ((attempts === 3 || permanent) && !isScheduledObservation(task) && !getSession(task.session_id)?.parent_session_id) enqueueNotice(task.conversation_id, `observation-error:${task.id}:${permanent ? 'suspended' : 'retry'}`, `「${taskLocation(task)}」的任务状态暂时无法读取。${permanent ? '访问权限、用户绑定或会话已变化，已暂停跟踪。' : '平台会继续重试，不会重复下发任务。'}`);
     }
   }
 
   private saveAssessment(task: TrackedTask, assessment: Assessment, now: number, notify: boolean, finalAnswer = '', personalId:number|null=null,completion?:CompletionNotice): void {
-    notify=notify&&!isScheduledObservation(task)&&
-      !(assessment.status==='reported_complete'&&getSession(task.session_id)?.parent_session_id);
+    notify=notify&&!isScheduledObservation(task)&&!getSession(task.session_id)?.parent_session_id;
     getDb().transaction(() => {
       const updated = getDb().prepare(`UPDATE platform_ai_tasks SET status=?,summary=?,evidence=?,last_notified_at=?,updated_at=datetime('now') WHERE id=? AND status IN ('running','blocked','uncertain')`)
         .run(assessment.status, assessment.summary, assessment.evidence, notify ? now : task.last_notified_at, task.id);
@@ -594,10 +593,10 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
       const projectRecipient = item.dedupe_key.startsWith('project-notice:') ? authorizeProjectNotice(item.dedupe_key, conversation.id) : undefined;
       if (conversation.channel_id || item.destination_channel_id) {
         // Revocation of session access also revokes pending task notifications.
-        const task = item.dedupe_key.startsWith('task:') ? getDb().prepare('SELECT session_id FROM platform_ai_tasks WHERE id=?').get(item.dedupe_key.split(':')[1]) as {session_id: string} | undefined : undefined;
+        const task = /^(task|observation-error):/.test(item.dedupe_key) ? getDb().prepare('SELECT session_id FROM platform_ai_tasks WHERE id=?').get(item.dedupe_key.split(':')[1]) as {session_id: string} | undefined : undefined;
         if (task) {
-          const session = getDb().prepare('SELECT mode,cli_type FROM sessions WHERE id=?').get(task.session_id) as {mode: string; cli_type: string} | undefined;
-          if (!session || !userCanUseSessionTool(conversation.user_id, task.session_id, agentForSession(session).descriptor.id, session.mode === 'terminal' ? 'terminal' : 'session')) throw new ChannelError('任务访问权限已失效', 403, true);
+          const session = getSession(task.session_id);
+          if (!session || session.parent_session_id || !userCanUseSessionTool(conversation.user_id, task.session_id, agentForSession(session).descriptor.id, session.mode === 'terminal' ? 'terminal' : 'session')) throw new ChannelError('任务访问权限已失效', 403, true);
         }
         const destination = item.destination_channel_id || conversation.channel_id;
         const channel = getChannel(destination);
@@ -629,7 +628,8 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
       }
       const metadata=JSON.parse(item.reply_context);
       const completionSessionId=noticeType==='project-notice'&&projectKind==='complete'?projectSessionId:metadata.completion?.session_id;
-      if(completionSessionId&&getSession(completionSessionId)?.parent_session_id){
+      const sourceSessionId=task?.session_id||(noticeType==='project-notice'?projectSessionId:completionSessionId);
+      if(sourceSessionId&&getSession(sourceSessionId)?.parent_session_id){
         cancel('本轮来源为子 Agent');return;
       }
       let destination=this.deliveryDestination(item);

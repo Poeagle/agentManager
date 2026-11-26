@@ -15,6 +15,7 @@ export interface Notification {
   title:string;body:string;read_at:string|null;dismissed_at:string|null;created_at:string;updated_at:string;
 }
 export type NotificationSession=AgentSession&{id:string;project_id:string|null;created_by_user_id:string|null;parent_session_id?:string|null;mode:string;status:string};
+export type NotificationInput=Pick<Notification,'source_id'|'kind'|'state'|'title'|'body'>&Partial<Pick<Notification,'message_id'|'turn_id'>>;
 
 
 export function notificationSession(id:string):NotificationSession|undefined {
@@ -40,13 +41,9 @@ export function saveNotificationPreferences(userId:string,muted:string[]) {
   notificationChanged(userId);
 }
 
-function isChildResult(session:NotificationSession,kind:NotificationKind):boolean {
-  return kind==='result'&&!!session.parent_session_id;
-}
-
-export function putNotification(session:NotificationSession,input:Pick<Notification,'source_id'|'kind'|'state'|'title'|'body'>&Partial<Pick<Notification,'message_id'|'turn_id'>>) {
+export function putNotification(session:NotificationSession,input:NotificationInput) {
   const userId=session.created_by_user_id,native=nativeConversationId(session);
-  if(!userId||!native||isChildResult(session,input.kind)||!canReadNotifications(session,userId))return;
+  if(!userId||!native||session.parent_session_id||!canReadNotifications(session,userId))return;
   const now=new Date().toISOString();
   const result=getDb().prepare(`INSERT INTO notifications(user_id,session_id,native_id,source_id,kind,state,title,body,message_id,turn_id,created_at,updated_at)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,session_id,native_id,kind,source_id) DO UPDATE SET
@@ -62,12 +59,13 @@ export function putNotification(session:NotificationSession,input:Pick<Notificat
 export function updateNotificationState(session:NotificationSession,kind:NotificationKind,sourceId:string,state:NotificationState) {
   const result=getDb().prepare(`UPDATE notifications SET read_at=CASE WHEN ?='pending' AND state!='pending' THEN NULL ELSE read_at END,dismissed_at=CASE WHEN ?='pending' AND state IN ('submitted','recovering') THEN NULL ELSE dismissed_at END,state=?,updated_at=? WHERE session_id=? AND native_id=? AND kind=? AND source_id=? AND state!=?`)
     .run(state,state,state,new Date().toISOString(),session.id,nativeConversationId(session),kind,sourceId,state);
-  if(result.changes&&session.created_by_user_id)notificationChanged(session.created_by_user_id,undefined,session.id);
+  if(result.changes&&session.created_by_user_id&&!session.parent_session_id)notificationChanged(session.created_by_user_id,undefined,session.id);
 }
 
 /** Capture before dispatch so a later result cannot be consumed by an earlier
  * input. Only an accepted/queued input settles these personal notifications. */
 export function notificationInputBoundary(session:AgentSession&{id:string},userId:string) {
+  if(session.parent_session_id)return [];
   return getDb().prepare(`SELECT id,message_id FROM notifications WHERE user_id=? AND session_id=? AND native_id=?
     AND ((kind='result' AND state='info') OR (kind='error' AND state='pending'))`)
     .all(userId,session.id,nativeConversationId(session)) as Pick<Notification,'id'|'message_id'>[];
@@ -102,7 +100,7 @@ export function listNotifications(userId:string,query:{filter?:string;project_id
   const visible=rows.flatMap(row=>{
     if(!sessions.has(row.session_id))sessions.set(row.session_id,notificationSession(row.session_id));
     const session=sessions.get(row.session_id);
-    if(!session||isChildResult(session,row.kind))return [];
+    if(!session||session.parent_session_id)return [];
     if(!access.has(session.id))access.set(session.id,canReadNotifications(session,userId));
     if(!access.get(session.id))return [];
     if(!labels.has(session.id))labels.set(session.id,present(session));

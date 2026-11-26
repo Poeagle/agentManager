@@ -6,6 +6,7 @@ import { getDb } from '../src/db/index.js';
 import { agentDocsRoutes } from '../src/routes/agent-docs.js';
 import { agentRoutes } from '../src/routes/agent.js';
 import { sessionRoutes } from '../src/routes/sessions.js';
+import { notificationRoutes } from '../src/routes/notifications.js';
 import { skillsRoutes } from '../src/routes/skills.js';
 import { agentDocsLaunch } from '../src/services/agent-docs.js';
 import { ensureClaudeRuntime, releaseClaudeRuntime } from '../src/services/agents/claude/sdk-runtime.js';
@@ -13,6 +14,8 @@ import { createClaudeProvider } from '../src/services/agents/claude/providers.js
 import * as codexControls from '../src/services/agents/codex/controls.js';
 import { getAgent } from '../src/services/agents/index.js';
 import { linkConversationInputs } from '../src/services/conversation-input-links.js';
+import { broadcastEphemeral } from '../src/services/event-store.js';
+import type { AgentStreamFrame } from '../src/services/agents/events.js';
 import * as history from '../src/services/conversation-reader.js';
 import { SEND_GUARD_KEY } from '../src/services/send-guard-policy.js';
 import { parseBriefContext } from '../src/shared/conversation-brief.js';
@@ -67,6 +70,87 @@ async function testApp() {
   return app.ready();
 }
 
+it.each(['claude', 'codex'])('routes %s child questions and errors to the parent inbox once', async agent => {
+  await app.close();
+  const parent = 'dev-one', child = 'observed-child';
+  tab(child, owner, 'p', agent);
+  getDb().prepare('UPDATE sessions SET parent_session_id=? WHERE id=?').run(parent, child);
+  const submit = vi.spyOn(getAgent('claude').input, 'submit').mockResolvedValue(true);
+  let emit: ((frame: AgentStreamFrame) => void) | undefined;
+  const adapter = getAgent(agent);
+  vi.spyOn(adapter.stream, 'observe').mockImplementation((context, observe) => {
+    if (context.session.id === child) emit = observe;
+    return Object.assign(() => {}, { respond: vi.fn() });
+  });
+  const isolated = Fastify();
+  await isolated.register(websocket);
+  isolated.addHook('onRequest', authHook);
+  await isolated.register(agentRoutes, { prefix: '/api' });
+  await isolated.register(agentDocsRoutes, { prefix: '/api' });
+  await isolated.register(notificationRoutes, { prefix: '/api' });
+  app = await isolated.ready();
+  await expect.poll(() => !!emit).toBe(true);
+  const failure = { id: 'child-error', role: 'assistant' as const, phase: 'error' as const, text: '执行失败：缺少配置', timestamp: new Date().toISOString(), turn_id: 'error-turn' };
+  const prompt = { source: 'fixture', session_id: native, state: 'idle', pending_questions: [
+    { id: 'group', turn_id: 'question-turn', questions: [{ id: 'ask-parent', title: '是否保留兼容路径？', options: ['保留', '移除'] }] },
+  ] };
+  const snapshot = { type: 'snapshot' as const, messages: [failure], interactions: [], activities: [], compaction: null,
+    busy: false, connected: true as const, turn_id: 'error-turn', started_at: null, completed_at: null, stage: 'idle' as const };
+  const approval = { id: 'file-approval', kind: 'file' as const, turn_id: 'approval-turn', blocking: true,
+    submitted: false, title: '确认修改文件', detail: '修改受保护的文件' };
+  for (let i = 0; i < 2; i++) {
+    emit!({ ...snapshot, interactions: [approval] });
+    broadcastEphemeral({ type: 'session.runtime', session_id: child, data: { runtime: prompt } });
+  }
+  const inbox = async () => (await app.inject({ url: base + '/inbox', headers: header(parent) })).json().messages;
+  await expect.poll(inbox).toEqual(expect.arrayContaining([
+    expect.objectContaining({ source_tab_id: child, intent: 'blocker', preview: expect.stringContaining('缺少配置') }),
+    expect.objectContaining({ source_tab_id: child, intent: 'blocker', preview: expect.stringContaining('是否保留兼容路径') }),
+    expect.objectContaining({ source_tab_id: child, intent: 'blocker', preview: expect.stringContaining('修改受保护的文件') }),
+  ]));
+  await expect.poll(() => submit.mock.calls.length).toBe(3);
+  expect(await inbox()).toHaveLength(3);
+  const cookie = `${sessionCookieName()}=${createSession(owner)}`;
+  expect((await app.inject({ url: '/api/notifications', headers: { cookie } })).json().notifications).toEqual([]);
+});
+
+it.each(['claude', 'codex'])('requires internal handoffs for direct input to a %s child', async agent => {
+  const child = 'child-input';
+  tab(child, owner, 'p', agent);
+  getDb().prepare("UPDATE sessions SET parent_session_id='dev-one' WHERE id=?").run(child);
+  const submit = vi.spyOn(getAgent(agent).input, 'submit').mockResolvedValue(true);
+  const cookie = `${sessionCookieName()}=${createSession(owner)}`;
+  const direct = await app.inject({ method: 'POST', url: `/api/sessions/${child}/input`, headers: { cookie },
+    payload: { input: '用户直接发送', source: 'conversation' } });
+  expect(direct.statusCode).toBe(403);
+  expect(direct.json()).toMatchObject({ submission: 'rejected' });
+  const handoff = await app.inject({ method: 'POST', url: base + '/messages', headers: header('dev-one'),
+    payload: { request_id: 'internal-only', target_tab_ids: [child], text: '请先核对范围' } });
+  expect(handoff.json().result.results[0].status).toBe('submitted');
+  expect(submit).toHaveBeenCalledTimes(1);
+  expect(submit.mock.calls[0][1]).toContain('Use agent-docs');
+  const handed = handoff.json().result.results[0];
+  const visible = linkConversationInputs(child, native, [{ id: 'echo', role: 'user', text: submit.mock.calls[0][1],
+    timestamp: null, client_id: handed.message_id }]);
+  expect(visible[0].text).toBe('请先核对范围');
+});
+
+it.each(['claude', 'codex'])('lets only the parent stop a confirmed %s child turn through collaboration', async agent => {
+  const child = 'child-turn';
+  tab(child, owner, 'p', agent);
+  getDb().prepare("UPDATE sessions SET parent_session_id='dev-one' WHERE id=?").run(child);
+  const stop = vi.spyOn(getAgent(agent).lifecycle, 'stopTurn').mockResolvedValue(true);
+  const call = (source: string, request_id: string, native_id = native) => app.inject({ method: 'POST',
+    url: `${base}/tabs/${child}/stop`, headers: header(source), payload: { request_id, native_id, turn_id: 'blocked-turn' } });
+  expect((await call('dev-two', 'foreign-stop')).json().result.status).toBe('rejected');
+  expect((await call('dev-one', 'stale-stop', 'stale-native')).json().result.status).toBe('rejected');
+  expect(stop).not.toHaveBeenCalled();
+  const accepted = (await call('dev-one', 'parent-stop')).json();
+  expect(accepted.result).toMatchObject({ status: 'accepted', turn_id: 'blocked-turn' });
+  expect((await call('dev-one', 'parent-stop')).json()).toEqual(accepted);
+  expect(stop).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ nativeId: native }), 'blocked-turn');
+});
+
 afterEach(async () => {
   await app.close();
   vi.useRealTimers();
@@ -79,7 +163,7 @@ it('serves a task-writing example from the dispatch link in the built-in skill',
   const endpoint = '/api/integrations/agent-docs';
   const entry = await app.inject({ url: endpoint, query: { file: 'SKILL.md' }, headers: { cookie } });
   expect(entry.statusCode).toBe(200);
-  const reference = entry.json().content.match(/\]\((references\/collaboration\.md)#([^)]+)\)/);
+  const reference = entry.json().content.match(/\]\((references\/collaboration\.md)#(派工与验收)\)/);
   expect(reference).not.toBeNull();
   const [, file, heading] = reference!;
   const playbook = await app.inject({ url: endpoint, query: { file }, headers: { cookie } });

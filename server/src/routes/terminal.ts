@@ -5,6 +5,7 @@ import {attachTerminal,writeToSession,resizeSession,reconnectSession,getPendingS
 import {getDb} from '../db/index.js';
 import {readSessionCookie,userCanUseSessionTool} from '../auth.js';
 import {registerUserConnection} from '../services/user-connections.js';
+import {CHILD_AGENT_INPUT_ERROR} from '../services/agent-docs.js';
 
 const MAX_TERMINAL_INPUT_BYTES = 256 * 1024;
 const PROMPT_REPLACEMENT_WRAPPER_BYTES = 14;
@@ -374,7 +375,8 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
           pendingInputs.clear();
           return false;
         }
-        for (const input of pendingInputs.drain()) {
+        const bufferedInput = pendingInputs.drain();
+        for (const input of getSession(sessionId)?.parent_session_id ? [] : bufferedInput) {
           if (!writeToSession(sessionId, input.data, input.paste)) {
             throw new Error('Failed to flush pending terminal input');
           }
@@ -407,6 +409,12 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
         } else {
           resizeSession(sessionId, msg.cols, msg.rows);
         }
+        return;
+      }
+
+      if ((msg.type === 'input' || msg.type === 'replace-input') && getSession(sessionId)?.parent_session_id) {
+        if (msg.type === 'replace-input') sendJson(socket, { type: 'input-replace-error', requestId: msg.requestId, message: CHILD_AGENT_INPUT_ERROR });
+        else protocolError(socket, CHILD_AGENT_INPUT_ERROR, 1008);
         return;
       }
 

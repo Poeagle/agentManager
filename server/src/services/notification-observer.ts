@@ -12,27 +12,36 @@ import {nativeConversationId} from './session-identity.js';
 import {personalQuestionRuntime,ignoredQuestionIds} from './question-attention.js';
 import {
   canReadNotifications,notificationSession,putNotification,updateNotificationState,pruneNotifications,
-  notificationChanged,settleNotificationResults,type NotificationSession,type Notification,
+  notificationChanged,settleNotificationResults,type NotificationSession,type Notification,type NotificationInput,
 } from './notifications.js';
 
 const ACTIVE=new Set(['pending','launching','running','detached','released']);
 const MAX_WATCHES=512;
 type Watch={native:string;stop:()=>void;questions:Set<string>;interactions:Set<string>;seen:Set<string>;checkingOutcomes:Set<string>;running:boolean;completed:boolean;outcomes:Map<string,AgentMessage>;turnInputs:Map<string,boolean>;endTimer?:ReturnType<typeof setTimeout>};
 
-/** Read-only leases share the platform's existing streams and incremental file
- * reader. They survive switching/closing project tabs and never submit input. */
+/** Shared stream leases observe native events regardless of the selected tab. */
 export class NotificationObserver {
   private watches=new Map<string,Watch>();
   private unsubscribe:()=>void=()=>{};
   private stopped=false;
   private since:number;
+  private readonly childErrorSince=Date.now();
   private pruneAt=0;
   private pending=new Set<string>();
+  private relays=new Set<Promise<void>>();
   private timer:ReturnType<typeof setTimeout>|undefined;
-  constructor(private onError:(error:unknown)=>void=()=>{}) {
+  constructor(private onError:(error:unknown)=>void, private relayChild:(session:NotificationSession,notice:NotificationInput)=>Promise<void>) {
     const row=getDb().prepare("SELECT value FROM settings WHERE key='notification-center-since'").get() as {value:string}|undefined;
     this.since=Number(row?.value)||Date.now();
     getDb().prepare("INSERT OR IGNORE INTO settings(key,value) VALUES('notification-center-since',?)").run(String(this.since));
+  }
+  private publish(session:NotificationSession,notice:NotificationInput) {
+    if(!session.parent_session_id)putNotification(session,notice);
+    else if(notice.kind!=='result'&&notice.state==='pending'){
+      const relay=this.relayChild(session,notice).catch(this.onError);
+      this.relays.add(relay);
+      void relay.then(()=>this.relays.delete(relay));
+    }
   }
   start() {
     this.unsubscribe=subscribe(event=>{
@@ -109,9 +118,9 @@ export class NotificationObserver {
       const active=new Set<string>();
       for(const request of state.interactions){
         const source='interaction:'+JSON.stringify([request.turn_id,request.id]);active.add(source);
-        putNotification(session,{kind:request.kind==='question'?'question':'approval',source_id:source,
+        this.publish(session,{kind:request.kind==='question'?'question':'approval',source_id:source,
           message_id:request.id,turn_id:request.turn_id,state:request.submitted?'submitted':'pending',title:request.title,
-          body:request.questions?.map(q=>q.question).join('\n\n')||activityResultPreview(request.detail)||'等待你确认本次操作。'});
+          body:request.questions?.map(q=>q.question+(session.parent_session_id&&q.options?.length?`\n选项：${q.options.map(o=>o.label).join('、')}`:'')).join('\n\n')||activityResultPreview(request.detail)||'等待确认本次操作。'});
       }
       for(const source of entry.interactions)if(!active.has(source)){
         updateNotificationState(session,'question',source,'resolved');updateNotificationState(session,'approval',source,'resolved');
@@ -152,8 +161,8 @@ export class NotificationObserver {
             if(previous&&previous.state!=='pending')continue;
             entry.questions.add(question.id);
           }
-          putNotification(session,{kind:'question',source_id:'question:'+question.id,message_id:message.id,turn_id:message.turn_id,
-            state:'pending',title:'Agent 需要你的回答',body:question.title});
+          this.publish(session,{kind:'question',source_id:'question:'+question.id,message_id:message.id,turn_id:message.turn_id,
+            state:'pending',title:'Agent 需要你的回答',body:question.title+(session.parent_session_id&&question.options?.length?`\n选项：${question.options.join('、')}`:'')});
         }
         continue;
       }
@@ -213,6 +222,13 @@ export class NotificationObserver {
       entry.outcomes.delete(message.id);
       const job=this.findRetry(session,message.turn_id);
       const source=job?.root_turn_id||message.turn_id||message.id;
+      if(session.parent_session_id){
+        entry.seen.add(`outcome:${message.id}`);
+        // A replayed error is history. Current native questions are recovered separately from runtime state.
+        if(!scheduled&&(!message.timestamp||Date.parse(message.timestamp)>=this.childErrorSince))this.publish(session,{kind:'error',source_id:source,message_id:message.id,turn_id:message.turn_id,
+          state:'pending',title:'子 Agent 本轮执行出错',body:message.text});
+        return;
+      }
       const previous=getDb().prepare("SELECT state,message_id FROM notifications WHERE session_id=? AND native_id=? AND kind='error' AND source_id=?").get(session.id,entry.native,source) as Pick<Notification,'state'|'message_id'>|undefined;
       if(scheduled){
         entry.seen.add(`outcome:${message.id}`);
@@ -238,8 +254,8 @@ export class NotificationObserver {
       const active=new Set<string>();
       for(const group of runtime.pending_questions)for(const question of group.questions){
         if(!question.id)continue;active.add(question.id);
-        putNotification(session,{kind:'question',source_id:'question:'+question.id,turn_id:group.turn_id,
-          state:'pending',title:'Agent 需要你的回答',body:question.title});
+        this.publish(session,{kind:'question',source_id:'question:'+question.id,turn_id:group.turn_id,
+          state:'pending',title:'Agent 需要你的回答',body:question.title+(session.parent_session_id&&question.options?.length?`\n选项：${question.options.join('、')}`:'')});
       }
       const submitted=new Set(runtime.submitted_question_ids||[]);
       const previous=getDb().prepare("SELECT source_id FROM notifications WHERE session_id=? AND native_id=? AND kind='question'").all(session.id,entry.native) as Pick<Notification,'source_id'>[];
@@ -270,9 +286,10 @@ export class NotificationObserver {
       .get(session.id,job.native_id,job.root_turn_id) as Pick<Notification,'state'>|undefined;
     if(previous&&previous.state!=='resolved')updateNotificationState(session,'error',job.root_turn_id,this.retryState(job));
   }
-  stop() {
+  async stop() {
     this.stopped=true;this.unsubscribe();clearTimeout(this.timer);this.pending.clear();
     for(const watch of this.watches.values())watch.stop();this.watches.clear();
+    await Promise.all(this.relays);
   }
   limited(userId:string) {
     if(this.watches.size<MAX_WATCHES)return 0;

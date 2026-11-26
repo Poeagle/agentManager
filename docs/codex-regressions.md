@@ -43,6 +43,7 @@ npm run test:regression:accounts
 | 发送保护规则的条件分组在桌面或窄屏编辑 | 条件行保持对齐且不产生横向溢出，组内“且／或”连接器可点击切换并保存 | [SendGuardSettings.test.tsx](../dashboard/tests/SendGuardSettings.test.tsx)、[send-guard-settings.spec.ts](../e2e/send-guard-settings.spec.ts) |
 | 发送保护启用且当前账号额度用尽 | 确认剩余 0% 后在下次发送时自动选择备用账号，无可用目标则保留草稿。额度大于 0% 或未知时，原账号执行命中的规则动作 | [conversation-send-guard.test.ts](../server/tests/conversation-send-guard.test.ts)、[ConversationSendGuard.test.tsx](../dashboard/tests/ConversationSendGuard.test.tsx) |
 | Agent 间消息命中发送保护后被要求手动确认 | 派工、普通联系、回传和批次唤醒自动简要压缩，使用原消息 ID 投递一次。忙碌、额度耗尽或历史不可读时返回未投递 | [agent-docs.test.ts](../server/tests/agent-docs.test.ts) |
+| 子 Agent 的提问和报错直接触达用户 | 原生提问、授权请求和执行报错仅进入直属父标签协作收件箱。子标签在网页可查看记录，输入走协作协议 | [agent-docs.test.ts](../server/tests/agent-docs.test.ts)、[notifications.test.ts](../server/tests/notifications.test.ts)、[SessionConversationSend.test.tsx](../dashboard/tests/SessionConversationSend.test.tsx) |
 | 换号后的新会话收到无路径标题的 AGENTS.md 和运行环境 | 实时及刷新后显示在自动信息卡片，长规则也不进入简要历史 | [conversation-context.test.ts](../dashboard/tests/conversation-context.test.ts)、[conversation-brief-context.test.ts](../dashboard/tests/conversation-brief-context.test.ts)、[brief-conversation-card.spec.ts](../e2e/brief-conversation-card.spec.ts) |
 
 ## 账号与 Provider

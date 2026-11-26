@@ -113,7 +113,7 @@ export function saveProjectNotification(userId: string, value: unknown, id?: str
 export function canNotifyProject(rule: ProjectNotificationRule, sessionId: string): boolean {
   const user = findUserById(rule.user_id);
   const session = getSession(sessionId);
-  return !!(rule.enabled && user && !user.disabled && userHasPermission(user.id, 'agent_api') && session
+  return !!(rule.enabled && user && !user.disabled && userHasPermission(user.id, 'agent_api') && session && !session.parent_session_id
     && session.project_id === rule.project_id && session.created_by_user_id === rule.user_id
     && userCanUseSessionTool(user.id, sessionId, agentForSession(session).descriptor.id, session.mode === 'terminal' ? 'terminal' : 'session'));
 }
@@ -239,7 +239,6 @@ export class ProjectNotifications {
       const rule = getDb().prepare('SELECT * FROM platform_ai_project_notifications WHERE id=?').get(watch.id) as ProjectNotificationRule | undefined;
       if (!rule || rule.conversation_id !== watch.conversation_id || rule.since_ms !== watch.since_ms || !canNotifyProject(rule, watch.session_id)) return;
       const session = getSession(watch.session_id)!;
-      if (kind==='complete' && session.parent_session_id) return;
       const inserted = getDb().prepare('INSERT OR IGNORE INTO platform_ai_project_notification_receipts (rule_id,session_id,event_key) VALUES (?,?,?)')
         .run(watch.id, watch.session_id, key);
       if (!inserted.changes || !kind || !(kind === 'error' ? true : kind === 'complete' ? rule.on_complete : rule.on_input)) return;

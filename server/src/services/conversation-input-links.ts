@@ -68,7 +68,7 @@ function decorateInputSources(sessionId:string,messages:ConversationMessage[]):C
       ...(visible.content_blocks?{content_blocks:visible.content_blocks.map(block=>block.type==='text'&&block.text.endsWith(suffix)?{...block,text:block.text.slice(0,-suffix.length)}:block)}:{})}:visible;
     if(source&&message.client_id&&!message.queued)bind.run(message.id,sessionId,message.client_id);
     if(source?.kind==='agent_handoff'){
-      const prefix=/^\[Agent Manager handoff · source_tab_id=[\w-]+(?: · message_id=[\w-]+(?: · reply_to=[\w-]+)?)?\]\n/.exec(projected.text)?.[0];
+      const prefix=/^\[Agent Manager handoff · source_tab_id=[\w-]+(?: · message_id=[\w-]+(?: · reply_to=[\w-]+)?)?(?: · child_tab=[^\]\r\n]+)?\]\n/.exec(projected.text)?.[0];
       if(prefix)return {...projected,text:projected.text.slice(prefix.length),input_source:source,
         ...(projected.content_blocks?{content_blocks:projected.content_blocks.map(block=>block.type==='text'&&block.text.startsWith(prefix)?{...block,text:block.text.slice(prefix.length)}:block)}:{})};
     }

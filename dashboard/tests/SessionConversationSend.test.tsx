@@ -33,7 +33,7 @@ async function mount(target:Session=session,onNewConversation?:(preference?:impo
   const view=render(<QueryClientProvider client={client}><SessionConversation session={target} active onRaw={() => {}} onNewConversation={onNewConversation} resuming={resuming}/></QueryClientProvider>);
   await waitFor(() => expect(Socket.latest?.onmessage).toBeTruthy());
   act(() => Socket.latest.emit({ type: 'snapshot', messages: [], busy: false, stage: 'idle' }));
-  await waitFor(() => expect(screen.getByText('Event stream connected')).toBeInTheDocument());
+  if (!target.parent_session_id) await waitFor(() => expect(screen.getByText('Event stream connected')).toBeInTheDocument());
   return view;
 }
 beforeEach(() => {
@@ -48,6 +48,22 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
+  it.each(['claude','codex'] as const)('keeps the %s child conversation readable and removes user interaction', async agent => {
+    const target:Session={...session,agent_id:agent,cli_type:agent,parent_session_id:'parent',native_session_id:'native'};
+    const existing=await api.agent.conversation(session.id);
+    vi.mocked(api.agent.conversation).mockResolvedValue({...existing,messages:[
+      {id:'progress',role:'assistant',phase:'commentary',text:'已核对交付条件',timestamp:'2026-11-26T04:03:00Z'},
+    ]});
+    await mount(target);
+    act(() => Socket.latest.emit({type:'snapshot', messages:[], busy:false, stage:'idle', interactions:[
+      {id:'question',turn_id:'turn',kind:'question',title:'Agent 需要回答',detail:'需要用户决定',blocking:true,submitted:false},
+    ]}));
+    expect(await screen.findByText('子 Agent 通过协作协议工作。请在负责协调的 Agent 标签页沟通。')).toBeInTheDocument();
+    expect(await screen.findByText('已核对交付条件')).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', {name:'发送给当前 Agent 的消息'})).not.toBeInTheDocument();
+    expect(screen.queryByText('Agent 需要回答')).not.toBeInTheDocument();
+  });
+
   it.each(['claude','codex'] as const)('quotes an existing %s reply, restores the draft, and links to its source',async agent=>{
     const target:Session=agent==='claude'?{...session,cli_type:agent,codex_session_id:null,claude_session_id:'native'}:session;
     const timestamp='2026-11-23T04:02:00Z';

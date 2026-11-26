@@ -254,13 +254,14 @@ describe('project-wide automatic notifications', () => {
     provider();await checkAndDeliver();expect(notices()).toEqual([expect.objectContaining({status:'sent'})]);
   });
 
-  it('does not enqueue a child completion and cancels a result queued before lineage was known', async () => {
+  it('does not enqueue child notices and cancels a result queued before lineage was known', async () => {
     configure();subscription();seedSession();
     nativeMessages=[finalMessage('子任务完成')];const fetchMock=provider();
     worker.tick();await worker.drain();
     expect(notices()).toHaveLength(1);
     getDb().prepare("UPDATE sessions SET parent_session_id='parent' WHERE id='session-1'").run();
     nativeMessages.push(finalMessage('另一个结果','native:next'));
+    display={...display,processState:'waiting_for_input',promptType:'confirmation'};
     getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
     await checkAndDeliver();
     expect(notices()).toEqual([expect.objectContaining({status:'cancelled'})]);

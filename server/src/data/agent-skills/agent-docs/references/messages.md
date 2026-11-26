@@ -37,6 +37,8 @@ python3 scripts/platform_api.py read-message -- "$original_message_id"
 
 回复时使用 `send-message` 的 `reply_to`，填当前标签页收到的原 `message_id`。平台通过原消息定位发送方和批次，无须填写 `target_tab_ids` 或 `batch_id`。API 会拒绝引用其他标签页的来信。每项结果各用一次写请求。`progress` 表示进展，`result` 表示交付结论，需要对方立刻协调时用 `blocker`。保留工单号或其他交付物标识，方便对方汇总。
 
+平台观察到子 Agent 的原生提问、授权请求或执行报错时，将详情作为内部 `blocker` 写入直属父标签的收件箱。收到「有待协调事项」时，用提示中的 `message_id` 读完整内容。需要回复子 Agent 时引用该条消息。处理原则见[问题与报错如何上报](collaboration.md#问题与报错如何上报)。
+
 ```sh
 # reply_request_id 使用回传前已生成并记录的新 ID。
 : "${reply_request_id:?先生成并记录本次回传请求 ID}"

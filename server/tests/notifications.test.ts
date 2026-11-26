@@ -264,9 +264,10 @@ it('waits for durable input attribution when the live echo omits its submission 
   expect(stored('error')).toEqual([]);
 });
 
-it('excludes new and existing child results from the API and unread totals, while keeping actionable notices',async()=>{
+it('excludes both new and existing child notices from the API and unread totals',async()=>{
   const session=notificationSession('s')!;
   putNotification(session,{kind:'result',state:'info',source_id:'existing-child-result',title:'完成',body:'旧的子任务结果'});
+  putNotification(session,{kind:'question',state:'pending',source_id:'question:legacy',title:'旧问题',body:'旧的子任务问题'});
   getDb().prepare("UPDATE sessions SET parent_session_id='parent' WHERE id='s'").run();
   const emit=streams.get('s')!;
   emit(snapshot({messages:[message('new-child-result')],completed_at:now(),
@@ -278,7 +279,9 @@ it('excludes new and existing child results from the API and unread totals, whil
     expect((await get(filter)).json()).toMatchObject({notifications:[],unread:0,pending:0,unread_by_project:{},unread_by_session:{}});
   }
   history(runtime({pending_questions:[{id:'g',questions:[{id:'question',title:'需要确认',options:null}],timestamp:now()}]}));
-  expect((await get('all')).json()).toMatchObject({unread:1,pending:1,notifications:[{kind:'question'}]});
+  expect((await get('all')).json()).toMatchObject({unread:0,pending:0,notifications:[]});
+  expect(stored('question').map(row=>row.source_id)).toEqual(['question:legacy']);
+  expect(stored('approval')).toEqual([]);
 });
 
 it('dismisses notices explicitly without submitting input, preserves dismissal on replay and isolates users and boundaries',async()=>{

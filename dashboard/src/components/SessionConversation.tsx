@@ -712,7 +712,8 @@ export function SessionConversation({
   const queryClient = useQueryClient();
   const liveUsageQuery=useQuery<ConversationUsageUpdate|null>({queryKey:["conversation-usage",session.id],queryFn:async()=>null,enabled:false});
   const canRead = hasPermission(permissions.data, "agent_api");
-  const canSend = hasPermission(permissions.data, "agent_api", "write");
+  const childAgent = !!session.parent_session_id;
+  const canSend = !childAgent && hasPermission(permissions.data, "agent_api", "write");
   const canAttach = agentSupports(session, "attachments");
   const inputStorageKey=waitingInputKey(userId,session.id,agentNativeId(session));
   const notificationView=presentation==="notification";
@@ -2446,7 +2447,7 @@ export function SessionConversation({
     beforeAnswer?: ReactNode,
   ) =>
     message.role==='user'&&!message.queued&&!(message as TimelineMessage).optimistic&&!message.attachments?.length&&message.question_replies?.length&&message.question_replies.every(reply=>visibleQuestionAnswers.get(reply.question_id)===reply.answer) ? null :
-    message.async_questions?.length ? (
+    message.async_questions?.length ? (childAgent ? null : (
       <ConversationQuestionSummary
         key={stableKey}
         message={message}
@@ -2457,7 +2458,7 @@ export function SessionConversation({
         answers={questionIndex.answers(message)}
         onAnswer={openQuestion}
       />
-    ) : (
+    )) : (
       <Bubble
         key={stableKey}
         active={active}
@@ -2491,7 +2492,7 @@ export function SessionConversation({
         onQuote={active&&canSend&&!ended&&!waiting&&!questionActive&&!sending&&!sendGuard.blocking?setDraftQuote:undefined}
         onQuoteJump={jumpToQuote}
         onRaw={onRaw}
-        allowRaw={sessionAgent(session).sessionHost !== "managed"}
+        allowRaw={!childAgent && sessionAgent(session).sessionHost !== "managed"}
       />
     );
   const currentMetadata=metadata?.summary.native_id===(agentNativeId(session)??page?.native_id)?metadata:null;
@@ -2720,7 +2721,7 @@ export function SessionConversation({
                     {page?.available
                       ? "还没有对话记录。"
                       : "尚未读取到绑定的原生对话记录。"}
-                    {sessionAgent(session).sessionHost !== "managed" && (
+                    {!childAgent && sessionAgent(session).sessionHost !== "managed" && (
                       <button onClick={onRaw}>查看原始终端</button>
                     )}
                   </p>
@@ -2761,7 +2762,7 @@ export function SessionConversation({
             有新消息
           </button>
         )}
-        {requests.length > 0 && (
+        {!childAgent && requests.length > 0 && (
           <div className="conversation-interactions">
             {requests.length > 1 && (
               <p className="conversation-interaction-queue">
@@ -2787,7 +2788,7 @@ export function SessionConversation({
             ))}
           </div>
         )}
-        {waiting && !requests.length && (
+        {!childAgent && waiting && !requests.length && (
           <div className="session-chat-action" role="status">
             <strong>
               {interaction?.isPermission
@@ -2802,7 +2803,7 @@ export function SessionConversation({
         )}
         {storageError&&<p role="alert" className="session-chat-error">{storageError}</p>}
 
-        <footer className="session-chat-composer">
+        {childAgent ? <footer className="session-chat-action">子 Agent 通过协作协议工作。请在负责协调的 Agent 标签页沟通。</footer> : <footer className="session-chat-composer">
           <div className="session-chat-status" role="status" hidden={notificationView&&liveState==='connected'&&!ended&&!reconnectable&&!compaction.state}>
             <div className="session-chat-execution-status" hidden={hideFooterExecutionStatus}>
             <span
@@ -3139,9 +3140,9 @@ export function SessionConversation({
                 metadata={currentMetadata?.summary}
               />
             )}
-        </footer>
+        </footer>}
       </section>
-        {composer.mode==='batch'&&(composer.entries.length>0||composer.pending)&&<aside className="session-chat-batch" aria-label="批量待发内容">
+        {!childAgent&&composer.mode==='batch'&&(composer.entries.length>0||composer.pending)&&<aside className="session-chat-batch" aria-label="批量待发内容">
           <ConversationBatchResizeHandle layout={chatLayout} active={active} storageKey={`agentmanager-batch-width:${userId}`}/>
           <header className="session-batch-header"><span>批量待发</span><small>{composer.entries.length} 条</small></header>
           <div className="session-chat-batch-content">

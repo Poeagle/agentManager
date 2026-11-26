@@ -52,6 +52,11 @@ def parse_args():
     removal.add_argument("tab_id")
     removal.add_argument("--request-id", required=True)
     removal.add_argument("--delete-history", action="store_true")
+    stop = commands.add_parser("stop-child-turn", help="Stop a confirmed turn in a direct child tab")
+    stop.add_argument("tab_id")
+    stop.add_argument("--request-id", required=True)
+    stop.add_argument("--native-id", required=True)
+    stop.add_argument("--turn-id", required=True)
     commands.add_parser("send-message", help="Read the delivery request JSON from stdin")
     operation = commands.add_parser("operation")
     operation.add_argument("request_id")
@@ -93,13 +98,16 @@ def make_request(args):
             query["agent_id"] = args.agent_id
         if args.include_quota:
             query["include_quota"] = "true"
-    elif command in ("read-tab", "delete-tab", "tab-controls", "update-tab-controls"):
+    elif command in ("read-tab", "delete-tab", "tab-controls", "update-tab-controls", "stop-child-turn"):
         if not args.tab_id or args.tab_id in (".", ".."):
             raise ValueError("需要有效的 tab_id")
         route = "/tabs/" + quote(args.tab_id, safe="")
         if command == "delete-tab":
             body = {"request_id": args.request_id, "delete_history": args.delete_history}
             return route + "/delete", "", json.dumps(body).encode()
+        if command == "stop-child-turn":
+            body = {"request_id": args.request_id, "native_id": args.native_id, "turn_id": args.turn_id}
+            return route + "/stop", "", json.dumps(body).encode()
         if command in ("tab-controls", "update-tab-controls"):
             route += "/controls"
         if command == "update-tab-controls":
