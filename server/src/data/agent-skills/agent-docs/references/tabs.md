@@ -21,7 +21,7 @@ python3 scripts/platform_api.py list-tabs --include-ended
 
 `cleanup_review` 包含父标签发出的 `task_message_id` 和收到的 `result_message_id`，表示在近期可核对的派工记录中已有结果且无待回传任务。也会提示仍显示在项目中的已结束标签。用 `read-message` 核对结果；需要确认是否仍在做其他工作时用 `read-tab`。核查后按用途处理：
 
-- **沿用。** 对匹配的标签直接派工，它是本次目标，无须另行列为保留。
+- **沿用。** 按[派工上限](allocation.md#派工上限)核对匹配标签的设置后派工，它是本次目标，无须另行列为保留。
 - **关闭。** 已验收、无后续工作且具备权限时，用默认的 `delete-tab` 关闭并保留历史。
 - **保留。** 仍需待命、承担其他职责，或状态有待核实的标签继续保留。在本次派工或创建 JSON 的 `retain_child_tab_ids` 中填写已核查且需保留的 ID。
 
@@ -41,15 +41,16 @@ python3 scripts/platform_api.py read-tab -- "$target_tab_id"
 
 ## 创建并交付任务
 
-`POST /tabs` 对应 `create-tab`。新标签页继承创建者的 Agent 类型、Provider 和账号。需要为子任务指定模型时，先用 [配置分配](allocation.md) 查看同一 Provider 的选项。按[派工前核查](#派工前核查)确认暂无合适的已有标签，再用有辨识度的任务或角色命名，例如 Jira 工单号。
+`POST /tabs` 对应 `create-tab`。新标签页继承创建者的 Agent 类型、Provider 和账号。先按[派工前核查](#派工前核查)确认暂无合适的已有标签，再按[派工上限](allocation.md#派工上限)在同一 Provider 内选配置。用有辨识度的任务或角色命名，例如 Jira 工单号。
 
 ```sh
-# request_id 使用执行命令前已生成并记录的 ID。
+# Codex 示例。先确认当前 Provider 支持所列配置。
 : "${request_id:?先生成并记录本次请求 ID}"
 python3 scripts/platform_api.py create-tab <<JSON
 {
   "request_id": "$request_id",
   "name": "DBM-1234 排查",
+  "execution": {"model_id": "gpt-6.2-sol", "reasoning_effort": "high", "service_tier": "default"},
   "initial_message": "排查 DBM-1234。复现并记录环境、证据和影响范围，完成后回传结论。"
 }
 JSON
@@ -57,7 +58,7 @@ JSON
 
 - `request_id` 和 `name` 必填。`initial_message` 可省略，省略时创建空白标签页。首条任务附有平台生成的 `message_id` 与发起方 `source_tab_id`。接收方用原 `message_id` 作为 `reply_to`。
 - 首条任务属于 [并行协作批次](batches.md)时，同时提交 `initial_message` 和 `batch_id`。
-- `execution` 可省略。指定 `model_id`、`reasoning_effort` 或 `service_tier` 时使用继承环境支持的组合。若请求仍带 `agent_id` 或 `environment_id`，其值必须与创建者匹配，平台会拒绝跨 Provider 或跨账号的创建。
+- 创建 Codex 子标签页时，通过 `execution` 显式填写符合派工上限的 `model_id`、`reasoning_effort` 和 `service_tier`。其他 Agent 按当前 Provider 提供的能力填写。若请求仍带 `agent_id` 或 `environment_id`，其值必须与创建者匹配，平台会拒绝跨 Provider 或跨账号的创建。
 - 用响应 `result` 里的 `tab_id`、`launch_status`、`applied_execution` 和 `initial_message_status` 分别核对标签页、启动、配置和首条任务。返回的 `parent_tab_id` 为本次创建者。启动状态可为 `ready`、`starting`、`rejected` 或 `unknown`。未提交首条任务时，其状态为 `null`。已进入投递流程的首条任务带有 `initial_message_id`。投递状态见 [消息投递](messages.md)。
 - 已有 `tab_id` 且首条任务明确被拒绝时，解决原因后向这个标签页补发。明确拒绝的启动按错误类型处理，例如权限不足、配置不可用、达到标签页上限。启动或首条任务结果待确认时，用原请求 ID 查询。
 

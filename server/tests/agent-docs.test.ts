@@ -90,6 +90,21 @@ it('serves a task-writing example from the dispatch link in the built-in skill',
   expect(guidance).toMatch(/^> .+/m);
 });
 
+it('publishes the Codex child dispatch ceiling and standard speed in the built-in skill', async () => {
+  const cookie = `${sessionCookieName()}=${createSession(owner)}`;
+  const url = '/api/integrations/agent-docs';
+  const entry = await app.inject({ url, query: { file: 'SKILL.md' }, headers: { cookie } });
+  expect(entry.statusCode).toBe(200);
+  expect(entry.json().content).toMatch(/`gpt-6\.2-sol`.*`high`.*关闭 Fast/);
+  expect(entry.json().content).toMatch(/`gpt-6-luna`.*`max`/);
+  const reference = await app.inject({ url, query: { file: 'references/allocation.md' }, headers: { cookie } });
+  expect(reference.statusCode).toBe(200);
+  const guidance = reference.json().content;
+  expect(guidance).toContain('--reasoning-effort high --service-tier default');
+  expect(guidance).toContain('"model_id": "gpt-6.2-sol", "reasoning_effort": "high", "service_tier": "default"');
+  expect(guidance).toContain('"model_id": "gpt-6-luna", "reasoning_effort": "max", "service_tier": "default"');
+});
+
 it('inherits the creator and restricts the credential to Agent Docs, the same project, and live tabs', async () => {
   const headers = header('dev-one');
   const endpoint = base + '/capabilities';
