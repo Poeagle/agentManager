@@ -15,6 +15,7 @@ request_id, *targets = sys.argv[1:]
 print(json.dumps({
     "request_id": request_id,
     "target_tab_ids": targets,
+    "intent": "task",
     "text": "以候选提交为准，按各自职责核对空结果与错误状态。逐项回传结论、证据和待处理项。共用环境有冲突时，告诉我需要协调的资源，先继续可独立完成的检查。",
 }, ensure_ascii=False))
 PYTHON
@@ -22,6 +23,8 @@ python3 scripts/platform_api.py send-message
 ```
 
 不同目标需要不同内容时，分别发送并使用不同请求 ID。并行任务需要等齐汇总时，设置 `intent: "task"` 并附上 [`batch_id`](batches.md)。带其他 Agent 文件内容或日志时，只包含当前任务需要的证据。给 `target_tab_ids` 派发跟进任务时，可带 `after_current_turn: true` 使用原生队列。目标空闲会直接开始，忙碌会排队，队列不可用时返回拒绝。先通过 `list-tabs` 查看 `can_queue_follow_up`。
+
+实际派工使用 `intent: "task"` 并先做[子标签核查](tabs.md#派工前核查)。派给直属子标签时，平台使用「平台设置 → 发送保护」的规则及目标标签当前 Provider 的条件。目标空闲且允许接续时，命中的「简要压缩」或「新开会话」会在同一标签内执行，原对话保留在项目历史。平台确认新会话后重新检查发送条件，用同一个消息 ID 投递任务。命中提醒、需要换号、还有待回传任务或处理失败时，按投递回执处理。
 
 ## 查看收件箱并回传
 
@@ -52,7 +55,7 @@ python3 scripts/platform_api.py send-message
 
 ## 解释每个目标的状态
 
-批量响应的 `result.results` 按目标列出 `tab_id` 和 `status`。进入投递流程后附上 `message_id`，拒绝时可附原因。
+批量响应的 `result.results` 按目标列出 `tab_id` 和 `status`。进入投递流程后附上 `message_id`，拒绝时可附原因。自动简要压缩或新开后成功投递时，回执包含 `guard_action: "brief"` 或 `"new"`。
 
 | 状态 | 含义 |
 |---|---|

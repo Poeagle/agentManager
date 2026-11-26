@@ -13,6 +13,9 @@ import { createClaudeProvider } from '../src/services/agents/claude/providers.js
 import * as codexControls from '../src/services/agents/codex/controls.js';
 import { getAgent } from '../src/services/agents/index.js';
 import { linkConversationInputs } from '../src/services/conversation-input-links.js';
+import * as history from '../src/services/conversation-reader.js';
+import { SEND_GUARD_KEY } from '../src/services/send-guard-policy.js';
+import { parseBriefContext } from '../src/shared/conversation-brief.js';
 import * as manager from '../src/services/session-manager.js';
 import { setRoleGrants, setUserRoles } from '../src/services/rbac.js';
 import { createTestDatabase } from './helpers/database.js';
@@ -219,6 +222,191 @@ it('delivers several sources immediately in receipt order and routes each reply 
   expect(await post('test', { request_id: 'result-a', reply_to: a, text: 'A 发现问题' }))
     .toMatchObject({ result: { results: [{ tab_id: 'dev-one', status: 'submitted' }] } });
   expect((await app.inject({ url: base + '/operations/request-a', headers: header('dev-one') })).json()).toEqual(dispatch);
+});
+
+it.each([['dev-one', 'claude'], ['dev-two', 'codex']])('reviews completed children before %s can dispatch again', async (parent, parentAgent) => {
+  const child = 'test';
+  const otherTarget = parent === 'dev-one' ? 'dev-two' : 'dev-one';
+  getDb().prepare('UPDATE sessions SET parent_session_id=? WHERE id=?').run(parent, child);
+  const claude = vi.spyOn(getAgent('claude').input, 'submit').mockResolvedValue(true);
+  const codex = vi.spyOn(getAgent('codex').input, 'submit').mockResolvedValue(true);
+  const spawn = vi.spyOn(manager, 'spawnSession').mockImplementation(async id => {
+    getDb().prepare("UPDATE sessions SET status='running',native_session_id=? WHERE id=?").run(native, id);
+  });
+  const kill = vi.spyOn(manager, 'killSession').mockImplementation(async id => {
+    getDb().prepare("UPDATE sessions SET status='cancelled' WHERE id=?").run(id);
+    return true;
+  });
+  const post = (id: string, path: string, payload: object) =>
+    app.inject({ method: 'POST', url: base + path, headers: header(id), payload });
+  const assign = { request_id: 'first-task', target_tab_ids: [child], text: '验收候选版本', intent: 'task' };
+  const sent = (await post(parent, '/messages', assign)).json();
+  const taskId = sent.result.results[0].message_id;
+  const returned = (await post(child, '/messages', { request_id: 'first-result', reply_to: taskId, text: '验收完成', intent: 'result' })).json();
+  const review = { task_message_id: taskId, result_message_id: returned.result.results[0].message_id };
+
+  const children = (await app.inject({ url: base + '/tabs?children=true', headers: header(parent) })).json();
+  expect(children.tabs).toContainEqual(expect.objectContaining({ tab_id: child, cleanup_review: review }));
+  expect((await post(parent, '/messages', assign)).json()).toEqual(sent);
+  const { batch_id: batchId } = (await post(parent, '/batches', { request_id: 'second-batch' })).json().result;
+  const task = { request_id: 'second-task', target_tab_ids: [otherTarget], batch_id: batchId, text: '核对回归', intent: 'task' };
+  const create = { request_id: 'new-child', name: '独立验收', initial_message: '检查窄屏', batch_id: batchId };
+  for (const [path, payload] of [['/messages', task], ['/tabs', create]] as const) {
+    const blocked = await post(parent, path, payload);
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toMatchObject({
+      code: 'child_cleanup_required', state: 'not_started',
+      cleanup_candidates: [{ tab_id: child, cleanup_review: review }],
+    });
+    expect((await app.inject({ url: base + '/operations/' + payload.request_id, headers: header(parent) })).statusCode).toBe(404);
+  }
+  const batch = await app.inject({ url: base + '/batches/' + batchId, headers: header(parent) });
+  expect(batch.json().task_count).toBe(0);
+  expect(spawn).not.toHaveBeenCalled();
+  expect(kill).not.toHaveBeenCalled();
+  expect(claude.mock.calls.length + codex.mock.calls.length).toBe(2);
+
+  const retained = await post(parent, '/messages', { ...task, retain_child_tab_ids: [child] });
+  expect(retained.json().result.results[0].status).toBe('submitted');
+  expect(manager.getSession(child)?.status).toBe('running');
+  const closed = await post(parent, '/tabs/' + child + '/delete', { request_id: 'close-returned' });
+  expect(closed.json()).toMatchObject({ result: { status: 'closed', history_status: 'retained' } });
+  const created = await post(parent, '/tabs', create);
+  expect(created.json()).toMatchObject({ result: { launch_status: 'ready', initial_message_status: 'submitted' } });
+  expect(manager.getSession(created.json().result.tab_id)?.cli_type).toBe(parentAgent);
+  expect(manager.getSession(child)?.native_session_id).toBe(native);
+});
+
+it('keeps the current batch moving and leaves children with unresolved work out of cleanup', async () => {
+  const db = getDb(), parent = 'dev-one', child = 'test';
+  db.prepare('UPDATE sessions SET parent_session_id=? WHERE id=?').run(parent, child);
+  vi.spyOn(getAgent('claude').input, 'submit').mockResolvedValue(true);
+  vi.spyOn(getAgent('codex').input, 'submit').mockResolvedValue(true);
+  const post = (id: string, path: string, payload: object) =>
+    app.inject({ method: 'POST', url: base + path, headers: header(id), payload });
+  const batch = (await post(parent, '/batches', {request_id: 'open-review-batch'})).json().result.batch_id;
+  const send = (request_id: string, target: string, batch_id?: string) => post(parent, '/messages', {
+    request_id, batch_id, target_tab_ids: [target], intent: 'task', text: request_id,
+  });
+  const first = (await send('first-child-task', child, batch)).json().result.results[0].message_id;
+  await post(child, '/messages', {request_id: 'done', reply_to: first, intent: 'result', text: '通过'});
+  expect((await send('another-same-batch', 'dev-two', batch)).statusCode).toBe(200);
+  expect((await send('unreviewed-other-batch', 'dev-two')).statusCode).toBe(409);
+
+  // Explicitly reusing the child makes it ineligible for cleanup until this
+  // new task returns a result, even though an older task already has one.
+  expect((await send('reuse-child', child)).statusCode).toBe(200);
+  const children = (await app.inject({url: base + '/tabs?children=true', headers: header(parent)})).json().tabs;
+  expect(children).toHaveLength(1);
+  expect(children[0]).not.toHaveProperty('cleanup_review');
+  expect((await send('independent-work', 'dev-two')).statusCode).toBe(200);
+});
+
+it('reviews a returned child whose ended tab is still visible and excludes it after closing', async () => {
+  const db = getDb(), child = 'test';
+  db.prepare("UPDATE sessions SET parent_session_id='dev-one' WHERE id=?").run(child);
+  vi.spyOn(getAgent('claude').input, 'submit').mockResolvedValue(true);
+  const send = (tabId: string, payload: object) =>
+    app.inject({method: 'POST', url: base + '/messages', headers: header(tabId), payload});
+  const original = await send('dev-one', {request_id: 'old', target_tab_ids: [child], intent: 'task', text: '验收'});
+  await send(child, {request_id: 'returned', reply_to: original.json().result.results[0].message_id, intent: 'result', text: '已完成'});
+  db.prepare("UPDATE sessions SET status='completed' WHERE id=?").run(child);
+  db.prepare("INSERT INTO user_ui_state(user_id,key,value) VALUES(?,'project:p',?)")
+    .run(owner, JSON.stringify({terminalInstances: [{ id: child }]}));
+  const list = async () => (await app.inject({url: base + '/tabs?children=true&include_ended=true', headers: header('dev-one')})).json().tabs;
+  expect(await list()).toMatchObject([{tab_id: child, cleanup_review: {result_message_id: expect.any(String)}}]);
+  const close = await app.inject({
+    method: 'POST', url: base + '/tabs/' + child + '/delete', headers: header('dev-one'), payload: {request_id: 'cleanup'},
+  });
+  expect(close.json()).toMatchObject({result: {status: 'closed', history_status: 'retained'}});
+  expect((await list())[0]).not.toHaveProperty('cleanup_review');
+  expect(manager.getSession(child)?.status).toBe('completed');
+});
+
+it.each([
+  ['claude', 'new'], ['claude', 'brief'], ['codex', 'new'], ['codex', 'brief'],
+])('applies the configured %s %s rule when reusing a child', async (agent, action) => {
+  const parent = agent === 'codex' ? 'dev-two' : 'dev-one';
+  const target = 'guarded-child';
+  const oldId = '019ff003-8888-7888-8888-888888888888';
+  const freshId = '019ff002-8888-7888-8888-888888888888';
+  tab(target, owner, 'p', agent);
+  getDb().prepare('UPDATE sessions SET parent_session_id=?,native_session_id=? WHERE id=?').run(parent, oldId, target);
+  getDb().prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY, JSON.stringify({
+    enabled: true, rules: [{ action, conditions: { operator: 'and', conditions: [{ type: 'context_percent', value: 70 }] } }],
+  }));
+  const adapter = getAgent(agent);
+  vi.spyOn(adapter.telemetry, 'read').mockImplementation(async context => ({
+    usage: { total: {}, last: { total_tokens: context.nativeId === oldId ? 800 : 0 }, window: 1000 }, observed_at: null,
+  }));
+  vi.spyOn(adapter.runtime, 'read').mockImplementation(async context => ({
+    source: 'fixture', session_id: context.nativeId, state: 'idle', observed_at: new Date().toISOString(),
+    last_activity_at: null, reason: '',
+  }));
+  const read = vi.spyOn(history, 'readConversation').mockResolvedValue({
+    available: true, generation: 'fixture', has_more: false, reset: false, statistics: [], metadata: null, cache_drops: [],
+    messages: [
+      { id: 'earlier-input', role: 'user', text: '检查候选版本', timestamp: null },
+      { id: 'earlier-result', role: 'assistant', phase: 'final', text: '已有验收证据', timestamp: null },
+    ],
+  });
+  const submit = vi.spyOn(adapter.input, 'submit').mockResolvedValue(true);
+  const replace = vi.spyOn(manager, 'newSessionConversation').mockImplementation(async (id, _preference, _replacement, expected) => {
+    expect(expected).toBe(oldId);
+    getDb().prepare('UPDATE sessions SET native_session_id=? WHERE id=?').run(freshId, id);
+    return { ok: true, history_id: 'retained-history' };
+  });
+  const request = () => app.inject({
+    method: 'POST', url: base + '/messages', headers: header(parent),
+    payload: { request_id: 'guarded-task', intent: 'task', target_tab_ids: [target], text: '复验窄屏' },
+  });
+  expect(manager.getSession(target)).toMatchObject({ agent_id: agent, native_session_id: oldId, parent_session_id: parent, status: 'running' });
+  const result = await request();
+  const receipt = result.json().result.results[0];
+  expect(receipt, JSON.stringify(receipt)).toMatchObject({ tab_id: target, status: 'submitted', guard_action: action, message_id: expect.any(String) });
+  expect(replace).toHaveBeenCalledExactlyOnceWith(target, undefined, undefined, oldId, undefined, { preserveHistory: true });
+  expect(submit).toHaveBeenCalledTimes(1);
+  expect(submit.mock.calls[0][0].nativeId).toBe(freshId);
+  const text = submit.mock.calls[0][1];
+  expect(text).toContain(`source_tab_id=${parent} · message_id=${receipt.message_id}`);
+  const visible = linkConversationInputs(target, freshId, [{id: 'guard-echo', role: 'user', text, timestamp: null, client_id: receipt.message_id}])[0];
+  expect(visible.input_source).toEqual({ kind: 'agent_handoff', label: parent });
+  if (action === 'brief') {
+    expect(parseBriefContext(visible.text)).toMatchObject({ input: '复验窄屏', context: { turns: [{ input: '检查候选版本', conclusion: '已有验收证据' }] } });
+    expect(read).toHaveBeenCalledTimes(1);
+  } else {
+    expect(visible.text).toBe('复验窄屏');
+    expect(read).not.toHaveBeenCalled();
+  }
+  expect((await request()).json()).toEqual(result.json());
+  expect(submit).toHaveBeenCalledTimes(1);
+});
+
+it('keeps the old child conversation when a configured new rule encounters outstanding work', async () => {
+  const db = getDb(), child = 'test';
+  db.prepare("UPDATE sessions SET parent_session_id='dev-one' WHERE id=?").run(child);
+  const adapter = getAgent('claude');
+  const submit = vi.spyOn(adapter.input, 'submit').mockResolvedValue(true);
+  const post = (request_id: string) => app.inject({
+    method: 'POST', url: base + '/messages', headers: header('dev-one'),
+    payload: { request_id, intent: 'task', target_tab_ids: [child], text: request_id },
+  });
+  expect((await post('outstanding')).json().result.results[0].status).toBe('submitted');
+  db.prepare('INSERT INTO settings(key,value) VALUES(?,?)').run(SEND_GUARD_KEY, JSON.stringify({
+    enabled: true, rules: [{ action: 'new', conditions: { operator: 'and', conditions: [{ type: 'context_percent', value: 50 }] } }],
+  }));
+  vi.spyOn(adapter.telemetry, 'read').mockResolvedValue({
+    usage: { total: {}, last: {total_tokens: 80}, window: 100 }, observed_at: null,
+  });
+  vi.spyOn(adapter.runtime, 'read').mockResolvedValue({
+    source: 'fixture', session_id: native, state: 'idle', observed_at: new Date().toISOString(), last_activity_at: null, reason: '',
+  });
+  const replace = vi.spyOn(manager, 'newSessionConversation');
+  const receipt = (await post('another')).json().result.results[0];
+  expect(receipt).toMatchObject({status: 'rejected', reason: expect.stringContaining('已有任务待回传')});
+  expect(replace).not.toHaveBeenCalled();
+  expect(submit).toHaveBeenCalledTimes(1);
+  expect(manager.getSession(child)?.native_session_id).toBe(native);
 });
 
 it('creates a named tab as its creator and sends the first handoff only after launch', async () => {

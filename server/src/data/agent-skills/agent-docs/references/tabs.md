@@ -15,6 +15,18 @@ python3 scripts/platform_api.py list-tabs --include-ended
 
 按名称和当前任务确认目标。名称重复时，结合 Agent 类型、状态和用户指定的角色确认，仍有歧义时向用户说明可选项。提交消息前使用条目里的 `tab_id`。
 
+## 派工前核查
+
+派工或开批前先用 `list-tabs --children --include-ended`，按 `next_cursor` 查完直属子标签。先按角色、任务依据和当前状态找适合复用的标签，有需要再改模型参数。忙碌但适合接续的标签可以按能力安排轮后投递。只有找不到合适标签时才新建，新一批任务也可以沿用上一批的标签。
+
+`cleanup_review` 包含父标签发出的 `task_message_id` 和收到的 `result_message_id`，表示在近期可核对的派工记录中已有结果且无待回传任务。也会提示仍显示在项目中的已结束标签。用 `read-message` 核对结果；需要确认是否仍在做其他工作时用 `read-tab`。核查后按用途处理：
+
+- **沿用。** 对匹配的标签直接派工，它是本次目标，无须另行列为保留。
+- **关闭。** 已验收、无后续工作且具备权限时，用默认的 `delete-tab` 关闭并保留历史。
+- **保留。** 仍需待命、承担其他职责，或状态有待核实的标签继续保留。在本次派工或创建 JSON 的 `retain_child_tab_ids` 中填写已核查且需保留的 ID。
+
+创建标签或通过 `intent: "task"` 直接派工前，服务端会重查。若还有候选未处理，返回 HTTP 409，`code: "child_cleanup_required"`、`state: "not_started"` 和 `cleanup_candidates`。本次尚未创建标签、投递消息或登记批次任务。按响应逐个核对，处理完可使用原 `request_id` 重新提交。若 `more_cleanup_candidates` 为真，按原列表分页继续核查。同批已分配的标签留到本批收尾时处理。
+
 ## 读取进展
 
 用 `GET /tabs/{tab_id}` 读取某个标签页的状态和少量近期用户与 Agent 消息。只在需要核对具体进度时调用。返回的历史节选用于了解当前工作，任务的验收结论仍由执行方回传。
@@ -29,7 +41,7 @@ python3 scripts/platform_api.py read-tab -- "$target_tab_id"
 
 ## 创建并交付任务
 
-`POST /tabs` 对应 `create-tab`。新标签页继承创建者的 Agent 类型、Provider 和账号。需要为子任务指定模型时，先用 [配置分配](allocation.md) 查看同一 Provider 的选项。名称使用有辨识度的任务或角色名，例如 Jira 工单号。
+`POST /tabs` 对应 `create-tab`。新标签页继承创建者的 Agent 类型、Provider 和账号。需要为子任务指定模型时，先用 [配置分配](allocation.md) 查看同一 Provider 的选项。按[派工前核查](#派工前核查)确认暂无合适的已有标签，再用有辨识度的任务或角色命名，例如 Jira 工单号。
 
 ```sh
 # request_id 使用执行命令前已生成并记录的 ID。

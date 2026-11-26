@@ -115,7 +115,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.43.0',
+    version:'3.44.0',
     updatedAt:'2026-11-26',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -562,7 +562,7 @@ export function getAgentApiContract() {
         description: 'Read the selected authorized Codex Engine model catalog for a permitted project.',
       },
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/capabilities',description:'With a launch-issued tab credential, return the source tab, owner, project, callable operations and limits.'},
-      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs',description:'List the owner’s Agent tabs in the same project, including parent_tab_id, can_delete and can_queue_follow_up. Optional cursor from next_cursor, children=true for direct children of the source tab, and include_ended=true for ended tabs.'},
+      {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs',description:'List the owner’s Agent tabs in the same project, including parent_tab_id, can_delete and can_queue_follow_up. Optional cursor from next_cursor, children=true for direct children with optional cleanup_review evidence, and include_ended=true for ended tabs.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs/:id',description:'Read parent_tab_id, state and recent public conversation text for an accessible tab.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/tabs/:id/controls',description:'Read the current execution, pending selection, supported fields and model choices for the authorized target tab’s current binding. can_update is true only for a writable direct child with editable controls.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs/:id/controls',description:'Update a direct child in place through its existing Provider and account. The current model request continues. Result status is applied, saved for recovery, submitted pending confirmation, unsupported, rejected or unknown.',
@@ -573,9 +573,9 @@ export function getAgentApiContract() {
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/batches/:id/seal',description:'Close batch registration. Body: request_id. Once sealed, all terminal tasks trigger one summary input to the parent. The deadline can also trigger that input.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/batches/:id',description:'Read an owned batch’s deadline, sealed state, wake_status and wake_reason with per-task message_id, delivery and result_message_id.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/execution-options',description:'Return source_execution and launch settings for the source tab’s bound Provider or account only. Optional agent_id filters results and include_quota=true adds available quota.'},
-      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs',description:'Create and launch one tab in the source project using the same Agent, Provider and account as the source tab. Body: request_id, name, optional execution, initial_message and batch_id (requires initial_message). A different agent_id or environment_id is rejected before launch. The platform checks model settings before sending the first task.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs',description:'Create and launch one tab in the source project using the same Agent, Provider and account as the source tab. Body: request_id, name, optional execution, initial_message, batch_id (requires initial_message) and retain_child_tab_ids. A child_cleanup_required 409 includes cleanup_candidates and means the operation has not started. A different agent_id or environment_id is rejected before launch. The platform checks model settings before sending the first task.'},
       {category:'Agent Docs',method:'POST',path:'/api/agent-docs/tabs/:id/delete',description:'Close another authorized tab belonging to the same user and project. Body: request_id and optional delete_history (default false). Explicit history removal runs in the background and can be tracked via GET /api/agent-docs/operations/:id. No cascade to child tabs.'},
-      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text to target_tab_ids or to the original sender using reply_to. Body: request_id, text, optional intent and batch_id (only with direct task dispatch), and after_current_turn=true to queue a direct delivery through the native follow-up API. Replies to a batched task are stored immediately. A blocker reply additionally attempts immediate input and reports wake_status. An ordinary reply outside a batch is delivered immediately.'},
+      {category:'Agent Docs',method:'POST',path:'/api/agent-docs/messages',description:'Deliver text to target_tab_ids or to the original sender using reply_to. Body: request_id, text, optional intent and batch_id (only with direct task dispatch), retain_child_tab_ids for reviewed children to keep, and after_current_turn=true to queue a direct delivery through the native follow-up API. Direct task dispatch can return child_cleanup_required before submission. For direct children, the configured new or brief action can reuse the same tab and reports guard_action after delivery. Replies to a batched task are stored immediately. A blocker reply additionally attempts immediate input and reports wake_status. An ordinary reply outside a batch is delivered immediately.'},
       {category:'Agent Docs',method:'GET',path:'/api/agent-docs/operations/:id',description:'Read settled or partial receipts for a request_id owned by the source tab.'},
       {
         category: 'Agents', method: 'GET', path: '/api/codex/environments',
@@ -607,6 +607,7 @@ export function getAgentApiContract() {
       },
     ],
     tips: [
+      'Agent Docs dispatch: GET /api/agent-docs/tabs?children=true&include_ended=true, review cleanup_review entries and reuse suitable tabs. Close finished tabs with history retained or name the children being retained in retain_child_tab_ids. Create a child only if no existing tab fits.',
       'Agent Docs child tab example: POST /api/agent-docs/tabs with '+JSON.stringify({request_id:'child-review',name:'Review',initial_message:'Review the change and report the findings'})+'. Omit execution to inherit the source Agent, Provider and account.',
       'Agent Docs in-place settings example: GET /api/agent-docs/tabs/:id/controls, then POST to the same path with '+JSON.stringify({request_id:'raise-review-effort',execution:{reasoning_effort:'high'}})+' if the target model supports that effort.',
       'Agent Docs batch example: open via POST /api/agent-docs/batches with '+JSON.stringify({request_id:'open-reviews',timeout_seconds:1800})+', reuse result.batch_id on each task dispatch, then POST /api/agent-docs/batches/:id/seal with an independent request_id.',

@@ -7,9 +7,13 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.43.0');
+    expect(contract.version).toBe('3.44.0');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/tabs'&&e.method==='POST')?.description).toContain('same Agent, Provider and account');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/execution-options')?.description).toContain('source_execution');
+    expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/tabs'&&e.method==='GET')?.description).toContain('cleanup_review');
+    for (const path of ['/api/agent-docs/tabs','/api/agent-docs/messages']) {
+      expect(contract.endpoints.find(endpoint=>endpoint.method==='POST'&&endpoint.path===path)?.description).toContain('child_cleanup_required');
+    }
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/messages')?.description).toContain('stored immediately');
     expect(contract.endpoints.find(e=>e.path==='/api/agent-docs/batches/:id/seal')?.description).toContain('one summary input');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation')?.description).toContain('include_context=true adds startup_context');

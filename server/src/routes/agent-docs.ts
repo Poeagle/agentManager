@@ -7,21 +7,25 @@ import { agentDocsAllowed, agentDocsTabAccessible, verifyAgentDocsToken, withAge
 import { agentDocsBatchLimits, agentDocsBatchScheduler, agentDocsBatchSnapshot, getAgentDocsBatch,
   initAgentDocsBatches, openAgentDocsBatch, reserveAgentDocsBatch, sealAgentDocsBatch, type AgentDocsBatch } from '../services/agent-docs-batches.js';
 import { agentForSession, getAgent } from '../services/agents/index.js';
+import { canUseSessionEnvironment } from '../services/agents/environment-access.js';
 import { executionSettingsPatch, inPlaceModelChoices } from '../services/agents/model-preferences.js';
 import type { AgentControls, ModelPreference } from '../services/agents/types.js';
 import { nativeConversationId } from '../services/session-identity.js';
 import { sessionPresenter } from '../services/session-labels.js';
+import { inspectSendGuard, sendGuardPolicy } from '../services/conversation-send-guard.js';
+import { prepareBriefSend } from '../shared/conversation-brief.js';
 import { automaticConversationContext } from '../shared/conversation-context.js';
 import { broadcastEphemeral } from '../services/event-store.js';
 import { getTracker } from '../services/session-state.js';
-import { canQueueSessionRecordDeletion, consumePendingSpawn, getSession, killSession, spawnSession, waitForSessionLifecycle, waitForStoppedSessionLifecycle, type Session } from '../services/session-manager.js';
+import { canQueueSessionRecordDeletion, consumePendingSpawn, getSession, killSession, newSessionConversation, spawnSession, waitForSessionLifecycle, waitForStoppedSessionLifecycle, type Session } from '../services/session-manager.js';
 import { platformApi, PlatformApiError } from '../services/platform-ai/tools.js';
 import { removeSessionTabs } from '../services/session-tabs.js';
 import { sessionRecordDeletionState } from '../services/session-record-deletion.js';
 
 const LIMITS = { page_size: 50, targets: 8, pending_submissions: 20, message_bytes: 48 * 1024,
-  operation_retention_seconds: 7 * 24 * 60 * 60, ...agentDocsBatchLimits };
+  operation_retention_seconds: 7 * 24 * 60 * 60, retained_children: 500, ...agentDocsBatchLimits };
 const tabId = z.string().regex(/^[\w-]{1,100}$/);
+const retainedChildren = z.array(tabId).max(LIMITS.retained_children).optional();
 const message = z.string().trim().min(1).refine(text => Buffer.byteLength(text) <= LIMITS.message_bytes);
 const create = z.object({
   request_id: tabId,
@@ -34,6 +38,7 @@ const create = z.object({
     service_tier: z.string().max(50).optional(),
   }).strict().optional(),
   initial_message: message.optional(),
+  retain_child_tab_ids: retainedChildren,
   batch_id: tabId.optional(),
 }).strict().refine(input => !input.batch_id || !!input.initial_message);
 const updateTabControls = z.object({
@@ -52,6 +57,7 @@ const send = z.object({
   batch_id: tabId.optional(),
   text: message,
   after_current_turn: z.boolean().optional(),
+  retain_child_tab_ids: retainedChildren,
 }).strict().refine(input => (!input.after_current_turn || !!input.target_tab_ids) && !!input.target_tab_ids !== !!input.reply_to &&
   (!input.batch_id || (!!input.target_tab_ids && input.intent === 'task')) &&
   (input.intent !== 'blocker' || !!input.reply_to));
@@ -88,6 +94,77 @@ function ownedTab(scope: Scope, id: string, includeEnded = false) {
   return target?.created_by_user_id === scope.userId && target.project_id === scope.projectId && accessible(target) ? target : undefined;
 }
 
+interface ChildCleanupOptions {
+  onlyIds?: string[];
+  excludeIds?: string[];
+  batchId?: string;
+}
+
+const matchingTaskResult = `
+  SELECT result.id FROM agent_docs_handoffs result
+  WHERE result.reply_to=task.id AND result.source_tab_id=task.target_tab_id
+    AND result.target_tab_id=task.source_tab_id AND result.intent='result'
+    AND result.status IN ('stored','submitted','queued')
+    AND result.created_at>=datetime('now','-7 days')
+  ORDER BY result.rowid DESC LIMIT 1
+`;
+const trackedTask = `task.target_tab_id=? AND task.intent='task' AND task.reply_to IS NULL
+  AND task.status<>'rejected' AND task.created_at>=datetime('now','-7 days')`;
+
+function childCleanupCandidates(scope: Scope, options: ChildCleanupOptions = {}) {
+  const db = getDb();
+  const saved = db.prepare(`
+    SELECT CASE WHEN json_valid(value)
+      AND json_type(CASE WHEN json_valid(value) THEN value END, '$.terminalInstances')='array'
+      THEN json_extract(value, '$.terminalInstances') END AS tabs
+    FROM user_ui_state WHERE user_id=? AND key=?
+  `).get(scope.userId, `project:${scope.projectId}`) as { tabs: string | null } | undefined;
+  const children = db.prepare(`
+    SELECT child.* FROM sessions child
+    WHERE parent_session_id=? AND created_by_user_id=? AND project_id=? AND mode='session'
+    AND (status IN ('running','detached') OR (
+      status IN ('completed','failed','cancelled') AND id IN (
+        SELECT json_extract(value, '$.id') FROM json_each(?) WHERE type='object'
+      )
+    ))
+    AND NOT EXISTS (
+      SELECT 1 FROM sessions descendant WHERE descendant.parent_session_id=child.id
+        AND descendant.status IN ('running','detached','released','pending','launching')
+    )
+    ORDER BY child.rowid
+  `).all(scope.source.id, scope.userId, scope.projectId, saved?.tabs ?? '[]') as Session[];
+  const completedTask = db.prepare(`
+    WITH tasks AS MATERIALIZED (
+      SELECT task.id AS task_message_id, task.source_tab_id, task.batch_id, task.rowid AS task_order,
+        (${matchingTaskResult}) AS result_message_id
+      FROM agent_docs_handoffs task WHERE ${trackedTask}
+    )
+    SELECT task_message_id, result_message_id, batch_id FROM tasks
+    WHERE source_tab_id=? AND NOT EXISTS (SELECT 1 FROM tasks WHERE result_message_id IS NULL)
+    ORDER BY task_order DESC LIMIT 1
+  `);
+  const only = options.onlyIds && new Set(options.onlyIds), excluded = new Set(options.excludeIds);
+  const present = sessionPresenter(scope.userId);
+  const candidates: Array<{tab_id: string; name: string; state: string; can_delete: boolean;
+    cleanup_review: {task_message_id: string; result_message_id: string}}> = [];
+  for (const child of children) {
+    if (excluded.has(child.id) || only && !only.has(child.id) || !agentDocsTabAccessible(child)
+      || sessionRecordDeletionState(child.id) === 'pending' || deliveryTails.has(child.id)) continue;
+    const tracker = getTracker(child.id);
+    if (tracker && (tracker.hasPendingExecute || tracker.state.processState !== 'idle' || tracker.state.isPermission)) continue;
+    const completed = completedTask.get(child.id, scope.source.id) as
+      { task_message_id: string; result_message_id: string; batch_id: string | null } | undefined;
+    if (!completed || options.batchId && completed.batch_id === options.batchId) continue;
+    candidates.push({
+      tab_id: child.id, name: present(child).tab_name, state: tracker?.state.processState ?? child.status,
+      can_delete: agentDocsAllowed(scope.source, 'write') && agentDocsTabAccessible(child, 'write'),
+      cleanup_review: { task_message_id: completed.task_message_id, result_message_id: completed.result_message_id },
+    });
+    if (candidates.length > LIMITS.page_size) break;
+  }
+  return candidates;
+}
+
 function canUpdateControls(scope: Scope, target: Session) {
   return target.parent_session_id === scope.source.id && agentDocsAllowed(scope.source, 'write') &&
     agentDocsAllowed(target, 'write') && ['running', 'detached', 'released'].includes(target.status);
@@ -120,8 +197,8 @@ function recordResult(scope: Scope, requestId: string, result: Json, settled = f
 }
 
 async function mutate(scope: Scope, kind: string, input: { request_id: string }, work: () => Promise<Json>,
-  dispatch?: { batchId: string; size: number }) {
-  const db = getDb();
+  options?: { dispatch?: { batchId: string; size: number }; childReview?: ChildCleanupOptions }) {
+  const db = getDb(), dispatch = options?.dispatch;
   const requestId = input.request_id;
   const fingerprint = createHash('sha256').update(JSON.stringify([kind, input])).digest('hex');
   db.prepare("DELETE FROM agent_docs_operations WHERE created_at < datetime('now', '-7 days')").run();
@@ -132,12 +209,22 @@ async function mutate(scope: Scope, kind: string, input: { request_id: string },
     if (previous.fingerprint !== fingerprint) throw Object.assign(Error('同一 request_id 对应了不同请求'), { statusCode: 409 });
     return operationView(requestId, previous);
   }
-  db.transaction(() => {
+  const blocked = db.transaction(() => {
+    if (options?.childReview) {
+      const candidates = childCleanupCandidates(scope, options.childReview);
+      if (candidates.length) return {
+        request_id: requestId, state: 'not_started', code: 'child_cleanup_required',
+        error: '派工前请复核已有子标签，优先沿用匹配的标签，关闭已验收的标签或明确保留待命',
+        cleanup_candidates: candidates.slice(0, LIMITS.page_size),
+        more_cleanup_candidates: candidates.length > LIMITS.page_size,
+      };
+    }
     if (dispatch && !reserveAgentDocsBatch(dispatch.batchId, scope.source.id, dispatch.size))
       throw Object.assign(Error('批次不可登记任务：不存在、已封批、已到期或任务数已达上限'), { statusCode: 409 });
     db.prepare("INSERT INTO agent_docs_operations(tab_id,request_id,fingerprint,state,batch_id,batch_size) VALUES(?,?,?,'pending',?,?)")
       .run(scope.source.id, requestId, fingerprint, dispatch?.batchId ?? null, dispatch?.size ?? null);
   })();
+  if (blocked) return blocked;
   let result: Json;
   try { result = await work(); }
   catch {
@@ -174,16 +261,87 @@ function handoffText(sourceId: string, messageId: string, text: string, replyTo?
   return `[Agent Manager handoff · source_tab_id=${sourceId} · message_id=${messageId}${replyTo ? ` · reply_to=${replyTo}` : ''}]\n${text}`;
 }
 
-async function submitHandoff(app: Parameters<typeof platformApi>[0], input: {
-  targetId: string; userId: string; clientId: string; label: string; text: string; native: string; environment: string; afterCurrentTurn?: boolean;
-}) {
+interface HandoffSubmission {
+  targetId: string;
+  userId: string;
+  clientId: string;
+  label: string;
+  text: string;
+  native: string;
+  environment: string;
+  afterCurrentTurn?: boolean;
+}
+
+async function prepareGuardedDispatch(app: Parameters<typeof platformApi>[0], scope: Scope, input: HandoffSubmission, action: 'new' | 'brief') {
+  const reject = (message: string) => new PlatformApiError(message, 409, 'rejected');
+  const assertTarget = (expectedNative?: string) => {
+    const source = ownedTab(scope, scope.source.id);
+    const target = ownedTab(scope, input.targetId);
+    if (!source || !agentDocsAllowed(source, 'write') || !target || target.parent_session_id !== source.id
+      || (target.agent_environment_id || 'native') !== input.environment || !canUseSessionEnvironment(target, input.userId)
+      || (expectedNative && nativeConversationId(target) !== expectedNative) || deliveryBlocked(target, target.id))
+      throw reject('派工的来源、目标会话或账号已变化，消息尚未发送');
+    return target;
+  };
+  const target = assertTarget(input.native);
+  const unfinished = getDb().prepare(`
+    SELECT 1 FROM agent_docs_handoffs task
+    WHERE ${trackedTask} AND task.id<>? AND NOT EXISTS (${matchingTaskResult}) LIMIT 1
+  `);
+  const assertNoOtherTasks = () => {
+    if (unfinished.get(target.id, input.clientId)) throw reject('已有任务待回传，暂缓新开会话，本条任务尚未发送');
+  };
+  assertNoOtherTasks();
+  const path = `/api/sessions/${encodeURIComponent(target.id)}`;
+  let text = input.text;
+  if (action === 'brief') {
+    try {
+      const prepared = await prepareBriefSend(target.id, input.native, { input: text }, query =>
+        platformApi(app, input.userId, 'GET', `${path}/conversation?${new URLSearchParams(query)}`));
+      // History projection strips the trusted header and reveals the brief card.
+      const headerLength = text.indexOf('\n') + 1;
+      text = text.slice(0, headerLength) + prepared.input.slice(0, -text.length) + text.slice(headerLength);
+    } catch (error) {
+      throw reject(error instanceof Error ? error.message : '简要压缩失败，任务尚未发送');
+    }
+  }
+
+  const policy = sendGuardPolicy();
+  const check = await inspectSendGuard(assertTarget(input.native), input.userId, { input: input.text, attachments: [], batch: null }, policy);
+  if (check.required_action !== action || !check.can_new || check.switch_account || JSON.stringify(policy) !== JSON.stringify(sendGuardPolicy()))
+    throw reject('发送保护规则或会话状态已变化，任务尚未发送');
+  assertTarget(input.native);
+  assertNoOtherTasks();
+  const fresh = await newSessionConversation(target.id, undefined, undefined, input.native, undefined, { preserveHistory: true });
+  if (!fresh.ok) throw reject(fresh.error || '无法新开会话，任务尚未发送');
+  broadcastEphemeral({ type: 'session.started', session_id: target.id, project_id: scope.projectId });
+  const next = assertTarget();
+  const native = nativeConversationId(next);
+  if (!native || native === input.native || agentForSession(next) !== agentForSession(target))
+    throw reject('新会话身份未确认，任务尚未发送');
+  return { text, native };
+}
+
+async function submitHandoff(app: Parameters<typeof platformApi>[0], input: HandoffSubmission, dispatchScope?: Scope) {
+  const submit = (text: string, native: string) => withAgentDocsHandoff(input, () =>
+    platformApi(app, input.userId, 'POST', `/api/sessions/${encodeURIComponent(input.targetId)}/input`, {
+      input: text, source: 'conversation', client_id: input.clientId, expected_native_id: native,
+      expected_environment_id: input.environment, ...(input.afterCurrentTurn && { after_current_turn: true }),
+    }));
   try {
-    const response = await withAgentDocsHandoff(input, () =>
-      platformApi(app, input.userId, 'POST', `/api/sessions/${encodeURIComponent(input.targetId)}/input`, {
-        input: input.text, source: 'conversation', client_id: input.clientId, expected_native_id: input.native,
-        expected_environment_id: input.environment, ...(input.afterCurrentTurn && { after_current_turn: true }),
-      }));
-    return { status: response.status === 'queued' ? 'queued' : 'submitted' };
+    let response, guardAction: 'new' | 'brief' | undefined;
+    try {
+      response = await submit(input.text, input.native);
+    } catch (error) {
+      const guard = error instanceof PlatformApiError ? error.sendGuard : undefined;
+      const action = guard?.required_action;
+      if (!dispatchScope || !(error instanceof PlatformApiError) || error.statusCode !== 409 || error.submission !== 'rejected'
+        || guard?.native_id !== input.native || !guard.can_new || guard.switch_account || (action !== 'new' && action !== 'brief')) throw error;
+      const prepared = await prepareGuardedDispatch(app, dispatchScope, input, action);
+      guardAction = action;
+      response = await submit(prepared.text, prepared.native);
+    }
+    return { status: response.status === 'queued' ? 'queued' : 'submitted', ...(guardAction && {guard_action: guardAction}) };
   } catch (error) {
     if (error instanceof PlatformApiError && error.statusCode < 500 && error.submission !== 'unknown')
       return { status: 'rejected', reason: error.message };
@@ -202,9 +360,10 @@ async function deliverOrdered(app: Parameters<typeof platformApi>[0], scope: Sco
   const label = sessionPresenter(scope.userId)(source).tab_name;
   db.prepare(`INSERT INTO agent_docs_handoffs(id,target_tab_id,source_tab_id,source_label,request_id,reply_to,status,content,intent,batch_id)
     VALUES(?,?,?,?,?,?, 'unknown', ?,?,?)`).run(messageId, id, source.id, label, requestId, replyTo || null, text, intent || 'note', batchId ?? null);
+  const dispatchScope = intent === 'task' && !replyTo && target.parent_session_id === source.id ? scope : undefined;
   const receipt = await submitHandoff(app, { targetId: id, userId: scope.userId, clientId: messageId, label,
     text: handoffText(source.id, messageId, text, replyTo), native: nativeConversationId(target)!, afterCurrentTurn,
-    environment: target.agent_environment_id || 'native' });
+    environment: target.agent_environment_id || 'native' }, dispatchScope);
   db.prepare('UPDATE agent_docs_handoffs SET status=? WHERE id=?').run(receipt.status, messageId);
   return { tab_id: id, message_id: messageId, ...receipt };
 }
@@ -255,6 +414,7 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
     CREATE INDEX IF NOT EXISTS agent_docs_inbox_target ON agent_docs_handoffs(target_tab_id,created_at);
     CREATE INDEX IF NOT EXISTS agent_docs_inbox_expiry ON agent_docs_handoffs(created_at);
     CREATE INDEX IF NOT EXISTS agent_docs_inbox_reply ON agent_docs_handoffs(reply_to);
+    CREATE INDEX IF NOT EXISTS agent_docs_child_tabs ON sessions(parent_session_id,created_by_user_id,project_id);
   `);
   initAgentDocsBatches();
   const batches = agentDocsBatchScheduler(
@@ -293,7 +453,7 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
       const user = findUserById(scope.userId);
       const operations = ['list-tabs', 'read-tab', 'tab-controls', 'inbox', 'read-message', 'execution-options', 'operation', 'read-batch'];
       if (agentDocsAllowed(scope.source, 'write')) operations.push('create-tab', 'update-tab-controls', 'send-message', 'delete-tab', 'open-batch', 'seal-batch');
-      return { version: '1.5.0', source_tab_id: scope.source.id, project_id: scope.projectId,
+      return { version: '1.6.0', source_tab_id: scope.source.id, project_id: scope.projectId,
         user: { id: user?.id, display_name: user?.display_name || user?.username }, operations, limits: LIMITS };
     });
 
@@ -343,11 +503,15 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
       const present = sessionPresenter(scope.userId);
       const includeEnded = req.query.include_ended === 'true';
       const mayDelete = agentDocsAllowed(scope.source, 'write');
-      const tabs = rows.slice(0, LIMITS.page_size).flatMap(row => {
+      const page = rows.slice(0, LIMITS.page_size);
+      const reviews = new Map(parent ? childCleanupCandidates(scope, {onlyIds: page.map(row => row.id)})
+        .map(child => [child.tab_id, child.cleanup_review]) : []);
+      const tabs = page.flatMap(row => {
         const target = ownedTab(scope, row.id, includeEnded);
         if (!target) return [];
         return [{ tab_id: row.id, parent_tab_id: target.parent_session_id ?? null, name: present(target).tab_name, agent_id: agentForSession(target).descriptor.id,
           state: getTracker(row.id)?.state.processState || target.status,
+          ...(reviews.has(row.id) ? {cleanup_review: reviews.get(row.id)} : {}),
           can_delete: mayDelete && target.id !== scope.source.id && agentDocsTabAccessible(target, 'write'),
           can_receive: !!nativeConversationId(target) && !!agentForSession(target).input.supportsImmediate && target.id !== scope.source.id && ['running','detached','released'].includes(target.status),
           can_queue_follow_up: !!nativeConversationId(target) && !!agentForSession(target).input.supportsFollowUp && target.id !== scope.source.id && ['running','detached','released'].includes(target.status) }];
@@ -490,7 +654,9 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
           recordResult(scope, input.request_id, { results });
         }));
         return { results };
-      }, dispatch);
+      }, { dispatch, childReview: input.intent === 'task' && input.target_tab_ids
+        ? { excludeIds: [...input.target_tab_ids, ...(input.retain_child_tab_ids ?? [])], batchId: input.batch_id } : undefined });
+      if ('cleanup_candidates' in action) return reply.code(409).send(action);
       if (receivedBatch) await batches.check(receivedBatch.id, receivedBatch.tab_id);
       if (dispatch) await batches.check(dispatch.batchId, scope.source.id);
       return action;
@@ -583,7 +749,9 @@ export const agentDocsRoutes: FastifyPluginAsync = async app => {
           return { ...state, initial_message_id: 'message_id' in result ? result.message_id : undefined, initial_message_reason: 'reason' in result ? result.reason : undefined };
         }
         return state;
-      }, input.batch_id ? { batchId: input.batch_id, size: 1 } : undefined);
+      }, { dispatch: input.batch_id ? { batchId: input.batch_id, size: 1 } : undefined,
+        childReview: { excludeIds: input.retain_child_tab_ids, batchId: input.batch_id } });
+      if ('cleanup_candidates' in action) return reply.code(409).send(action);
       if (input.batch_id) await batches.check(input.batch_id, scope.source.id);
       return action;
     });
