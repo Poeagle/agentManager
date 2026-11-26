@@ -3,7 +3,7 @@ import {inspectSendGuard,checkSendGuardSubmission} from '../services/conversatio
 import {validateBatch,rememberBatch} from '../services/conversation-batches.js';
 import {conversationQuestionReply} from '../services/conversation-question-reply.js';
 import {closeAccountTransports} from '../services/agents/codex/account-transport.js';
-import {canControlEnvironment,assertEnvironmentUse,watchSessionEnvironment} from '../services/agents/environment-access.js';
+import {canControlEnvironment,assertEnvironmentUse,canUseSessionEnvironment,watchSessionEnvironment} from '../services/agents/environment-access.js';
 import {AgentQuotaExhaustedError,AgentSubmissionError} from '../services/agents/submission.js';
 import {sendAgentQuota} from '../services/agents/quota-response.js';
 import {withTerminalInput} from '../services/agents/terminal-input.js';
@@ -43,6 +43,7 @@ import {ConversationProjection} from '../services/conversation-projection.js';
 import {rememberFirstSessionTask} from '../services/conversation-session-task.js';
 import {notificationInputBoundary,settleNotificationsForInput} from '../services/notifications.js';
 import {beginSessionAction, readSessionMetadataDetails, readSessionUsageIntervals, updateSessionFacts, type SessionUsagePageQuery} from '../services/session-statistics.js';
+import {readTabUsage} from '../services/session-tab-usage.js';
 
 
 function normalizeMode(mode: string | null | undefined): 'session' | 'terminal' {
@@ -116,7 +117,7 @@ export function validateExecuteRequest(value: unknown): { ok: true; request: Val
 export function getAgentApiContract() {
   return {
     name: 'AgentManager Agent API',
-    version:'3.47.0',
+    version:'3.48.0',
     updatedAt:'2026-11-26',
     scope: 'Supported external automation API for authentication, project discovery and management, session lifecycle/control, scheduled tasks, agent quota reads, and configured prompt enhancement. Internal dashboard, administration, filesystem, Git, settings, and UI-state routes are intentionally outside this contract.',
     description: 'Authenticated automation API for permitted AgentManager projects, sessions, scheduled tasks, and configured prompt enhancement. This response is the single source of truth used by the dashboard guide and its copyable prompt.',
@@ -267,6 +268,12 @@ export function getAgentApiContract() {
           expected_native_id:{type:'string',required:false,description:'Required with execution.'},
           expected_environment_id:{type:'string',required:false,description:'Required with execution. Use native for an implicit binding.'} },
         errors: { 400: 'Unsupported model or parameters', 403: 'Session or Engine not permitted', 409: 'Session or model service cannot be changed', 422: 'Requested control is unsupported', 503: 'Native update not confirmed' },
+      },
+      {
+        category: 'Sessions', method: 'GET', path: '/api/sessions/:id/tab-usage',
+        description: 'Read recorded usage for this tab and its descendant tabs across native conversations. Transferred historical receipts are counted once. Estimates preserve their original units and pricing basis.',
+        response: {usage:'{total_tokens: number | null, costs: AgentCostEstimate[], complete: boolean} | null'},
+        errors: {404:'Session not found or not accessible'},
       },
       {
         category: 'Sessions', method: 'GET', path: '/api/sessions/:id/conversation/metadata',
@@ -890,6 +897,12 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     reply.header('Cache-Control','private, no-store');
     try{return {context:await adapter.telemetry.contextBreakdown(context)};}
     catch(error){return reply.code(Number((error as {statusCode?:number}).statusCode)||503).send({error:error instanceof Error?error.message:'上下文分类暂不可用'});}
+  });
+  app.get<{Params:{id:string}}>('/sessions/:id/tab-usage',async(req,reply)=>{
+    const session=getSession(req.params.id);
+    if(!session||!canAccessAgentSession(req.user!.id,session.id)||!canUseSessionEnvironment(session,req.user!.id))
+      return reply.code(404).send({error:'Session not found'});
+    return reply.header('Cache-Control','private, no-store').send({usage:readTabUsage(session)});
   });
   app.get<{Params:{id:string};Querystring:{refresh?:string}}>('/sessions/:id/controls',async(req,reply)=>{
     const session=getSession(req.params.id);

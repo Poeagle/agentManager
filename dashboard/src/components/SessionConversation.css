@@ -523,7 +523,7 @@
 .conversation-control-context i::after,.conversation-control-weekly i::after,.conversation-control-cache i::after {content:"";position:absolute;inset:2px;border-radius:50%;background:var(--bg-primary);}
 .conversation-control-environment {display:contents;}
 .conversation-control-environment>span {white-space:nowrap;font:inherit;color:var(--text-secondary);}
-.conversation-control-environment .conversation-control-directory {max-width:min(240px,45vw);overflow:hidden;text-overflow:ellipsis;}
+.conversation-control-environment .conversation-tab-usage {color:var(--accent);font-weight:500;}
 .conversation-controls-note {color:var(--text-muted);font-size:11px;line-height:1.6;margin:8px 0;}
 @media(max-width:700px){.conversation-controls {gap:5px 8px;}.conversation-control-select select {max-width:115px;}}
 

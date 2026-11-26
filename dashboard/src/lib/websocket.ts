@@ -113,6 +113,7 @@ export function connectStream() {
     void queryClientRef?.invalidateQueries({ queryKey: SERVER_RESOURCE_QUERY_KEY });
     void queryClientRef?.invalidateQueries({ queryKey: ['notifications'] });
     void queryClientRef?.invalidateQueries({ queryKey: ['conversation-controls'] });
+    void queryClientRef?.invalidateQueries({ queryKey: ['tab-usage'] });
     void queryClientRef?.invalidateQueries({ queryKey: ['project-sessions'] });
   };
 
@@ -169,6 +170,10 @@ export function connectStream() {
       if(event.type==='session.environment'&&event.session_id){
         void queryClientRef?.invalidateQueries({queryKey:['conversation-controls',event.session_id],exact:true});
         void queryClientRef?.invalidateQueries({queryKey:['session-environments',event.session_id],exact:true});
+      }
+      if(event.type==='session.tab-usage'&&event.session_id){
+        void queryClientRef?.invalidateQueries({queryKey:['tab-usage',event.session_id],exact:true});
+        return;
       }
       if(event.type==='session.retry')return;
       if(event.type==='session.runtime'&&event.session_id){

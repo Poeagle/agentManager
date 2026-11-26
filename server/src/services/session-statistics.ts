@@ -14,6 +14,7 @@ import type { AgentContext, AgentSession, AgentStatistics } from './agents/types
 import { activityContext, modelTotals, newProjection, projectProgress, projectSummary,
   SessionStatisticsProjection, type ProjectionSink, type SessionProjectionState } from './session-statistics-projection.js';
 import { countRequest, emptyCounter, type StatisticsCounter } from './session-statistics-totals.js';
+import { notifyTabUsage } from './session-tab-usage.js';
 
 const RECORD_MAX = 16 * 1024 * 1024;
 const CHUNK = 256 * 1024;
@@ -214,6 +215,7 @@ async function scan(source: Source, context: AgentContext, path: string): Promis
     const sameFile = old?.file_id === fileId && old.codec_version === version && old.length <= stat.size;
     const sameVersion = sameFile && old.stamp === stamp && old.length === stat.size;
     if (sameVersion && old.caught_up) return false;
+    let tabUsageChanged = false;
     const canAppend = sameFile && (sameVersion || old.length < stat.size &&
       old.first_anchor === await anchor(handle, 0, Math.min(256, old.offset)) &&
       old.end_anchor === await anchor(handle, Math.max(0, old.offset - 256), Math.min(256, old.offset)));
@@ -278,6 +280,8 @@ async function scan(source: Source, context: AgentContext, path: string): Promis
       }
       const summary = projectSummary(state, id, revision, receiptTime, extras);
       summary.generation = generation;
+      const previous = old && readJson<SessionMetadata>(old.summary);
+      tabUsageChanged = json([previous?.totals,previous?.status]) !== json([summary.totals,summary.status]);
       db.prepare(`UPDATE session_statistics_sources
         SET codec_version=?,file_id=?,offset=?,length=?,stamp=?,first_anchor=?,end_anchor=?,skipping=?,
           caught_up=?,revision=?,adapter_state=?,projection_state=?,summary=? WHERE source=?`).run(
@@ -286,6 +290,9 @@ async function scan(source: Source, context: AgentContext, path: string): Promis
       );
     })();
     notify(source);
+    if (tabUsageChanged) {
+      notifyTabUsage(key, source.agent, source.environment, source.id);
+    }
     return !batch.caughtUp || check.size > stat.size;
   } finally {
     await handle.close();

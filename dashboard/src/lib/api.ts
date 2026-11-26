@@ -761,6 +761,7 @@ export const api = {
   agent: {
     stopTurn:(sessionId:string,turnId:string)=>fetchJSON<{status:'accepted'}>(`/sessions/${encodeURIComponent(sessionId)}/conversation/stop`,{method:'POST',body:JSON.stringify({turn_id:turnId})}),
     cancelQueuedInput:(sessionId:string,clientId:string)=>fetchJSON<{ok:boolean}>(`/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(clientId)}`,{method:'DELETE'}),
+    tabUsage:(sessionId:string,signal?:AbortSignal)=>fetchJSON<{usage:ConversationTabUsage|null}>(`/sessions/${encodeURIComponent(sessionId)}/tab-usage`,{signal}),
     controls:(sessionId:string,refresh=false)=>fetchJSON<ConversationControlsData>(`/sessions/${encodeURIComponent(sessionId)}/controls${refresh?'?refresh=true':''}`),
     contextBreakdown:(sessionId:string,refresh=false,signal?:AbortSignal)=>fetchJSON<{context:ConversationContextBreakdown}>(`/sessions/${encodeURIComponent(sessionId)}/context-breakdown${refresh?'?refresh=true':''}`,{signal}),
     setControls:(sessionId:string,value:AgentModelPreference|null)=>fetchJSON<{ok:boolean;pending:AgentModelPreference|null;pending_status?:'saved'|'submitted'|null;model?:string;effort?:string;provider?:string;service_tier?:string}>(`/sessions/${encodeURIComponent(sessionId)}/controls`,{method:'PUT',body:JSON.stringify(value)}),
@@ -1411,6 +1412,7 @@ export interface EnvironmentCheck {stage:string;ok:boolean;message:string}
 export interface EnvironmentPreflight {ok:boolean;checks:EnvironmentCheck[];models?:ConversationControlsData['models']}
 export interface AgentModelPreference {service_tier?:string;model:string;effort:string;provider?:string}
 type ApiTokenRates={input:number;cached:number|null;output:number;cache_write_5m?:number;cache_write_1h?:number};
+export interface ConversationTabUsage {total_tokens:number|null;costs:ConversationCostEstimate[];complete:boolean}
 export interface ConversationControlsData {
   supports_model_recovery?:boolean;supports_fresh_model?:boolean;
   agent?:AgentDescriptor;can_edit_features?:Partial<Record<import('./agents').AgentFeature,boolean>>;

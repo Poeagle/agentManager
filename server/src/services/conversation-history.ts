@@ -2,6 +2,7 @@ import {storeAgentNativeId} from './agents/identity-store.js';
 import type {AgentSession} from './agents/types.js';
 import {nanoid} from 'nanoid';
 import {getDb} from '../db/index.js';
+import {retainTabUsage} from './session-tab-usage.js';
 
 function moveHistoricalLinks(from:string,to:string) {
   const db=getDb();
@@ -26,7 +27,9 @@ export function snapshotConversation(sessionId:string) {
 
 export function activateFreshConversation(sessionId:string,historyId:string,nativeId:string) {
   const db=getDb();db.transaction(()=>{
-    const session=db.prepare('SELECT * FROM sessions WHERE id=?').get(sessionId) as AgentSession&{id:string};storeAgentNativeId(session,nativeId);
+    const session=db.prepare('SELECT * FROM sessions WHERE id=?').get(sessionId) as AgentSession&{id:string};
+    retainTabUsage(session);
+    storeAgentNativeId(session,nativeId);
     db.prepare(`INSERT OR IGNORE INTO conversation_input_links(session_id,native_id,client_id,input_hash,after_offset,message_id)
       SELECT ?,l.native_id,l.client_id,l.input_hash,l.after_offset,l.message_id FROM conversation_input_links l
       WHERE l.session_id=? AND (EXISTS (SELECT 1 FROM conversation_input_sources s WHERE s.session_id=l.session_id AND s.client_id=l.client_id) OR EXISTS (SELECT 1 FROM conversation_batches b WHERE b.session_id=l.session_id AND b.client_id=l.client_id))`).run(historyId,sessionId);

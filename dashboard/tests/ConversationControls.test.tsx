@@ -5,7 +5,7 @@ import {beforeEach,afterEach,describe,expect,it,vi} from 'vitest';
 import {ConversationControls} from '../src/components/ConversationControls';
 import {api,type ConversationControlsData} from '../src/lib/api';
 import type {SessionMetadata} from '../src/lib/session-metadata';
-vi.mock('../src/lib/api',()=>({api:{codexEnvironments:{forSession:vi.fn(async()=>({current:'provider:provider-a',environments:[{id:'provider:provider-a',kind:'provider',provider:'provider-a',name:'A',auth_mode:'account',can_control:true},{id:'provider:provider-b',kind:'provider',provider:'provider-b',name:'B',can_control:true}]})),sessionPreflight:vi.fn(async()=>({ok:true,checks:[{stage:'models',ok:true,message:'available'}],models:[{model:'model-b',name:'B',provider:'provider-b',efforts:[{value:'low'}],defaultEffort:'low'}]})),transfer:vi.fn(async()=>({ok:true}))},agent:{controls:vi.fn(),setControls:vi.fn(),contextBreakdown:vi.fn(),conversationMetadata:vi.fn(async()=>({metadata:null})),conversationUsageIntervals:vi.fn(async()=>({intervals:null}))},sessions:{compactConversation:vi.fn().mockResolvedValue({ok:true})}}}));
+vi.mock('../src/lib/api',()=>({api:{codexEnvironments:{forSession:vi.fn(async()=>({current:'provider:provider-a',environments:[{id:'provider:provider-a',kind:'provider',provider:'provider-a',name:'A',auth_mode:'account',can_control:true},{id:'provider:provider-b',kind:'provider',provider:'provider-b',name:'B',can_control:true}]})),sessionPreflight:vi.fn(async()=>({ok:true,checks:[{stage:'models',ok:true,message:'available'}],models:[{model:'model-b',name:'B',provider:'provider-b',efforts:[{value:'low'}],defaultEffort:'low'}]})),transfer:vi.fn(async()=>({ok:true}))},agent:{tabUsage:vi.fn(async()=>({usage:null})),controls:vi.fn(),setControls:vi.fn(),contextBreakdown:vi.fn(),conversationMetadata:vi.fn(async()=>({metadata:null})),conversationUsageIntervals:vi.fn(async()=>({intervals:null}))},sessions:{compactConversation:vi.fn().mockResolvedValue({ok:true})}}}));
 let client:QueryClient,data:ConversationControlsData;
 beforeEach(()=>{client=new QueryClient({defaultOptions:{queries:{retry:false}}});data={agent:sessionAgent({cli_type:'codex'}),engine_version:'0.166.0',git:{branch:'main',changes:2},state:'active',model:'model-a',effort:'high',provider:'openai',cwd:'/project',cli_version:'0.test',permission:'workspace-write',approval:'never',service_tier:null,usage:{total:{total_tokens:400000},last:{total_tokens:12000,input_tokens:11000,cached_input_tokens:9000,output_tokens:1000},window:40000},limits:[{used_percent:25,minutes:10080,resets_at:1900000000}],models:[{model:'model-a',name:'Model A',description:'默认',efforts:[{value:'high',description:''}],defaultEffort:'high'},{model:'model-b',name:'Model B',description:'另一模型',efforts:[{value:'low',description:''},{value:'medium',description:''}],defaultEffort:'low'}],can_edit:true,loaded:true,pending:null,warning:null,native_id:'native',checked_at:'2026-10-31T02:00:00Z',usage_observed_at:'2026-10-31T01:59:00Z'};vi.mocked(api.agent.controls).mockImplementation(async()=>data);vi.mocked(api.agent.setControls).mockImplementation(async(_id,value)=>({ok:true,pending:null,...value}));});
 afterEach(()=>client.clear());
@@ -126,7 +126,7 @@ describe('compact conversation controls',()=>{
   mount();await screen.findByText('Context 40K | 30%');const weekly=await screen.findByLabelText('Weekly remaining 75%');expect(screen.queryByText(/Tokens Window/)).not.toBeInTheDocument();expect(screen.getByText('Context 40K | 30%').compareDocumentPosition(weekly)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();expect(weekly.querySelector('i')).toHaveAttribute('aria-hidden','true');expect(weekly.querySelector('i')).toHaveAttribute('style',expect.stringContaining('75%'));expect(api.agent.contextBreakdown).not.toHaveBeenCalled();const calls=vi.mocked(api.agent.controls).mock.calls.length;
   fireEvent.click(screen.getByRole('button',{name:'View context token details'}));const dialog=await screen.findByRole('dialog',{name:'上下文 Token 详情'});expect(await within(dialog).findByRole('rowheader',{name:'用户消息'})).toBeVisible();expect(api.agent.controls).toHaveBeenCalledTimes(calls);expect(api.agent.contextBreakdown).toHaveBeenCalledTimes(1);fireEvent.keyDown(dialog,{key:'Escape'});expect(screen.queryByRole('dialog')).toBeNull();
  });
- it('places editable controls in the composer slot and keeps runtime information below',async()=>{
+ it('places editable controls in the composer slot and keeps usage below',async()=>{
   const slot=document.createElement('div');document.body.append(slot);
   const view=render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active toolbarTarget={slot} onNewConversation={async()=>{}}/></QueryClientProvider>);
   expect(await within(slot).findByLabelText('选择模型')).toBeVisible();
@@ -136,7 +136,7 @@ describe('compact conversation controls',()=>{
   expect(within(slot).queryByText('Context 40K | 30%')).not.toBeInTheDocument();
   expect(within(view.container).getByText('Context 40K | 30%')).toBeVisible();
   expect(within(slot).queryByText('/project')).not.toBeInTheDocument();
-  expect(within(view.container).getByText('/project')).toBeVisible();
+  expect(within(view.container).queryByText('/project')).not.toBeInTheDocument();
   view.unmount();expect(slot).toBeEmptyDOMElement();slot.remove();
  });
  it('closes the confirmation immediately while a new session is starting',async()=>{
@@ -209,6 +209,21 @@ describe('compact conversation controls',()=>{
  });
  it('applies model and effort immediately and shows the confirmed current settings',async()=>{
   mount();const model=await screen.findByRole('combobox',{name:'选择模型'});fireEvent.change(model,{target:{value:'model-b'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenCalledWith('s',{model:'model-b',effort:'low'}));expect(await screen.findByText('已应用')).toBeVisible();expect(screen.getByRole('combobox',{name:'选择推理强度'})).toHaveValue('low');expect(screen.queryByText('下轮生效')).not.toBeInTheDocument();fireEvent.change(screen.getByRole('combobox',{name:'选择推理强度'}),{target:{value:'medium'}});await waitFor(()=>expect(api.agent.setControls).toHaveBeenLastCalledWith('s',{model:'model-b',effort:'medium'}));expect(model).toHaveValue('model-b');
+ });
+ it('places lifetime usage beside the current estimate and removes the extra status fields',async()=>{
+  const cost={unit:'credits',amount:22.5,complete:true};
+  const totals={tokens:{total_tokens:4000000},requests:1,tool_rounds:0,tool_calls:0,cost};
+  const metadata:SessionMetadata={native_id:'native',revision:1,observed_at:null,status:'complete',reasons:[],
+    totals,latest:null,user_inputs:1,completed_turns:1,cache_drop_count:0};
+  vi.mocked(api.agent.tabUsage).mockResolvedValueOnce({usage:{total_tokens:8000000,costs:[{...cost,amount:45}],complete:true}});
+  render(<QueryClientProvider client={client}><ConversationControls sessionId="s" active busy metadata={metadata}/></QueryClientProvider>);
+  const label=await screen.findByLabelText('标签页累计用量');
+  expect(label).toHaveTextContent('标签页累计 1.80 USD 等值');
+  expect(label).toHaveAttribute('title',expect.stringContaining('8,000,000 tokens'));
+  expect(label.previousElementSibling).toHaveTextContent('Est. 0.90');
+  const footer=screen.getByLabelText('Session information');
+  expect(footer).not.toHaveTextContent(/Git main|\/project|Running|Workspace write|Approval|Engine 0/);
+  expect(api.agent.tabUsage).toHaveBeenCalledWith('s',expect.any(AbortSignal));
  });
  it.each([
   ['USD','预估金额','0.01'],

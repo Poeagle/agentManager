@@ -26,6 +26,7 @@ import {agentDocsLaunch} from './agent-docs.js';
 import {sharedResourceLaunch} from './shared-resources/store.js';
 
 import {snapshotConversation,activateFreshConversation,restoreConversationSnapshot} from './conversation-history.js';
+import {retainDeletedChildUsage,retainTabUsage} from './session-tab-usage.js';
 import {enqueueSessionRecordDeletion,sessionRecordDeletionState} from './session-record-deletion.js';
 import {removeSessionTabs} from './session-tabs.js';
 import {beginSessionAction,flushSessionFactsBeforeDelete, recordSessionBinding} from './session-statistics.js';
@@ -504,7 +505,10 @@ function persistTerminalCliIdentity(sessionId: string, identity: DetectedCliIden
 
   const adapter=getAgent(identity.cliType);
   const context=sessionAgentContext({...row,id:sessionId,agent_id:identity.cliType,cli_type:identity.cliType});
-  storeAgentNativeId(context.session as import('./agents/types.js').AgentSession&{id:string},identity.nativeId);
+  db.transaction(()=>{
+    if(oldNativeId)retainTabUsage(row);
+    storeAgentNativeId(context.session as import('./agents/types.js').AgentSession&{id:string},identity.nativeId);
+  })();
   void adapter.lifecycle.bind(context,identity.nativeId).catch(()=>{});
 
   const active = activeSessions.get(sessionId);
@@ -3247,6 +3251,7 @@ export async function purgeSessionRecord(sessionId: string, options?: {backgroun
       try { db.prepare('DELETE FROM events WHERE session_id = ?').run(sessionId); } catch { /* ignore */ }
       db.prepare('DELETE FROM user_ui_state WHERE key = ?').run(`session-control:${sessionId}`);
       db.prepare('UPDATE tasks SET session_id = NULL WHERE session_id = ?').run(sessionId);
+      retainDeletedChildUsage(session);
       db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
       if (options?.background && session.project_id && session.created_by_user_id) {
         removeSessionTabs(sessionId, { projectId: session.project_id, userId: session.created_by_user_id });

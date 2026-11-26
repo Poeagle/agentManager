@@ -19,7 +19,6 @@ const compact=(value:number)=>new Intl.NumberFormat('en',{notation:'compact',max
 const choiceKey=(value:{provider?:string;model:string})=>value.provider?JSON.stringify([value.provider,value.model]):value.model;
 const cacheRateFromCounters=(input:number|null|undefined,cache:number|null|undefined)=>
   input!=null&&cache!=null&&input>0&&cache>=0&&cache<=input?100*cache/input:null;
-const permissionsEn:Record<string,string>={'danger-full-access':'Full access','workspace-write':'Workspace write','read-only':'Read only'};
 const tokenMetricDescriptions:Record<string,string>={Total:'会话累计 Token，包含重复上下文',Input:'累计未缓存输入 Token',Cache:'累计命中缓存的输入 Token',Reasoning:'累计推理 Token，包含在输出中',Output:'累计输出 Token，包含推理 Token'};
 export function ConversationControls({sessionId,active,busy=false,replacing=false,compacting=false,onCompact,onBrief,briefDisabled=false,onNewConversation,toolbarTarget,metadata}:{toolbarTarget?:HTMLElement|null;sessionId:string;active:boolean;busy?:boolean;replacing?:boolean;compacting?:boolean;onCompact?:()=>Promise<void>;onBrief?:()=>void;briefDisabled?:boolean;onNewConversation?:(preference?:import('../lib/api').AgentModelPreference)=>Promise<unknown>;metadata?:SessionMetadata|null}) {
   const queryClient=useQueryClient(),[expanded,setExpanded]=useState(false),[saving,setSaving]=useState(false),[applied,setApplied]=useState(false),[error,setError]=useState('');
@@ -32,6 +31,7 @@ export function ConversationControls({sessionId,active,busy=false,replacing=fals
   const [environmentRequest,setEnvironmentRequest]=useState<{provider:string;model:string;effort:string}>();
   const operationLock=useRef(false);
     const forceRefresh=useRef(false);
+  const tabUsageQuery=useQuery({queryKey:['tab-usage',sessionId],queryFn:({signal})=>api.agent.tabUsage(sessionId,signal),enabled:active,retry:false});
   const query=useQuery({queryKey:['conversation-controls',sessionId],queryFn:()=>{const force=forceRefresh.current;forceRefresh.current=false;return api.agent.controls(sessionId,force);},enabled:active,refetchInterval:active?300000:false,staleTime:300000,refetchOnWindowFocus:false,retry:false});
   const environments=useQuery({queryKey:['session-environments',sessionId],queryFn:()=>api.codexEnvironments.forSession(sessionId),enabled:active&&(query.data?.agent?.id==='codex'||query.data?.agent?.id==='claude'),retry:false,staleTime:30000});
   // Cache-only subscription: usage events never trigger a model/catalog/quota request.
@@ -61,6 +61,18 @@ export function ConversationControls({sessionId,active,busy=false,replacing=fals
   const summary=metadata&&metadata.native_id===data?.native_id?metadata:null;
   const cumulative=summary?summary.totals?.tokens:usage?.total;
   const cost=summary?.totals?.cost;
+  const tabUsage=tabUsageQuery.data?.usage;
+  const tabEstimate=tabUsage?.costs.map(estimate=>{
+    const unit=estimate.unit==='credits'?'USD 等值':estimate.unit;
+    const value=formatConversationCost({...estimate,complete:estimate.complete&&tabUsage.complete});
+    return estimate.unit==='credits'||estimate.unit==='USD'||estimate.unit==='CNY'?`${value} ${unit}`:value;
+  }).join(' · ');
+  const tabTokens=tabUsage?.total_tokens;
+  const tabUsageLabel=tabUsage&&<span className="session-chat-estimated-cost conversation-tab-usage" aria-label="标签页累计用量"
+    title={['包含标签页历次会话及所有子 Agent 的记录',tabTokens!=null?`${tabTokens.toLocaleString()} tokens`:undefined,
+      !tabUsage.complete?'* 部分用量或费率缺失':undefined].filter(Boolean).join(' · ')}>
+    标签页累计 {tabEstimate||(tabTokens!=null?`${compact(tabTokens)} tokens${tabUsage.complete?'':'*'}`:'—')}
+  </span>;
   const countersConsistent=!summary?.reasons.includes('counter_mismatch');
   const tokenMetrics=cumulative?([['Total',cumulative.total_tokens],['Input',countersConsistent?uncachedInputTokens(cumulative):null],['Cache',cumulative.cached_input_tokens],['Reasoning',cumulative.reasoning_output_tokens],['Output',cumulative.output_tokens]] as Array<[string,number|null|undefined]>).filter((entry):entry is [string,number]=>entry[1]!=null):[];
   const recordedRate=countersConsistent?recordedCachePercent(cumulative):null;
@@ -114,20 +126,15 @@ export function ConversationControls({sessionId,active,busy=false,replacing=fals
         {weekly&&weeklyRemaining!==null&&<span className="conversation-control-weekly" aria-label={`Weekly remaining ${weeklyRemaining}%`} title={weekly.resets_at?`Resets: ${new Date(weekly.resets_at*1000).toLocaleString('en',{hour12:false})}`:undefined}><i aria-hidden="true" style={{background:`conic-gradient(${quotaColor(weeklyRemaining)} ${weeklyRemaining}%, var(--border) 0)`}}/>Weekly remaining <strong style={{color:quotaColor(weeklyRemaining),font:'inherit'}}>{weeklyRemaining}%</strong></span>}
         {shortLimit&&<span title={shortLimit.resets_at?`Resets: ${new Date(shortLimit.resets_at*1000).toLocaleString('en',{hour12:false})}`:undefined}>{shortLimit.minutes%60===0?`${shortLimit.minutes/60}h`:`${shortLimit.minutes}m`} remaining {Math.round(100-shortLimit.used_percent)}%</span>}
         <span className="conversation-control-environment" aria-label="Session information">
-          {data.git&&<span title="Git branch and changed entries">Git {data.git.branch} · {data.git.changes?`${data.git.changes} changed`:'clean'}</span>}
-          {data.cwd&&<span className="conversation-control-directory" title={`Working directory: ${data.cwd}`}>{data.cwd}</span>}
-          <span title="Session status">{compacting?'Compacting':busy?'Running':data.loaded?'Waiting':'Disconnected'}</span>
-          {data.permission&&<span title="Access permissions">{permissionsEn[data.permission]||data.permission}</span>}
-          {data.approval&&<span title="Approval policy">Approval: {data.approval}</span>}
-          {data.engine_version&&<span title="Running engine version">Engine {data.engine_version}</span>}
           {tokenMetrics.length>0&&<span aria-label="Cumulative token usage">Tokens {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{name}</span></Fragment>)} : {tokenMetrics.map(([name,value],index)=><Fragment key={name}>{index>0&&'｜'}<span title={`${tokenMetricDescriptions[name]}（${value.toLocaleString()}）`}>{compact(value)}</span></Fragment>)}</span>}
           {cost?.amount!=null&&<span className="session-chat-estimated-cost conversation-total-credits" title={`${cost.unit==='credits'?'USD 等值参考金额，不代表实际账单。 ':''}按原生请求的模型和速度估算${cost.rate_date?` · 费率 ${cost.rate_date}`:''}${cost.complete?'':' · * 费率或用量覆盖不完整'}`}>Est. {formatConversationCost(cost)}</span>}
+          {tabUsageLabel}
           {summary&&summary.status!=='complete'&&<span title={summary.reasons.map(reason=>coverageReason[reason]).join('、')||undefined}>{intervalCoverageText(summary.status,summary.reasons)}</span>}
         </span>
         {(error&&!newOpen||notice)&&<span className="conversation-control-message" role={error&&!newOpen?'alert':'status'} title={error&&!newOpen?error:notice}>{error&&!newOpen?error:notice}</span>}
         <button className="conversation-control-details" type="button" onClick={()=>setExpanded(true)}><Info size={13}/>Details</button>
         <button type="button" aria-label="Refresh session status" title="Usage updates live; other details refresh every 5 minutes" disabled={query.isFetching} onClick={refresh}><RefreshCw size={13} className={query.isFetching?'animate-spin':''}/>Refresh</button>
-      </>:<><span>{query.isPending?'Loading session…':'Session status unavailable'}</span>{query.isError&&<button type="button" onClick={refresh}><RefreshCw size={13}/>Retry</button>}</>}
+      </>:<>{tabUsageLabel}<span>{query.isPending?'Loading session…':'Session status unavailable'}</span>{query.isError&&<button type="button" onClick={refresh}><RefreshCw size={13}/>Retry</button>}</>}
     </div>
     {modelInfo&&model&&createPortal(<div ref={tooltipRef} id={tooltipId} role="tooltip" className="conversation-model-tooltip" style={{left:modelInfo.left,top:modelInfo.top,bottom:modelInfo.bottom}}>
       <strong>{modelLabel(model)}</strong>
