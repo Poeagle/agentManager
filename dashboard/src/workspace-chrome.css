@@ -179,6 +179,10 @@
 .workspace-session-scheduled[data-enabled="true"] {
   --scheduled-badge-color: var(--success);
 }
+.workspace-session-scheduled:not([aria-disabled="true"]) { cursor: pointer; }
+.workspace-session-scheduled:hover:not([aria-disabled="true"]) { box-shadow: inset 0 0 0 1px var(--scheduled-badge-color); }
+.workspace-session-scheduled:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.workspace-session-scheduled[aria-busy="true"] { cursor: wait; }
 .workspace-session-age {
   flex-shrink: 0;
   color: var(--text-secondary);

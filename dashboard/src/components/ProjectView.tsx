@@ -2,7 +2,7 @@ import {AgentIcon} from './AgentIcon';
 import {sessionAgent,agentNativeId,agentSupports} from '../lib/agents';
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
 import { Monitor, FolderTree, GitBranch, X, Download, TerminalSquare, History, Sparkles, CalendarClock, Globe, Trash2, Loader2, List, PanelLeft, Search, CornerDownRight, ChevronRight } from 'lucide-react';
 import { Terminal } from './Terminal';
@@ -13,7 +13,7 @@ import { droppedFiles, isFileDrag, type FileUploadRequest } from '../lib/file-up
 import { GitPanel } from './GitPanel';
 import { DeepSeekHarnessFrame } from './DeepSeekHarnessFrame';
 import type { HarnessModelSelection } from '../lib/deepseek-harness';
-import { api, type Session } from '../lib/api';
+import { api, type ScheduledTask, type Session } from '../lib/api';
 import { CloseTabModal } from './CloseTabModal';
 import { ConfirmModal } from './ConfirmModal';
 import { SessionHistoryPanel } from './SessionHistoryPanel';
@@ -23,7 +23,7 @@ import { useSessionResume } from '../lib/use-session-resume';
 import { ProjectSkillsPanel } from './ProjectSkillsPanel';
 import { ScheduledTasksPanel } from './ScheduledTasksPanel';
 import { LiveSessionSignalDot } from '../lib/session-signal';
-import { SessionTabBadges, SessionTabLabel } from '../lib/session-activity';
+import { SessionScheduleButton, SessionTabBadges, SessionTabLabel, type SessionScheduleAction } from '../lib/session-activity';
 import { sessionActivityMs } from '../lib/session-activity-model';
 import { sessionTabTree } from '../lib/session-tab-tree';
 import { useStreamStore } from '../lib/websocket';
@@ -1309,21 +1309,71 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
         return true;
       });
     });
+  const scheduledTasksKey = ['scheduled-tasks', projectId];
   const { data: scheduledData } = useQuery({
-    queryKey: ['scheduled-tasks', projectId],
+    queryKey: scheduledTasksKey,
     queryFn: () => api.scheduledTasks.list(projectId),
     enabled: (active || !!sessionNavigationExpanded) && workspaceTabs.length > 0,
     retry: false,
   });
-  const scheduledSessionStates = useMemo(() => {
-    const states = new Map<string, boolean>();
+  const scheduledTasksBySession = useMemo(() => {
+    const bySession = new Map<string, ScheduledTask[]>();
     for (const task of scheduledData?.tasks ?? []) {
       const sessionId = task.target_session_id;
       if (task.target_type !== 'existing' || !sessionId) continue;
-      states.set(sessionId, Boolean(task.enabled || states.get(sessionId)));
+      const tasks = bySession.get(sessionId);
+      if (tasks) tasks.push(task);
+      else bySession.set(sessionId, [task]);
     }
-    return states;
+    return bySession;
   }, [scheduledData]);
+  const scheduleToggle = useMutation({
+    mutationFn: async ({ tasks, enabled }: {
+      sessionId: string;
+      label: string;
+      tasks: ScheduledTask[];
+      enabled: boolean;
+    }) => {
+      const updated = new Map<string, ScheduledTask>();
+      const failures: string[] = [];
+      for (const task of tasks) {
+        if (Boolean(task.enabled) === enabled) continue;
+        try {
+          const { task: saved } = await api.scheduledTasks.update(task.id, { enabled });
+          updated.set(saved.id, saved);
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : '请重试');
+        }
+      }
+      if (updated.size) {
+        queryClient.setQueryData<{ tasks: ScheduledTask[] }>(scheduledTasksKey, current =>
+          current && { tasks: current.tasks.map(task => updated.get(task.id) ?? task) },
+        );
+      }
+      if (failures.length) {
+        const action = enabled ? '启用' : '停用';
+        const summary = updated.size ? `${action}未完成（${failures.length} 项失败）` : `${action}定时任务失败`;
+        throw new Error(`${summary} · ${failures[0]}`);
+      }
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: scheduledTasksKey }),
+  });
+  const scheduledToggleError = scheduleToggle.error && `${scheduleToggle.variables?.label} · ${scheduleToggle.error.message}`;
+  const scheduleForSession = (sessionId: string, label: string): SessionScheduleAction | undefined => {
+    const tasks = scheduledTasksBySession.get(sessionId);
+    if (!tasks) return;
+    const enabled = tasks.some(task => task.enabled);
+    return {
+      label,
+      enabled,
+      multiple: tasks.length > 1,
+      busy: scheduleToggle.isPending && scheduleToggle.variables?.sessionId === sessionId,
+      disabled: scheduleToggle.isPending,
+      onToggle: () => {
+        if (!scheduleToggle.isPending) scheduleToggle.mutate({ sessionId, label, tasks, enabled: !enabled });
+      },
+    };
+  };
 
   useEffect(() => {
     if (!active || !sessionSidebarOpen || sessionFilter || !activeWorkspaceTab) return;
@@ -1678,12 +1728,14 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
           }}
         />
       </form>}
+      {scheduledToggleError && <p role="alert" className="px-2 py-1 text-xs text-[var(--error)]">{scheduledToggleError}</p>}
       <nav ref={sessionTabList} aria-label="会话标签" className="workspace-session-list">
         {visibleWorkspaceTabs.map(({ tab: inst, index, sortAt, depth, hasChildren }) => {
           const activityAt = workspaceActivity[index];
           const isHarness = inst.id === HARNESS_TAB.id;
           const isActive = (!nestedSessionNavigation || active) && inst.id === activeWorkspaceTab;
           const label = inst.customLabel?.trim() || inst.label;
+          const schedule = isHarness ? undefined : scheduleForSession(inst.id, label);
           const expanded = !collapsedSessionBranches.has(inst.id);
           const toggleLabel = `${expanded ? '收起' : '展开'} ${label} 的子会话`;
           const parentLabel = depth ? '由上级标签页创建' : '由其他标签页创建，上级当前未打开';
@@ -1802,9 +1854,10 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
                   {tabIcon}
                   {isHarness ? <span className="truncate">{label}</span>
                     : <SessionTabLabel session={sigSession} label={label} detail={`${isTerminal ? 'Terminal' : 'Session'} · ${sessionAgent(session || {}).label}`} activityAt={activityAt} />}
-                  {!isHarness && <SessionTabBadges account={account} scheduledEnabled={scheduledSessionStates.get(inst.id)} activityAt={nestedSessionNavigation ? activityAt : null} />}
+                  {!isHarness && <SessionTabBadges account={account} activityAt={nestedSessionNavigation && !schedule ? activityAt : null} />}
                 </button>
               )}
+              {schedule && editingTabId !== inst.id && <SessionScheduleButton {...schedule} />}
               <button
                 type="button"
                 onClick={(e) => {
@@ -2048,12 +2101,16 @@ function ProjectViewImpl({ currentUserId, projectId, projectPath, active = true,
       </div>
 
       {active && showTabSwitcher && <SessionTabSwitcher
-        tabs={sortedWorkspaceTabs.map(({ tab }) => ({
-          id: tab.id,
-          label: tab.customLabel?.trim() || tab.label,
-          scheduledEnabled: scheduledSessionStates.get(tab.id),
-          account: allSessionLookup.get(tab.id)?.agent_account_label,
-        }))}
+        tabs={sortedWorkspaceTabs.map(({ tab }) => {
+          const label = tab.customLabel?.trim() || tab.label;
+          return {
+            id: tab.id,
+            label,
+            schedule: scheduleForSession(tab.id, label),
+            account: allSessionLookup.get(tab.id)?.agent_account_label,
+          };
+        })}
+        scheduleError={scheduledToggleError}
         activeId={activeWorkspaceTab}
         onSelect={id => {
           setShowTabSwitcher(false);

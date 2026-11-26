@@ -108,27 +108,43 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await firstBranch.getByRole('button',{name:'展开其余 31 个会话'}).click();
   await expect(sessionRows).toHaveCount(36);
   const scheduledRow = sessions.locator('[data-session-id="compact-23"]');
-  const scheduledBadge = scheduledRow.getByText('定时', { exact: true });
-  await expect(scheduledBadge).toHaveAttribute('title', '定时任务已停用');
+  const scheduledBadge = scheduledRow.getByRole('button', { name: /定时任务 · 并行任务 16/ });
+  await expect(scheduledBadge).toHaveAccessibleName('启用全部定时任务 · 并行任务 16');
   const stoppedBackground = 'color(srgb 0.927451 0.834314 0.729412)';
+  const enabledBackground = 'color(srgb 0.736275 0.877451 0.796078)';
   await expect(scheduledBadge).toHaveCSS('background-color', stoppedBackground);
   await expect(scheduledRow.getByText('界面审查账号', { exact: true })).toBeVisible();
-  await expect(scheduledRow.getByRole('button', { name: '并行任务 16 定时' })).toHaveAccessibleDescription('账号：界面审查账号');
+  await expect(scheduledRow.getByRole('button', { name: '并行任务 16', exact: true })).toHaveAccessibleDescription('账号：界面审查账号');
   const accountBounds = (await scheduledRow.getByText('界面审查账号', { exact: true }).boundingBox())!;
   const scheduledBounds = (await scheduledRow.getByText('定时', { exact: true }).boundingBox())!;
   expect(accountBounds.x + accountBounds.width).toBeLessThan(scheduledBounds.x);
   expect(accountBounds.y).toBe(scheduledBounds.y);
   await expect(sessions.getByRole('button', { name: 'jira', exact: true }).getByText('本机账号', { exact: true })).toBeVisible();
   await expect(sessions.getByText('定时', { exact: true })).toHaveCount(1);
+  const scheduledTasksUrl = `/api/scheduled-tasks?project_id=${projects[0].id}`;
+  const enabledStates = async () => {
+    const { tasks } = await (await page.request.get(scheduledTasksUrl)).json();
+    return tasks.map((task: { enabled: number }) => task.enabled).sort();
+  };
+  await scheduledBadge.click();
+  await expect(scheduledBadge).toHaveAccessibleName('停用全部定时任务 · 并行任务 16');
+  await expect(scheduledBadge).toHaveCSS('background-color', enabledBackground);
+  expect(await enabledStates()).toEqual([1, 1]);
+  await expect(sessions.getByRole('button', { name: 'jira', exact: true })).toHaveAttribute('aria-current', 'true');
+  await expect(scheduledBadge).toBeEnabled();
+  await scheduledBadge.press('Enter');
+  await expect(scheduledBadge).toHaveCSS('background-color', stoppedBackground);
+  await expect(scheduledBadge).toBeFocused();
+  expect(await enabledStates()).toEqual([0, 0]);
   await toolbar.getByRole('button', { name: '定时任务' }).click();
   const scheduleMenu = page.getByRole('button', { name: '会话绑定验证 的更多操作' });
   await scheduleMenu.click();
   await page.getByRole('menuitem', { name: '启用', exact: true }).click();
-  await expect(scheduledBadge).toHaveAttribute('title', '定时任务已启用');
-  await expect(scheduledBadge).toHaveCSS('background-color', 'color(srgb 0.736275 0.877451 0.796078)');
+  await expect(scheduledBadge).toHaveAccessibleName('停用全部定时任务 · 并行任务 16');
+  await expect(scheduledBadge).toHaveCSS('background-color', enabledBackground);
   await scheduleMenu.click();
   await page.getByRole('menuitem', { name: '暂停', exact: true }).click();
-  await expect(scheduledBadge).toHaveAttribute('title', '定时任务已停用');
+  await expect(scheduledBadge).toHaveAccessibleName('启用全部定时任务 · 并行任务 16');
   await expect(scheduledBadge).toHaveCSS('background-color', stoppedBackground);
   await toolbar.getByRole('button', { name: 'Terminal', exact: true }).click();
   const firstRow = (await sessionRows.nth(0).boundingBox())!;
@@ -271,10 +287,33 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await expect(switcher).toBeInViewport();
 
   await switcher.click();
-  const scheduledResult = dialog.getByRole('button', { name: '并行任务 16 定时', exact: true });
+  const scheduledResult = dialog.getByRole('button', { name: '并行任务 16', exact: true });
+  const switcherSchedule = dialog.getByRole('button', { name: /定时任务 · 并行任务 16/ });
   await expect(scheduledResult).toHaveAttribute('aria-current', 'true');
-  await expect(scheduledResult.getByTitle('定时任务已停用')).toHaveCSS('background-color', stoppedBackground);
+  await expect(switcherSchedule).toHaveCSS('background-color', stoppedBackground);
   await expect(scheduledResult.getByText('界面审查账号', { exact: true })).toBeVisible();
+  const { task: secondTask } = await secondSchedule.json();
+  let releaseSchedule!: () => void;
+  const pendingSchedule = new Promise<void>(resolve => { releaseSchedule = resolve; });
+  await page.route(`**/api/scheduled-tasks/${secondTask.id}`, async route => {
+    await pendingSchedule;
+    await route.fulfill({ status: 503, json: { error: '暂时无法更新任务' } });
+  }, { times: 1 });
+  try {
+    await switcherSchedule.click();
+    await expect(switcherSchedule).toHaveAttribute('aria-busy', 'true');
+    await expect(switcherSchedule).toBeDisabled();
+  } finally {
+    releaseSchedule();
+  }
+  await expect(dialog.getByRole('alert')).toContainText('暂时无法更新任务');
+  await expect(switcherSchedule).toHaveCSS('background-color', enabledBackground);
+  expect(await enabledStates()).toEqual([0, 1]);
+  await expect(scheduledResult).toHaveAttribute('aria-current', 'true');
+  await switcherSchedule.click();
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await expect(switcherSchedule).toHaveCSS('background-color', stoppedBackground);
+  expect(await enabledStates()).toEqual([0, 0]);
   await search.fill('missing-tab');
   await expect(dialog.getByText('没有匹配的会话')).toBeVisible();
   await search.press('Escape');

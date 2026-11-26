@@ -12,18 +12,38 @@ function TabLabel({ label, activityAt, detail }: { label: string; activityAt: nu
   return <span className="truncate" title={title}>{label}</span>;
 }
 
-export function SessionTabBadges({ account, scheduledEnabled, activityAt }: {
+export function SessionTabBadges({ account, activityAt }: {
   account?: string;
-  scheduledEnabled?: boolean;
   activityAt?: number | null;
 }) {
-  if (!account && scheduledEnabled === undefined && activityAt == null) return null;
+  if (!account && activityAt == null) return null;
   return <span className="workspace-session-badges">
     {account && <span className="workspace-session-account" title={account} aria-hidden="true">{account}</span>}
-    {scheduledEnabled !== undefined ? <span className="workspace-session-scheduled" data-enabled={scheduledEnabled}
-      title={scheduledEnabled ? '定时任务已启用' : '定时任务已停用'}>定时</span>
-      : activityAt != null && <span className="workspace-session-age" aria-hidden="true">{formatActivityAge(activityAt)}</span>}
+    {activityAt != null && <span className="workspace-session-age" aria-hidden="true">{formatActivityAge(activityAt)}</span>}
   </span>;
+}
+
+export type SessionScheduleAction = {
+  label: string;
+  enabled: boolean;
+  multiple: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+};
+
+export function SessionScheduleButton({ label, enabled, multiple, busy, disabled, onToggle }: SessionScheduleAction) {
+  const action = `${enabled ? '停用' : '启用'}${multiple ? '全部' : ''}定时任务`;
+  return <button
+    type="button"
+    className="workspace-session-scheduled"
+    data-enabled={enabled}
+    title={`${busy ? '正在更新定时任务' : action} · ${label}`}
+    aria-label={`${action} · ${label}`}
+    aria-busy={busy || undefined}
+    aria-disabled={disabled || undefined}
+    onClick={event => { if (!disabled && event.detail <= 1) onToggle(); }}
+  >定时</button>;
 }
 
 export function SessionTabLabel({ session, label, detail, activityAt }: {
