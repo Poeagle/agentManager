@@ -40,9 +40,13 @@ export function saveNotificationPreferences(userId:string,muted:string[]) {
   notificationChanged(userId);
 }
 
+function isChildResult(session:NotificationSession,kind:NotificationKind):boolean {
+  return kind==='result'&&!!session.parent_session_id;
+}
+
 export function putNotification(session:NotificationSession,input:Pick<Notification,'source_id'|'kind'|'state'|'title'|'body'>&Partial<Pick<Notification,'message_id'|'turn_id'>>) {
   const userId=session.created_by_user_id,native=nativeConversationId(session);
-  if(!userId||!native||!canReadNotifications(session,userId))return;
+  if(!userId||!native||isChildResult(session,input.kind)||!canReadNotifications(session,userId))return;
   const now=new Date().toISOString();
   const result=getDb().prepare(`INSERT INTO notifications(user_id,session_id,native_id,source_id,kind,state,title,body,message_id,turn_id,created_at,updated_at)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,session_id,native_id,kind,source_id) DO UPDATE SET
@@ -98,7 +102,7 @@ export function listNotifications(userId:string,query:{filter?:string;project_id
   const visible=rows.flatMap(row=>{
     if(!sessions.has(row.session_id))sessions.set(row.session_id,notificationSession(row.session_id));
     const session=sessions.get(row.session_id);
-    if(!session)return [];
+    if(!session||isChildResult(session,row.kind))return [];
     if(!access.has(session.id))access.set(session.id,canReadNotifications(session,userId));
     if(!access.get(session.id))return [];
     if(!labels.has(session.id))labels.set(session.id,present(session));

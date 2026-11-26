@@ -235,8 +235,50 @@ it('uses the nearest preceding input for each final in a mixed scheduled and man
   expect(stored('result').map(row=>row.source_id)).toEqual(['manual-final']);
   history(runtime({last_turn_ended_at:now()}),[scheduled,message('scheduled-final')]);
   expect(stored('result').map(row=>row.source_id)).toEqual(['manual-final']);
-  history(runtime(),[scheduled,message('schedule-error',{phase:'error'})]);
-  expect(stored('error').map(row=>row.source_id)).toEqual(['turn']);
+  history(runtime(),[scheduled,message('schedule-error',{phase:'error',turn_id:'scheduled-turn'}),
+    manual,message('manual-error',{phase:'error',turn_id:'manual-turn'})]);
+  expect(stored('error').map(row=>row.source_id)).toEqual(['manual-turn']);
+});
+
+it('suppresses live scheduled failures while a queued schedule does not silence the manual turn',()=>{
+  rememberInputSource('s','scheduler',{kind:'scheduled',label:'定时巡检'});
+  const emit=streams.get('s')!;
+  const manual=message('manual-user',{role:'user',phase:undefined,client_id:'manual-client',turn_id:'manual'});
+  const scheduled=message('schedule-user',{role:'user',phase:undefined,client_id:'scheduler',turn_id:'scheduled'});
+  emit(snapshot({busy:true,turn_id:'manual',messages:[manual,{...scheduled,queued:true}]}));
+  emit({type:'patch',upserts:[message('manual-failure',{phase:'error',turn_id:'manual'})],deltas:[]});
+  emit(snapshot({busy:true,turn_id:'scheduled',messages:[scheduled]}));
+  emit({type:'patch',upserts:[message('scheduled-failure',{phase:'error',turn_id:'scheduled'})],deltas:[]});
+  expect(stored('error').map(row=>row.source_id)).toEqual(['manual']);
+});
+
+it('waits for durable input attribution when the live echo omits its submission identity',()=>{
+  rememberInputSource('s','scheduler',{kind:'scheduled',label:'定时巡检'});
+  const emit=streams.get('s')!;
+  const input=message('schedule-user',{role:'user',phase:undefined});
+  const failure=message('schedule-failure',{phase:'error'});
+  emit(snapshot({busy:true,messages:[input]}));
+  emit({type:'patch',upserts:[failure],deltas:[]});
+  expect(stored('error')).toEqual([]);
+  history(runtime(),[{...input,client_id:'scheduler'},failure]);
+  expect(stored('error')).toEqual([]);
+});
+
+it('excludes new and existing child results from the API and unread totals, while keeping actionable notices',async()=>{
+  const session=notificationSession('s')!;
+  putNotification(session,{kind:'result',state:'info',source_id:'existing-child-result',title:'完成',body:'旧的子任务结果'});
+  getDb().prepare("UPDATE sessions SET parent_session_id='parent' WHERE id='s'").run();
+  const emit=streams.get('s')!;
+  emit(snapshot({messages:[message('new-child-result')],completed_at:now(),
+    interactions:[{id:'approval',turn_id:'turn',kind:'command',title:'确认执行',blocking:true,submitted:false}]}));
+  emit(snapshot({messages:[message('new-child-result')],completed_at:now()}));
+  expect(stored('result').map(row=>row.source_id)).toEqual(['existing-child-result']);
+  const get=(filter:string)=>app.inject({url:'/api/notifications?filter='+filter,headers:{cookie}});
+  for(const filter of ['all','unread','pending']){
+    expect((await get(filter)).json()).toMatchObject({notifications:[],unread:0,pending:0,unread_by_project:{},unread_by_session:{}});
+  }
+  history(runtime({pending_questions:[{id:'g',questions:[{id:'question',title:'需要确认',options:null}],timestamp:now()}]}));
+  expect((await get('all')).json()).toMatchObject({unread:1,pending:1,notifications:[{kind:'question'}]});
 });
 
 it('dismisses notices explicitly without submitting input, preserves dismissal on replay and isolates users and boundaries',async()=>{

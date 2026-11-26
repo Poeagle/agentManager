@@ -18,7 +18,8 @@ import {notificationReplyTarget,replyTurnKey} from './quoted-replies.js';
 import {formatTaskNotification} from './store.js';
 import {nativeConversationId} from '../session-identity.js';
 import {readConversation} from '../conversation-reader.js';
-import {isConversationInput,linkConversationInputs} from '../conversation-input-links.js';
+import {sessionAgentContext} from '../agents/session.js';
+import {hasScheduledConversationInput,isConversationInput,linkConversationInputs,precedingScheduledInput} from '../conversation-input-links.js';
 
 export interface NotificationRecipient {
   id: string; name: string; channel_id: string; external_user_id: string; chat_id: string; group: boolean;
@@ -172,6 +173,15 @@ export async function resolveCompletionNotice(userId:string,notice:CompletionNot
   }catch{return {personalId:null};}
 }
 
+/** Legacy errors may have been queued before personal notifications filtered the source. */
+export async function isScheduledProjectError(userId:string,sessionId:string,messageId:string|null):Promise<boolean> {
+  if(!messageId||!hasScheduledConversationInput(sessionId))return false;
+  const session=getSession(sessionId),nativeId=session&&nativeConversationId(session);
+  if(!session||!nativeId||session.created_by_user_id!==userId)return false;
+  const binding={...session,cli_type:session.cli_type??null,codex_session_id:session.codex_session_id??null,claude_session_id:session.claude_session_id??null,project_path:sessionAgentContext(session).projectPath??null};
+  return await precedingScheduledInput(binding,nativeId,messageId).catch(()=>undefined)===true;
+}
+
 /** Event-driven observation; durable watches recover delayed native logs/restarts. */
 export class ProjectNotifications {
   private pending = new Map<string, Promise<void>>();
@@ -228,6 +238,8 @@ export class ProjectNotifications {
       // Settings/permissions may have changed while the model/API call was pending.
       const rule = getDb().prepare('SELECT * FROM platform_ai_project_notifications WHERE id=?').get(watch.id) as ProjectNotificationRule | undefined;
       if (!rule || rule.conversation_id !== watch.conversation_id || rule.since_ms !== watch.since_ms || !canNotifyProject(rule, watch.session_id)) return;
+      const session = getSession(watch.session_id)!;
+      if (kind==='complete' && session.parent_session_id) return;
       const inserted = getDb().prepare('INSERT OR IGNORE INTO platform_ai_project_notification_receipts (rule_id,session_id,event_key) VALUES (?,?,?)')
         .run(watch.id, watch.session_id, key);
       if (!inserted.changes || !kind || !(kind === 'error' ? true : kind === 'complete' ? rule.on_complete : rule.on_input)) return;
@@ -237,7 +249,6 @@ export class ProjectNotifications {
       }
       const dedupe = `project-notice:${rule.id}:${watch.session_id}:${kind}:${rule.since_ms}:${key}`;
       const recipient = authorizeProjectNotice(dedupe, rule.conversation_id);
-      const session = getSession(watch.session_id)!;
       const label = sessionPresenter(watch.user_id)(session);
       const content = formatTaskNotification(`${label.project_name} / ${label.tab_name}`, body);
       getDb().prepare(`INSERT OR IGNORE INTO platform_ai_messages (id,conversation_id,external_id,role,content,status) VALUES (?,?,?,'notice',?,'done')`)
@@ -285,6 +296,10 @@ export class ProjectNotifications {
         for(const row of rows){
           const key='structured:'+row.id+':'+(row.message_id||'');if(this.seen(watch,key))continue;
           const active=row.state==='pending'&&!row.read_at&&!row.dismissed_at;
+          if(active&&row.kind==='error'&&await isScheduledProjectError(watch.user_id,watch.session_id,row.message_id)){
+            this.record(watch,key);
+            continue;
+          }
           let turnKey:string|null=null;
           if(active&&row.kind==='question'&&row.message_id&&session&&latestUser){
             // A quote may target a turn only when the native history proves
@@ -301,7 +316,7 @@ export class ProjectNotifications {
         }
       }
       // Timestamps and durable receipts prevent stale finals from becoming new notifications.
-      const finals = messages.filter(message => message.role === 'assistant' && message.phase === 'final'
+      const finals = session?.parent_session_id ? [] : messages.filter(message => message.role === 'assistant' && message.phase === 'final'
         && message.timestamp && Date.parse(message.timestamp) >= watch.since_ms && message.text.trim());
       for (const message of finals) {
         const owningUser = [...messages].reverse().find(m => m.role === 'user' && !!m.timestamp && !!message.timestamp && Date.parse(m.timestamp) <= Date.parse(message.timestamp));
@@ -327,6 +342,7 @@ export class ProjectNotifications {
         const completion=completionNotice(watch.session_id,message.text,message.timestamp);
         const {personalId,scheduled}=await resolveCompletionNotice(watch.user_id,completion);
         if(scheduled){this.record(watch,key);continue;}
+        if(scheduled===undefined&&hasScheduledConversationInput(watch.session_id))continue;
         this.record(watch, key, 'complete', message.text,message.task_reference?'ref:'+message.task_reference:replyTurnKey(owningUser),personalId,completion);
       }
       if (watch.rechecks > 0) {

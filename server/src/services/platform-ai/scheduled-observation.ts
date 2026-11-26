@@ -1,5 +1,5 @@
 import { getDb } from '../../db/index.js';
-import { enqueueNotice, getConversation, trackTask } from './store.js';
+import { getConversation, trackTask, type TrackedTask } from './store.js';
 
 /** Called only for schedules created through the platform AI; existing schedules are untouched. */
 export function captureScheduledBaseline(scheduleId: string, runId: string, sessionId: string | null): void {
@@ -11,8 +11,12 @@ export function captureScheduledBaseline(scheduleId: string, runId: string, sess
     ON CONFLICT(run_id) DO UPDATE SET baseline_cursor=excluded.baseline_cursor`).run(runId, baseline);
 }
 
+export function isScheduledObservation(task: Pick<TrackedTask,'id'|'source_ref'>): boolean {
+  return !!task.source_ref&&!!getDb().prepare('SELECT 1 FROM platform_ai_schedule_receipts WHERE run_id=? AND task_id=?').get(task.source_ref,task.id);
+}
+
 export function reconcileScheduledObservations(): void {
-  const runs = getDb().prepare(`SELECT r.id,r.status,r.session_id,r.error,t.prompt,t.name,l.conversation_id,receipt.baseline_cursor
+  const runs = getDb().prepare(`SELECT r.id,r.status,r.session_id,t.prompt,l.conversation_id,receipt.baseline_cursor
     FROM platform_ai_schedule_receipts receipt JOIN scheduled_task_runs r ON r.id=receipt.run_id
     JOIN scheduled_tasks t ON t.id=r.task_id JOIN platform_ai_schedule_links l ON l.schedule_id=t.id
     WHERE receipt.reconciled=0 AND r.status!='running'
@@ -20,7 +24,7 @@ export function reconcileScheduledObservations(): void {
         SELECT 1 FROM platform_ai_tasks active WHERE active.session_id=r.session_id AND active.status IN ('running','blocked','uncertain')
       ))
     ORDER BY r.rowid LIMIT 20`).all() as Array<{
-      id: string; status: string; session_id: string | null; error: string | null; prompt: string; name: string; conversation_id: string; baseline_cursor: number;
+      id: string; status: string; session_id: string | null; prompt: string; conversation_id: string; baseline_cursor: number;
     }>;
   for (const run of runs) {
     getDb().transaction(() => {
@@ -33,11 +37,8 @@ export function reconcileScheduledObservations(): void {
       let taskId: string | null = null;
       if (accepted && run.session_id) {
         try { taskId = trackTask(conversation, run.session_id, run.prompt, run.baseline_cursor, run.id).id; }
-        catch { enqueueNotice(conversation.id, `schedule-tracking:${run.id}`, `定时任务「${run.name}」已发送，但该会话已有其他跟踪任务，请到平台核对执行情况。`); }
+        catch { /* The scheduler still records the run if tracking is unavailable. */ }
       }
-      enqueueNotice(conversation.id, `schedule:${run.id}`, accepted
-        ? `定时任务「${run.name}」${run.status === 'queued' ? '已加入队列' : '已发送'}，正在跟踪 Agent 执行结果。${taskId ? '\n任务：' + taskId : ''}`
-        : `定时任务「${run.name}」${run.status === 'skipped' ? '本次跳过' : run.status === 'stopped' ? '已停止' : run.status === 'unknown' ? '提交结果待确认' : '发送失败'}。${run.error || ''}`);
       getDb().prepare('UPDATE platform_ai_schedule_receipts SET reconciled=1,task_id=? WHERE run_id=?').run(taskId, run.id);
     })();
   }

@@ -1,7 +1,7 @@
 import {agentForSession,agentDescriptors} from '../agents/index.js';
 import {quickQuery,configuredModelReply,projectListReply} from './quick-queries.js';
 import {compactConversation,completedConversation} from './context.js';
-import {reconcileScheduledObservations} from './scheduled-observation.js';
+import {isScheduledObservation,reconcileScheduledObservations} from './scheduled-observation.js';
 import type {FastifyInstance} from 'fastify';
 import {createHash} from 'crypto';
 import {nanoid} from 'nanoid';
@@ -19,9 +19,10 @@ import {assertLiveUser,claimMessage,enqueueNotice,formatTaskNotification,getConv
 import {publishMessage,refreshConversation} from './live.js';
 import {subscribe,type Event as PlatformEvent} from '../event-store.js';
 import {getSession} from '../session-manager.js';
+import {hasScheduledConversationInput} from '../conversation-input-links.js';
 import {sessionPresenter} from '../session-labels.js';
 import type {AgentTextMessage} from '../prompt-context.js';
-import {authorizeProjectNotice,ProjectNotifications,completionAvailableAt,completionNotice,resolveCompletionNotice,type CompletionNotice} from './project-notifications.js';
+import {authorizeProjectNotice,ProjectNotifications,completionAvailableAt,completionNotice,isScheduledProjectError,resolveCompletionNotice,type CompletionNotice} from './project-notifications.js';
 
 import {notificationReplyTarget,prepareReplyNotification,dispatchQuotedReply,quotedReplyOperationId} from './quoted-replies.js';
 import {prepareOutboundImages,readOutboundImage,assertOutboundImageAccess,type OutboundImage} from './outbound-images.js';
@@ -487,8 +488,8 @@ export class PlatformAiWorker {
       if (nativeFinal) {
         const completion=completionNotice(task.session_id,nativeFinal,finalMessage?.timestamp??null);
         const {personalId,scheduled}=await resolveCompletionNotice(task.user_id,completion);
-        const scheduledRun=scheduled===undefined&&getDb().prepare('SELECT 1 FROM platform_ai_schedule_receipts WHERE task_id=? LIMIT 1').get(task.id);
-        this.saveAssessment(task, {status:'reported_complete',summary:'Agent 已回复',evidence:nativeFinal.slice(0,3000)}, now, !scheduled&&!scheduledRun, nativeFinal,personalId,completion);
+        const canNotify=!scheduled&&(scheduled===false||!hasScheduledConversationInput(task.session_id));
+        this.saveAssessment(task, {status:'reported_complete',summary:'Agent 已回复',evidence:nativeFinal.slice(0,3000)}, now, canNotify, nativeFinal,personalId,completion);
         return;
       }
       const missingCommand = ended ? output.split('\n').find((line:string)=>agentDescriptors().some(agent=>line.includes(`command not found: ${agent.id}`)||line.includes(`${agent.id}: command not found`))) : undefined;
@@ -561,11 +562,13 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
       const permanent = (error instanceof ChannelError && error.permanent) || (error instanceof PlatformApiError && [401,403,404].includes(error.statusCode));
       getDb().prepare(`UPDATE platform_ai_tasks SET observation_failures=?,next_observe_at=?,summary=?,status=? WHERE id=? AND status IN ('running','blocked','uncertain')`)
         .run(attempts, now + Math.min(300000, attempts * 15000), `状态读取暂不可用：${publicFailure(error)}`, permanent ? 'suspended' : task.status, task.id);
-      if (attempts === 3 || permanent) enqueueNotice(task.conversation_id, `observation-error:${task.id}:${permanent ? 'suspended' : 'retry'}`, `「${taskLocation(task)}」的任务状态暂时无法读取。${permanent ? '访问权限、用户绑定或会话已变化，已暂停跟踪。' : '平台会继续重试，不会重复下发任务。'}`);
+      if ((attempts === 3 || permanent) && !isScheduledObservation(task)) enqueueNotice(task.conversation_id, `observation-error:${task.id}:${permanent ? 'suspended' : 'retry'}`, `「${taskLocation(task)}」的任务状态暂时无法读取。${permanent ? '访问权限、用户绑定或会话已变化，已暂停跟踪。' : '平台会继续重试，不会重复下发任务。'}`);
     }
   }
 
   private saveAssessment(task: TrackedTask, assessment: Assessment, now: number, notify: boolean, finalAnswer = '', personalId:number|null=null,completion?:CompletionNotice): void {
+    notify=notify&&!isScheduledObservation(task)&&
+      !(assessment.status==='reported_complete'&&getSession(task.session_id)?.parent_session_id);
     getDb().transaction(() => {
       const updated = getDb().prepare(`UPDATE platform_ai_tasks SET status=?,summary=?,evidence=?,last_notified_at=?,updated_at=datetime('now') WHERE id=? AND status IN ('running','blocked','uncertain')`)
         .run(assessment.status, assessment.summary, assessment.evidence, notify ? now : task.last_notified_at, task.id);
@@ -616,14 +619,33 @@ failed 的 evidence 可来自 output 或 native_final_answer。普通输入框�
     if (!claimed.changes) return;
     let image:OutboundImage|undefined;
     try {
-      let destination=this.deliveryDestination(item);
-      const metadata=JSON.parse(item.reply_context);
       const cancel=(reason:string)=>getDb().prepare("UPDATE platform_ai_outbox SET status='cancelled',error=?,lease_until=0 WHERE id=?").run(reason,item.id);
+      const [noticeType,reference,projectSessionId,projectKind,,projectEvent,projectNoticeId,...projectMessageId]=item.dedupe_key.split(':');
+      const task=noticeType==='task'||noticeType==='observation-error'
+        ? getDb().prepare('SELECT id,session_id,source_ref FROM platform_ai_tasks WHERE id=?').get(reference) as Pick<TrackedTask,'id'|'session_id'|'source_ref'>|undefined
+        : undefined;
+      if(noticeType==='schedule'||noticeType==='schedule-tracking'||task&&isScheduledObservation(task)){
+        cancel('本轮来源为定时任务');return;
+      }
+      const metadata=JSON.parse(item.reply_context);
+      const completionSessionId=noticeType==='project-notice'&&projectKind==='complete'?projectSessionId:metadata.completion?.session_id;
+      if(completionSessionId&&getSession(completionSessionId)?.parent_session_id){
+        cancel('本轮来源为子 Agent');return;
+      }
+      let destination=this.deliveryDestination(item);
       let personalId=Number.isSafeInteger(metadata.personal_notification_id)?metadata.personal_notification_id as number:null;
-      if(destination.channel&&metadata.completion&&!personalId){
+      if(noticeType==='project-notice'&&projectKind==='error'&&projectEvent==='structured'&&projectNoticeId===String(personalId)){
+        if(await isScheduledProjectError(destination.conversation.user_id,projectSessionId,projectMessageId.join(':'))){
+          cancel('本轮来源为定时任务');return;
+        }
+        destination=this.deliveryDestination(item);
+      }
+      const hasScheduledInput=completionSessionId&&hasScheduledConversationInput(completionSessionId);
+      if(destination.channel&&metadata.completion&&(!personalId||hasScheduledInput)){
         const resolved=await resolveCompletionNotice(destination.conversation.user_id,metadata.completion);
         if(resolved.scheduled){cancel('本轮来源为定时任务');return;}
-        personalId=resolved.personalId;
+        if(hasScheduledInput&&resolved.scheduled===undefined&&!personalId){cancel('无法核对本轮输入来源');return;}
+        personalId??=resolved.personalId;
         destination=this.deliveryDestination(item);
       }
       const isHandled=()=>{if(!personalId)return false;const n=getDb().prepare('SELECT read_at,dismissed_at,state FROM notifications WHERE id=? AND user_id=?').get(personalId,destination.conversation.user_id) as {read_at:string|null;dismissed_at:string|null;state:string}|undefined;return !!n&&(!!n.read_at||!!n.dismissed_at||['submitted','resolved'].includes(n.state));};

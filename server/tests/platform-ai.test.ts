@@ -254,6 +254,19 @@ describe('project-wide automatic notifications', () => {
     provider();await checkAndDeliver();expect(notices()).toEqual([expect.objectContaining({status:'sent'})]);
   });
 
+  it('does not enqueue a child completion and cancels a result queued before lineage was known', async () => {
+    configure();subscription();seedSession();
+    nativeMessages=[finalMessage('子任务完成')];const fetchMock=provider();
+    worker.tick();await worker.drain();
+    expect(notices()).toHaveLength(1);
+    getDb().prepare("UPDATE sessions SET parent_session_id='parent' WHERE id='session-1'").run();
+    nativeMessages.push(finalMessage('另一个结果','native:next'));
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    await checkAndDeliver();
+    expect(notices()).toEqual([expect.objectContaining({status:'cancelled'})]);
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://notify.example'))).toHaveLength(0);
+  });
+
   it('sends a structured error without a model and skips an already-read question', async () => {
     configure();subscription();seedSession();getDb().prepare("UPDATE sessions SET codex_session_id='native-events' WHERE id='session-1'").run();
     const now=new Date(Date.now()+1000).toISOString();
@@ -380,14 +393,25 @@ describe('project-wide automatic notifications', () => {
     await checkAndDeliver(); expect(notices()).toHaveLength(1);
   });
 
-  it('uses existing group notification targets and never requires an inbound group binding', async () => {
+  it('sends manual results to a WeCom group while excluding scheduled outcomes', async () => {
     configure(); seedSession();
+    getDb().prepare("UPDATE sessions SET codex_session_id='native-schedule' WHERE id='session-1'").run();
+    getDb().prepare("INSERT INTO conversation_input_sources(session_id,client_id,kind,label,message_id) VALUES ('session-1','scheduled-client','scheduled','巡检','scheduled-input')").run();
     const channel=saveChannel({name:'团队通知',kind:'wecom_webhook',enabled:true,config:{},secrets:{webhook_url:'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=project-test'}});
     getDb().prepare('INSERT INTO platform_ai_notification_targets (id,channel_id,user_id) VALUES (?,?,?)').run('group-target',channel.id,member);
     saveProjectNotification(member,{project_id:'p',recipient_id:'target:group-target',enabled:true,on_complete:true,on_input:true});
-    nativeMessages=[finalMessage()]; const fetchMock=provider();
-    await checkAndDeliver(); expect(notices()[0].status).toBe('sent');
-    expect(fetchMock.mock.calls.some(call=>String(call[0]).startsWith('https://qyapi.weixin.qq.com'))).toBe(true);
+    const scheduled=finalMessage('定时结果','scheduled'),manual=finalMessage('人工结果','manual');
+    const input={id:'scheduled-input',role:'user',text:'定时巡检',timestamp:scheduled.timestamp,client_id:'scheduled-client'};
+    nativeMessages=[scheduled,manual];
+    const history={statistics:[],has_more:false,reset:false,available:true,generation:'test',metadata:null,cache_drops:[]};
+    vi.spyOn(conversationReader,'readConversation').mockImplementation(async (_session,query)=>({...history,messages:query.before==='scheduled-error'?[input]:[
+      input,{...scheduled,id:'scheduled-final'},{id:'manual-input',role:'user',text:'人工检查',timestamp:manual.timestamp},{...manual,id:'manual-final'},
+    ]}) as Awaited<ReturnType<typeof conversationReader.readConversation>>);
+    getDb().prepare("INSERT INTO notifications(user_id,session_id,native_id,source_id,message_id,kind,state,title,body,created_at,updated_at) VALUES (?,'session-1','native-schedule','legacy-error','scheduled-error','error','pending','失败','旧定时任务失败',?,?)").run(member,scheduled.timestamp,scheduled.timestamp);
+    const fetchMock=provider();
+    await checkAndDeliver();
+    expect(notices()).toEqual([expect.objectContaining({status:'sent',content:expect.stringContaining('人工结果')})]);
+    expect(fetchMock.mock.calls.filter(call=>String(call[0]).startsWith('https://qyapi.weixin.qq.com'))).toHaveLength(1);
   });
 
   it('lets existing task tracking deliver once when the same request and channel are already tracked', async () => {
@@ -754,7 +778,14 @@ describe('durable platform AI tool execution', () => {
     getDb().prepare("UPDATE scheduled_task_runs SET status='success',session_id='session-1' WHERE id='run-1'").run();
     reconcileScheduledObservations(); reconcileScheduledObservations();
     expect((getDb().prepare('SELECT COUNT(*) AS n FROM platform_ai_tasks').get() as any).n).toBe(1);
-    expect((getDb().prepare("SELECT COUNT(*) AS n FROM platform_ai_outbox WHERE dedupe_key='schedule:run-1'").get() as any).n).toBe(1);
+    expect(getDb().prepare("SELECT id FROM platform_ai_outbox WHERE dedupe_key='schedule:run-1'").get()).toBeUndefined();
+    getDb().prepare("INSERT INTO platform_ai_outbox(id,conversation_id,dedupe_key,content) VALUES ('old-run-notice',?,'schedule:run-1','旧定时任务提醒')").run(received.conversation_id);
+    getDb().prepare("UPDATE sessions SET status='failed' WHERE id='session-1'").run();
+    await worker.observe(getDb().prepare('SELECT * FROM platform_ai_tasks').get() as any,readAiConfig(),true);
+    expect(getDb().prepare("SELECT status FROM platform_ai_tasks").get()).toEqual({status:'failed'});
+    expect(getDb().prepare("SELECT id FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get()).toBeUndefined();
+    worker.tick();await worker.drain();
+    expect(getDb().prepare("SELECT status FROM platform_ai_outbox WHERE id='old-run-notice'").get()).toEqual({status:'cancelled'});
   });
 });
 
@@ -777,6 +808,17 @@ describe('session observation and notification reliability', () => {
     expect((getDb().prepare("SELECT content FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get() as {content:string}).content).toContain('OPS-779 已修复并部署，线上健康检查通过。');
     expect(executeRequests).toHaveLength(0);expect(getDb().prepare('SELECT COUNT(*) AS n FROM scheduled_tasks').get()).toEqual({n:0});
   });
+  it('stores the tracked child result without creating an outbound notice',async()=>{
+    configure();seedSession();seedSession('parent');
+    getDb().prepare("UPDATE sessions SET parent_session_id='parent' WHERE id='session-1'").run();
+    const conversation=getConversation(inbound().conversation_id)!;
+    const task=trackTask(conversation,'session-1','子任务',0,'child-ref');
+    nativeMessages=[{role:'assistant',phase:'final',text:'完成子任务',timestamp:new Date().toISOString(),task_reference:'child-ref'}];
+    await worker.observe(task,readAiConfig(),true);
+    expect(getDb().prepare('SELECT status,evidence FROM platform_ai_tasks WHERE id=?').get(task.id)).toEqual({status:'reported_complete',evidence:'完成子任务'});
+    expect(getDb().prepare("SELECT id FROM platform_ai_outbox WHERE dedupe_key LIKE 'task:%'").get()).toBeUndefined();
+  });
+
   it('promptly forwards a matched native blocked reply even while Codex automatically continues and stays busy', async () => {
     configure();seedSession();const received=inbound();
     let task=trackTask(getConversation(received.conversation_id)!,'session-1','查看未完成 Jira',0,'auto-goal');

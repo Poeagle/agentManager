@@ -191,7 +191,7 @@ test('notifies changed sessions across closed projects, answers in the centered 
   }
 });
 
-test('only shows root session popups while keeping child notifications in the inbox', async ({ page }) => {
+test('excludes child results from popups, the inbox and unread counts', async ({ page }) => {
   const status = await (await page.request.get('/api/auth/status')).json();
   const login = await page.request.post(status.needsSetup ? '/api/auth/setup' : '/api/auth/login', {
     data: { username: 'e2e-admin', password: 'test-password' },
@@ -229,8 +229,9 @@ test('only shows root session popups while keeping child notifications in the in
   await expect(toast.getByRole('button', { name: '子标签通知验证｜通知主标签' })).toBeVisible();
   await expect(toast.getByRole('button', { name: '子标签通知验证｜通知子标签' })).toHaveCount(0);
 
-  await page.getByRole('button', { name: /^消息通知，/ }).click();
+  await page.getByRole('button', { name: '消息通知，1 条未读', exact: true }).click();
   const inbox = page.getByRole('dialog', { name: '消息通知' });
   await inbox.getByRole('button', { name: '全部', exact: true }).click();
-  await expect(inbox.getByRole('button', { name: '子标签通知验证 · 通知子标签' })).toBeVisible();
+  await expect(inbox.getByRole('button', { name: '子标签通知验证 · 通知主标签' })).toBeVisible();
+  await expect(inbox.getByRole('button', { name: '子标签通知验证 · 通知子标签' })).toHaveCount(0);
 });

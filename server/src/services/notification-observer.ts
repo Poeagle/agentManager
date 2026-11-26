@@ -6,9 +6,8 @@ import type {AgentMessage,AgentRuntime} from './agents/types.js';
 import type {AgentStreamFrame} from './agents/events.js';
 import type {ConversationRetry} from './conversation-retry.js';
 import {observeConversationFile} from './conversation-file-stream.js';
-import {readConversation} from './conversation-reader.js';
 import {activityResultPreview} from './conversation-activity.js';
-import {hasScheduledConversationInput,isConversationInput,linkConversationInputs} from './conversation-input-links.js';
+import {hasScheduledConversationInput,isConversationInput,linkConversationInputs,precedingScheduledInput} from './conversation-input-links.js';
 import {nativeConversationId} from './session-identity.js';
 import {personalQuestionRuntime,ignoredQuestionIds} from './question-attention.js';
 import {
@@ -18,7 +17,7 @@ import {
 
 const ACTIVE=new Set(['pending','launching','running','detached','released']);
 const MAX_WATCHES=512;
-type Watch={native:string;stop:()=>void;questions:Set<string>;interactions:Set<string>;seen:Set<string>;checkingResults:Set<string>;running:boolean;completed:boolean;finals:Map<string,AgentMessage>;endTimer?:ReturnType<typeof setTimeout>};
+type Watch={native:string;stop:()=>void;questions:Set<string>;interactions:Set<string>;seen:Set<string>;checkingOutcomes:Set<string>;running:boolean;completed:boolean;outcomes:Map<string,AgentMessage>;turnInputs:Map<string,boolean>;endTimer?:ReturnType<typeof setTimeout>};
 
 /** Read-only leases share the platform's existing streams and incremental file
  * reader. They survive switching/closing project tabs and never submit input. */
@@ -83,7 +82,7 @@ export class NotificationObserver {
     // A changed native identity makes old pending actions historical.
     const changed=getDb().prepare("UPDATE notifications SET state='resolved',updated_at=? WHERE session_id=? AND native_id!=? AND state!='info' AND state!='resolved'").run(new Date().toISOString(),id,native);
     if(changed.changes)notificationChanged(session.created_by_user_id);
-    const entry:Watch={native,stop:()=>{},questions:new Set(),interactions:new Set(),seen:new Set(),checkingResults:new Set(),running:false,completed:false,finals:new Map()};
+    const entry:Watch={native,stop:()=>{},questions:new Set(),interactions:new Set(),seen:new Set(),checkingOutcomes:new Set(),running:false,completed:false,outcomes:new Map(),turnInputs:new Map()};
     this.watches.set(id,entry);
     const context=sessionAgentContext(session),stops:Array<()=>void>=[];
     try {
@@ -123,18 +122,23 @@ export class NotificationObserver {
   }
   private messages(session:NotificationSession,messages:AgentMessage[],entry:Watch,live=false,durable=false) {
     messages=linkConversationInputs(session.id,entry.native,messages);
-    const finalInputs=new Map<string,boolean>();
-    if(durable){
-      let scheduled:boolean|undefined;
-      for(const message of messages){
-        if(isConversationInput(message))scheduled=message.input_source?.kind==='scheduled';
-        else if(message.phase==='final'&&scheduled!==undefined)finalInputs.set(message.id,scheduled);
+    const outcomeInputs=new Map<string,boolean>();
+    let scheduled:boolean|undefined;
+    for(const message of messages){
+      if(isConversationInput(message)){
+        scheduled=message.input_source?.kind==='scheduled';
+        // A live echo with no submission identity can precede the durable
+        // input link. Wait for that link before treating it as manual input.
+        if(message.turn_id&&(durable||message.client_id||scheduled))entry.turnInputs.set(message.turn_id,scheduled);
+      }else if(durable&&scheduled!==undefined&&(message.phase==='final'||message.phase==='error')){
+        outcomeInputs.set(message.id,scheduled);
       }
     }
-    // A live final can arrive before the native input has been linked to its
-    // saved source. Use the ordered history when this tab has scheduled inputs.
+    while(entry.turnInputs.size>32)entry.turnInputs.delete(entry.turnInputs.keys().next().value!);
+    // History can establish provenance when the native stream omits the input
+    // or reports a different turn identity for the same message.
     let hasScheduledInput:boolean|undefined;
-    messages=[...entry.finals.values(),...messages];
+    messages=[...entry.outcomes.values(),...messages];
     for(const message of messages){
       for(const reply of message.question_replies||[]){entry.questions.delete(reply.question_id);updateNotificationState(session,'question','question:'+reply.question_id,message.queued?'submitted':'resolved');}
       if(message.role!=='assistant'||message.streaming||message.presentation==='compaction_summary')continue;
@@ -167,33 +171,25 @@ export class NotificationObserver {
         // item is tracked below by the stream's earlier upsert.
         if(!entry.seen.has(`live:${message.id}`))continue;
       }
-      if(message.phase==='error'){
-        const job=this.findRetry(session,message.turn_id);
-        const source=job?.root_turn_id||message.turn_id||message.id;
-        const previous=getDb().prepare("SELECT state,message_id FROM notifications WHERE session_id=? AND native_id=? AND kind='error' AND source_id=?").get(session.id,entry.native,source) as Pick<Notification,'state'|'message_id'>|undefined;
-        putNotification(session,{kind:'error',source_id:source,
-          message_id:message.id,turn_id:message.turn_id,state:previous?.message_id===message.id?previous.state:job?this.retryState(job):message.error?.will_retry?'recovering':'pending',
-          title:'本轮执行出错',body:message.text});
-      }else{
-        if(entry.seen.has(`skip:${message.id}`))continue;
-        entry.finals.set(message.id,message);while(entry.finals.size>32)entry.finals.delete(entry.finals.keys().next().value!);
+      if(entry.seen.has(`outcome:${message.id}`)||entry.seen.has(`skip:${message.id}`))continue;
+      entry.outcomes.set(message.id,message);
+      while(entry.outcomes.size>32)entry.outcomes.delete(entry.outcomes.keys().next().value!);
+      if(message.phase==='final'){
         // A final that merely accompanies an outstanding async question must
         // not turn into a delayed completion notice after the answer arrives.
-        if(entry.questions.size){entry.seen.add(`skip:${message.id}`);entry.finals.delete(message.id);continue;}
+        if(entry.questions.size){entry.seen.add(`skip:${message.id}`);entry.outcomes.delete(message.id);continue;}
         if(!entry.completed||entry.interactions.size)continue;
-        hasScheduledInput??=hasScheduledConversationInput(session.id);
-        if(!hasScheduledInput){this.finishResult(session,message,entry,false);}
-        else if(!entry.seen.has(`result:${message.id}`)){
-          const scheduled=finalInputs.get(message.id);
-          if(scheduled!==undefined)this.finishResult(session,message,entry,scheduled);
-          else if(!entry.checkingResults.has(message.id)&&entry.checkingResults.size<32){
-            entry.checkingResults.add(message.id);
-            void this.priorScheduledInput(session,entry.native,message.id).then(scheduled=>{
-              const current=this.current(session.id,entry.native);
-              if(scheduled!==undefined&&current&&this.watches.get(session.id)===entry&&!entry.seen.has(`result:${message.id}`))this.finishResult(current,message,entry,scheduled);
-            }).catch(this.onError).finally(()=>entry.checkingResults.delete(message.id));
-          }
-        }
+      }
+      hasScheduledInput??=hasScheduledConversationInput(session.id);
+      const scheduled=hasScheduledInput?outcomeInputs.get(message.id)??(message.turn_id?entry.turnInputs.get(message.turn_id):undefined):false;
+      if(scheduled!==undefined)this.finishOutcome(session,message,entry,scheduled);
+      else if(!entry.checkingOutcomes.has(message.id)&&entry.checkingOutcomes.size<32){
+        entry.checkingOutcomes.add(message.id);
+        const binding={...session,cli_type:session.cli_type??null,codex_session_id:session.codex_session_id??null,claude_session_id:session.claude_session_id??null,project_path:sessionAgentContext(session).projectPath??null};
+        void precedingScheduledInput(binding,entry.native,message.id).then(scheduled=>{
+          const current=this.current(session.id,entry.native);
+          if(scheduled!==undefined&&current&&this.watches.get(session.id)===entry&&!entry.seen.has(`outcome:${message.id}`))this.finishOutcome(current,message,entry,scheduled);
+        }).catch(this.onError).finally(()=>entry.checkingOutcomes.delete(message.id));
       }
       entry.seen.add(message.id);
     }
@@ -212,25 +208,27 @@ export class NotificationObserver {
     settleNotificationResults(session,settled,repliedAt?new Date(repliedAt).toISOString():undefined);
     while(entry.seen.size>256)entry.seen.delete(entry.seen.values().next().value!);
   }
-  private finishResult(session:NotificationSession,message:AgentMessage,entry:Watch,scheduled:boolean) {
-    entry.seen.add(`result:${message.id}`);
+  private finishOutcome(session:NotificationSession,message:AgentMessage,entry:Watch,scheduled:boolean) {
+    if(message.phase==='error'){
+      entry.outcomes.delete(message.id);
+      const job=this.findRetry(session,message.turn_id);
+      const source=job?.root_turn_id||message.turn_id||message.id;
+      const previous=getDb().prepare("SELECT state,message_id FROM notifications WHERE session_id=? AND native_id=? AND kind='error' AND source_id=?").get(session.id,entry.native,source) as Pick<Notification,'state'|'message_id'>|undefined;
+      if(scheduled){
+        entry.seen.add(`outcome:${message.id}`);
+        if(previous?.message_id===message.id)updateNotificationState(session,'error',source,'resolved');
+      }else{
+        putNotification(session,{kind:'error',source_id:source,
+          message_id:message.id,turn_id:message.turn_id,state:previous?.message_id===message.id?previous.state:job?this.retryState(job):message.error?.will_retry?'recovering':'pending',
+          title:'本轮执行出错',body:message.text});
+      }
+      return;
+    }
+    entry.seen.add(`outcome:${message.id}`);
     if(!scheduled)putNotification(session,{kind:'result',source_id:message.id,message_id:message.id,turn_id:message.turn_id,state:'info',title:'本轮运行完成',body:message.text});
+    else updateNotificationState(session,'result',message.id,'resolved');
     const updated=getDb().prepare("UPDATE notifications SET state='resolved',updated_at=? WHERE session_id=? AND native_id=? AND kind='error' AND state IN ('recovering','submitted')").run(new Date().toISOString(),session.id,entry.native);
     if(updated.changes&&session.created_by_user_id)notificationChanged(session.created_by_user_id);
-  }
-  private async priorScheduledInput(session:NotificationSession,nativeId:string,before:string):Promise<boolean|undefined> {
-    const binding={...session,cli_type:session.cli_type??null,codex_session_id:session.codex_session_id??null,claude_session_id:session.claude_session_id??null,project_path:sessionAgentContext(session).projectPath??null};
-    let generation:string|null|undefined;
-    for(let i=0;i<4;i++){
-      const page=await readConversation(binding,{before,limit:80});
-      if(!page.available||page.reset||(generation!==undefined&&page.generation!==generation)||!this.current(session.id,nativeId))return;
-      const previous=linkConversationInputs(session.id,nativeId,page.messages).reverse().find(isConversationInput);
-      if(previous)return previous.input_source?.kind==='scheduled';
-      if(!page.has_more)return false;
-      const cursor=page.messages[0]?.id;
-      if(!cursor||cursor===before)return;
-      before=cursor;generation=page.generation;
-    }
   }
   private runtime(session:NotificationSession,raw:AgentRuntime,entry:Watch) {
     if(raw.session_id!==entry.native)return;
@@ -268,7 +266,9 @@ export class NotificationObserver {
   }
   private retry(sessionId:string,job:ConversationRetry) {
     const session=this.current(sessionId,job.native_id);if(!session)return;
-    updateNotificationState(session,'error',job.root_turn_id,this.retryState(job));
+    const previous=getDb().prepare("SELECT state FROM notifications WHERE session_id=? AND native_id=? AND kind='error' AND source_id=?")
+      .get(session.id,job.native_id,job.root_turn_id) as Pick<Notification,'state'>|undefined;
+    if(previous&&previous.state!=='resolved')updateNotificationState(session,'error',job.root_turn_id,this.retryState(job));
   }
   stop() {
     this.stopped=true;this.unsubscribe();clearTimeout(this.timer);this.pending.clear();

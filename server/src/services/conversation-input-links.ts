@@ -6,7 +6,7 @@ import {getDb} from '../db/index.js';
 import {nativeConversationFile,type PromptContextSession} from './prompt-context.js';
 import {formatConversationInput,nativeConversationInput,type ConversationAttachment} from './conversation-attachments.js';
 import {conversationQuestionReply} from './conversation-question-reply.js';
-import type {ConversationMessage} from './conversation-reader.js';
+import {readConversation,type ConversationMessage} from './conversation-reader.js';
 import {automaticConversationContext} from '../shared/conversation-context.js';
 
 function inputHash(text:string){return createHash('sha256').update(text.replace(/\r\n?/g,'\n').trim()).digest('hex');}
@@ -18,6 +18,21 @@ export function isConversationInput(message:ConversationMessage):boolean {
 
 export function hasScheduledConversationInput(sessionId:string):boolean {
   return !!getDb().prepare("SELECT 1 FROM conversation_input_sources WHERE session_id=? AND kind='scheduled' LIMIT 1").get(sessionId);
+}
+
+/** Resolve attribution by the exact outcome cursor, with bounded history reads. */
+export async function precedingScheduledInput(session:PromptContextSession&{id:string},nativeId:string,before:string):Promise<boolean|undefined> {
+  let generation:string|null|undefined;
+  for(let i=0;i<4;i++){
+    const page=await readConversation(session,{before,limit:80});
+    if(!page.available||page.reset||(generation!==undefined&&page.generation!==generation))return;
+    const previous=linkConversationInputs(session.id,nativeId,page.messages).reverse().find(isConversationInput);
+    if(previous)return previous.input_source?.kind==='scheduled';
+    if(!page.has_more)return false;
+    const cursor=page.messages[0]?.id;
+    if(!cursor||cursor===before)return;
+    before=cursor;generation=page.generation;
+  }
 }
 
 export function rememberInputSource(sessionId:string,clientId:string,source:{kind:string;label:string}) {

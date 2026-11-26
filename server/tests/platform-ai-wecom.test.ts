@@ -302,6 +302,13 @@ describe('project notification classification through the native adapter and WeC
     expect(followups).toHaveLength(2);
     expect(followups[1].body).toMatchObject({msgtype:'markdown',markdown:{content:'**通知项目 / 文档**\n\n好的。'}});
     expect(getDb().prepare("SELECT count(*) n FROM platform_ai_outbox WHERE status='sent'").get()).toEqual({n:2});
+
+    getDb().prepare("UPDATE sessions SET parent_session_id='parent-tab' WHERE id='notice-tab'").run();
+    messages = [{role:'assistant',phase:'final',text:'子任务已完成',timestamp,task_reference:'child-turn'}];
+    getDb().prepare('UPDATE platform_ai_project_notification_watches SET next_check_at=0').run();
+    worker.tick(); await worker.drain(); await deliverAfterGrace();
+    expect(frames.filter(frame=>frame.cmd==='aibot_send_msg')).toHaveLength(2);
+    expect(getDb().prepare('SELECT count(*) n FROM platform_ai_outbox').get()).toEqual({n:2});
   });
 });
 
