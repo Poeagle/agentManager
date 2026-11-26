@@ -227,6 +227,7 @@
 .session-chat-error-notice[data-retry-ended="true"] {border-color:var(--border);background:var(--bg-secondary);}
 .session-chat-error-notice[data-retry-ended="true"] .session-chat-error-heading {color:var(--text-secondary);}
 .session-chat-action {flex-shrink:0;max-width:784px;width:calc(100% - 64px);margin:0 auto 8px;padding:10px 14px;border:1px solid color-mix(in srgb,#eab308 35%,var(--border));border-radius:10px;background:color-mix(in srgb,#eab308 6%,var(--bg-primary));font-size:12px;}
+.session-chat-composer>.session-chat-action {width:100%;}
 .session-chat-action p {margin-top:4px;overflow-wrap:anywhere;}
 .session-chat-action button {margin-top:5px;text-decoration:underline;color:var(--accent);}
 .session-pane {display:flex;height:100%;min-height:0;flex-direction:column;}

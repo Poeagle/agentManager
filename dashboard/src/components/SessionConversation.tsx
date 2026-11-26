@@ -2803,7 +2803,10 @@ export function SessionConversation({
         )}
         {storageError&&<p role="alert" className="session-chat-error">{storageError}</p>}
 
-        {childAgent ? <footer className="session-chat-action">子 Agent 通过协作协议工作。请在负责协调的 Agent 标签页沟通。</footer> : <footer className="session-chat-composer">
+        <footer className="session-chat-composer">
+          {childAgent ? (
+            <div className="session-chat-action">子 Agent 通过协作协议工作。请在负责协调的 Agent 标签页沟通。</div>
+          ) : <>
           <div className="session-chat-status" role="status" hidden={notificationView&&liveState==='connected'&&!ended&&!reconnectable&&!compaction.state}>
             <div className="session-chat-execution-status" hidden={hideFooterExecutionStatus}>
             <span
@@ -3120,6 +3123,7 @@ export function SessionConversation({
               </div>
             </div>
           </form>
+          </>}
           {(!notificationView||composerOptionsOpen) && agentSupports(session, "controls") &&
             !!page?.native_id &&
             canRead && (
@@ -3127,6 +3131,7 @@ export function SessionConversation({
                 toolbarTarget={toolbarTarget}
                 sessionId={session.id}
                 active={active}
+                readOnly={childAgent}
                 busy={busy || sending || resuming || sendGuard.blocking}
                 replacing={resuming || sendGuard.blocking}
                 compacting={compaction.running}
@@ -3140,7 +3145,7 @@ export function SessionConversation({
                 metadata={currentMetadata?.summary}
               />
             )}
-        </footer>}
+        </footer>
       </section>
         {!childAgent&&composer.mode==='batch'&&(composer.entries.length>0||composer.pending)&&<aside className="session-chat-batch" aria-label="批量待发内容">
           <ConversationBatchResizeHandle layout={chatLayout} active={active} storageKey={`agentmanager-batch-width:${userId}`}/>

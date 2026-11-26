@@ -3,7 +3,7 @@ import {sessionAgent} from '../src/lib/agents';
 import { act, fireEvent, render, screen, waitFor,within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api, ApiError, type ConversationPage, type ConversationStatistics, type SendGuardCheck, type Session } from '../src/lib/api';
+import { api, ApiError, type ConversationControlsData, type ConversationPage, type ConversationStatistics, type SendGuardCheck, type Session } from '../src/lib/api';
 import { SessionConversation } from '../src/components/SessionConversation';
 import * as metadata from '../src/components/ConversationStatisticsLabel';
 import {parseBriefContext} from '../src/lib/conversation-brief-context';
@@ -11,7 +11,6 @@ import {parseConversationQuote} from '../src/lib/conversation-quote';
 
 vi.mock('../src/lib/permissions', () => ({ usePermissions: () => ({ data: {}, isPending: false }), hasPermission: () => true }));
 vi.mock('../src/lib/use-conversation-compaction', () => ({ useConversationCompaction: () => ({ state: null, running: false, start: vi.fn(), usage: vi.fn(), observe: vi.fn(), disconnected: vi.fn() }) }));
-vi.mock('../src/components/ConversationControls', () => ({ ConversationControls: () => null }));
 vi.mock('../src/components/ConversationReadingTools', () => ({ ConversationWidthHandles: () => null, ConversationNavigator: () => null }));
 
 class Socket {
@@ -24,6 +23,11 @@ class Socket {
   emit(frame: unknown) { this.onmessage?.({ data: JSON.stringify(frame) }); }
 }
 const session = { id: 'send-session', project_id: 'project', status: 'running', cli_type: 'codex', codex_session_id: 'native', claude_session_id: null } as Session;
+const controls:ConversationControlsData={
+  native_id:'native', can_edit:true, loaded:true, models:[], limits:[], usage:null, model:null, effort:null, provider:null,
+  cwd:null, cli_version:null, permission:null, approval:null, service_tier:null, pending:null, warning:null,
+  checked_at:'2026-11-26T04:03:00Z', usage_observed_at:null,
+};
 function deferred<T>() { let resolve!: (value: T) => void, reject!: (reason: Error) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 type SendResult = Awaited<ReturnType<typeof api.agent.sendInput>>;
 function input(value: string) { const editor = screen.getByRole('textbox', { name: '发送给当前 Agent 的消息' }); editor.textContent = value; fireEvent.input(editor); return editor; }
@@ -37,6 +41,8 @@ async function mount(target:Session=session,onNewConversation?:(preference?:impo
   return view;
 }
 beforeEach(() => {
+  vi.spyOn(api.agent,'controls').mockResolvedValue(controls);
+  vi.spyOn(api.codexEnvironments,'forSession').mockResolvedValue({current:'native',environments:[]});
   vi.spyOn(api.agent,'checkSend').mockResolvedValue({needs_confirmation:false,token:undefined} as any);
   localStorage.clear();
   sessionStorage.clear();
@@ -48,12 +54,15 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('conversation send transaction', () => {
-  it.each(['claude','codex'] as const)('keeps the %s child conversation readable and removes user interaction', async agent => {
+  it.each(['claude','codex'] as const)('shows live usage without editing in the %s child conversation', async agent => {
     const target:Session={...session,agent_id:agent,cli_type:agent,parent_session_id:'parent',native_session_id:'native'};
     const existing=await api.agent.conversation(session.id);
     vi.mocked(api.agent.conversation).mockResolvedValue({...existing,messages:[
       {id:'progress',role:'assistant',phase:'commentary',text:'已核对交付条件',timestamp:'2026-11-26T04:03:00Z'},
     ]});
+    vi.mocked(api.agent.controls).mockResolvedValue({
+      ...controls,agent:sessionAgent(target),usage:{total:{total_tokens:1000},last:{total_tokens:100},window:1000},
+    });
     await mount(target);
     act(() => Socket.latest.emit({type:'snapshot', messages:[], busy:false, stage:'idle', interactions:[
       {id:'question',turn_id:'turn',kind:'question',title:'Agent 需要回答',detail:'需要用户决定',blocking:true,submitted:false},
@@ -62,6 +71,16 @@ describe('conversation send transaction', () => {
     expect(await screen.findByText('已核对交付条件')).toBeInTheDocument();
     expect(screen.queryByRole('textbox', {name:'发送给当前 Agent 的消息'})).not.toBeInTheDocument();
     expect(screen.queryByText('Agent 需要回答')).not.toBeInTheDocument();
+    const usage=await screen.findByLabelText('Cumulative token usage');
+    expect(usage).toHaveTextContent('1K');
+    expect(screen.getByRole('button',{name:'Details'})).toBeVisible();
+    expect(screen.queryByLabelText('会话操作')).not.toBeInTheDocument();
+    act(() => Socket.latest.emit({
+      type:'usage',native_id:'native',observed_at:'2026-11-26T04:04:00Z',
+      usage:{total:{total_tokens:2000},last:{total_tokens:200},window:1000},
+    }));
+    await waitFor(()=>expect(usage).toHaveTextContent('2K'));
+    expect(screen.getByRole('button',{name:'View context token details'})).toHaveTextContent('20%');
   });
 
   it.each(['claude','codex'] as const)('quotes an existing %s reply, restores the draft, and links to its source',async agent=>{
@@ -288,7 +307,7 @@ describe('conversation send transaction', () => {
     const sent=submit.mock.calls[0][1],brief=parseBriefContext(sent)!;
     expect(brief.input).toBe('这次的新需求');expect(brief.context.turns[0]).toEqual({input:'旧需求',conclusion:'旧结论'});
     expect(submit.mock.calls[0][5]).toBe('after');
-    const card=await screen.findByRole('button',{name:/简要压缩/});expect(screen.getByText('这次的新需求')).toBeVisible();
+    const card=await screen.findByRole('button',{name:/简要压缩.*查看详情/});expect(screen.getByText('这次的新需求')).toBeVisible();
     expect(screen.queryByText('旧需求')).not.toBeInTheDocument();fireEvent.click(card);
     const details=screen.getByRole('dialog',{name:'简要压缩详情'});expect(within(details).getByText('旧需求')).toBeVisible();expect(within(details).getByText('旧结论')).toBeVisible();
   });

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
@@ -305,6 +305,18 @@ test('toggles nested session tabs after refresh and keeps children visible when 
   const root = join(process.cwd(), '.test-data', 'e2e');
   const projectPath = join(root, 'tab-lineage');
   mkdirSync(projectPath, { recursive: true });
+  const childNativeId = '019ff001-4545-7454-8454-454545454545';
+  const historyPath = join(root, 'home', '.codex', 'sessions');
+  mkdirSync(historyPath, { recursive: true });
+  writeFileSync(join(historyPath, `rollout-${childNativeId}.jsonl`), JSON.stringify({
+    timestamp: '2026-01-01T00:00:00.000Z', type: 'event_msg', payload: {
+      type: 'token_count', info: {
+        total_token_usage: { input_tokens: 11000, cached_input_tokens: 10000, output_tokens: 1000, total_tokens: 12000 },
+        last_token_usage: { input_tokens: 11000, cached_input_tokens: 10000, output_tokens: 1000, total_tokens: 12000 },
+        model_context_window: 40000,
+      },
+    },
+  }) + '\n');
   const { project } = await (await page.request.post('/api/projects', {
     data: { name: 'Tab lineage', path: projectPath },
   })).json();
@@ -323,6 +335,7 @@ test('toggles nested session tabs after refresh and keeps children visible when 
     tabs.forEach(({ id, label, parent }, index) => {
       insert.run(id, project.id, user.id, label, parent, `2026-01-01T00:00:0${index}.000Z`);
     });
+    db.prepare('UPDATE sessions SET codex_session_id=? WHERE id=?').run(childNativeId, 'lineage-child');
   } finally { db.close(); }
   await page.request.put('/api/settings', { data: { settings: { statusline_prompted: 'true' } } });
   await page.request.put('/api/user-state/app', {
@@ -339,6 +352,12 @@ test('toggles nested session tabs after refresh and keeps children visible when 
   const grandchild = nav.locator('[data-session-id="lineage-grandchild"]');
   const sibling = nav.locator('[data-session-id="lineage-sibling"]');
   const peer = nav.locator('[data-session-id="lineage-peer"]');
+  const childConversation = page.getByRole('region', { name: '会话对话' }).and(page.locator('[data-session-id="lineage-child"]'));
+  const usage = childConversation.getByLabel('Model and session status');
+  await expect(usage.getByRole('button', { name: 'View context token details' })).toHaveText('Context 40K | 30%');
+  await expect(usage.getByRole('button', { name: 'Details', exact: true })).toBeVisible();
+  await expect(childConversation.getByLabel('会话操作')).toHaveCount(0);
+  await expect(childConversation.getByRole('textbox', { name: '发送给当前 Agent 的消息' })).toHaveCount(0);
   async function expectAligned(first: typeof parent, second: typeof parent) {
     for (const selector of ['.workspace-tab-signal', '.workspace-tab-icon']) {
       const firstBox = (await first.locator(selector).boundingBox())!;
@@ -366,6 +385,7 @@ test('toggles nested session tabs after refresh and keeps children visible when 
   await expectAligned(parent, peer);
 
   await page.reload();
+  await expect(usage.getByRole('button', { name: 'View context token details' })).toHaveText('Context 40K | 30%');
   await expect(parentToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(child).toHaveCount(0);
   await parentToggle.focus();
@@ -389,6 +409,8 @@ test('toggles nested session tabs after refresh and keeps children visible when 
   await expect(grandchild).toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await expect(usage.getByRole('button', { name: 'View context token details' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole('button', { name: '项目导航', exact: true }).click();
   await expect(child).toBeVisible();
   await expect(peer).toBeVisible();
