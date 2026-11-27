@@ -94,7 +94,7 @@ describe('Codex environments UI',()=>{
   await within(dialog).findByRole('combobox',{name:'目标环境模型'});
   vi.mocked(api.codexEnvironments.forSession).mockImplementationOnce(()=>new Promise(()=>{}));
   fireEvent.click(within(dialog).getByRole('button',{name:isClaude?'切换 Provider':'复制历史并切换'}));
-  expect(within(dialog).getByText(/正在切换/)).toHaveAttribute('role','status');
+  expect(within(dialog).getByText(`正在从「${source.name}」切换到「${target.name}」${isClaude?'…':'并恢复会话…'}`)).toHaveAttribute('role','status');
   expect(select).toHaveValue(source.id);
   await act(async()=>complete({ok:true,session:{id:'s',project_id:'p',agent_environment_id:target.id} as Session}));
   await waitFor(()=>expect(select).toHaveValue(target.id));

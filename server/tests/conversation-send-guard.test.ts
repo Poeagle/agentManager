@@ -19,7 +19,7 @@ import * as environments from '../src/services/agents/codex/environments.js';
 import * as history from '../src/services/conversation-reader.js';
 import {AgentQuotaExhaustedError} from '../src/services/agents/submission.js';
 import {parseBriefContext} from '../src/shared/conversation-brief.js';
-import {resumeQuotaFailedTurn} from '../src/services/conversation-quota-handoff.js';
+import {readQuotaHandoffProgress,resumeQuotaFailedTurn} from '../src/services/conversation-quota-handoff.js';
 import {setRoleGrants,setUserRoles} from '../src/services/rbac.js';
 let app:ReturnType<typeof Fastify>,cleanup:()=>void,cookie:string,userId:string;
 beforeEach(async()=>{
@@ -196,8 +196,9 @@ it('selects a funded account immediately after a failed turn on a depleted accou
 });
 
 function stubQuotaHandoff() {
- const read=vi.spyOn(history,'readConversation').mockResolvedValue({available:true,has_more:false,reset:false,generation:'fixture',
-   messages:[{id:'previous',role:'user',text:'整理项目文件',timestamp:null,turn_id:'last-turn'}],statistics:[],metadata:null,cache_drops:[]});
+ const page:Awaited<ReturnType<typeof history.readConversation>>={available:true,has_more:false,reset:false,generation:'fixture',
+   messages:[{id:'previous',role:'user',text:'整理项目文件',timestamp:null,turn_id:'last-turn'}],statistics:[],metadata:null,cache_drops:[]};
+ const read=vi.spyOn(history,'readConversation').mockResolvedValue(page);
  const candidate={id:'account:backup',label:'备用账号'};
  getDb().prepare("INSERT INTO agent_environments(id,agent_id,name,kind,enabled,config,allowed_user_ids) VALUES (?,'codex',?,'account',1,?,?)")
    .run(candidate.id,candidate.label,JSON.stringify({username:'fixture'}),JSON.stringify([userId]));
@@ -213,7 +214,7 @@ function stubQuotaHandoff() {
    getDb().prepare("UPDATE sessions SET native_session_id='fresh',codex_session_id='fresh',agent_environment_id=? WHERE id=?").run(environment,id);
    return {ok:true};
  });
- return {read,replace,candidate};
+ return {read,replace,candidate,page};
 }
 
 it.each(['cached','native rejection','uncertain'] as const)('recovers eligible quota exhaustion during input with evidence %s',async evidence=>{
@@ -238,6 +239,45 @@ it.each(['cached','native rejection','uncertain'] as const)('recovers eligible q
  const [native,text,client]=vi.mocked(stream.submitStreamingCodexInput).mock.calls.at(-1)!;
  expect([native,client]).toEqual(['fresh',input.client_id]);
  expect(parseBriefContext(text)).toMatchObject({input:'hello',context:{turns:[{input:'整理项目文件'}]}});
+});
+
+it('streams the authorized account names during a quota switch and replays the actual outcome after rebind',async()=>{
+ const {read,page}=stubQuotaHandoff();
+ vi.spyOn(codexAdapter.quota,'accountRemaining').mockReturnValue(0);
+ vi.spyOn(codexAdapter.identity,'accountLabel').mockReturnValue('原订阅账号');
+ vi.spyOn(codexAdapter.stream,'observe').mockImplementation(()=>Object.assign(()=>{}, {respond:async()=>{}}));
+ let releaseHistory!:()=>void;
+ const historyGate=new Promise<void>(resolve=>{releaseHistory=resolve;});
+ read.mockImplementation(async()=>{await historyGate;return page;});
+ const frames: any[]=[];
+ const connect=(received:any[],auth=cookie)=>app.injectWS('/api/sessions/s/conversation/stream?protocol=2',{headers:{cookie:auth}},{
+   onInit:ws=>ws.on('message',bytes=>{const frame=JSON.parse(bytes.toString());if(frame.type==='quota_handoff')received.push(frame.quota_handoff);}),
+ });
+ const socket=await connect(frames);
+ const pending=app.inject({method:'POST',url:'/api/sessions/s/input',headers:{cookie},payload:input}).then(response=>response);
+ try{
+   await vi.waitFor(()=>expect(frames.filter(Boolean).map(frame=>frame.stage)).toEqual(['checking','preparing']),{timeout:1500});
+   expect(frames.at(-1)).toMatchObject({source_account:'原订阅账号',target_account:'备用账号'});
+   const otherAdmin=createUser({username:'other-admin',password:'password1',role:'admin'});
+   expect(readQuotaHandoffProgress(manager.getSession('s')!,otherAdmin.id)).toBeNull();
+   const resumed:any[]=[];
+   const second=await connect(resumed);
+   try {
+     await vi.waitFor(()=>expect(resumed.at(-1)).toMatchObject({stage:'preparing',target_account:'备用账号'}));
+   } finally {second.terminate();}
+   releaseHistory();
+   await vi.waitFor(()=>expect(frames).toContainEqual(expect.objectContaining({stage:'switching',target_account:'备用账号'})));
+ }finally {
+   releaseHistory();
+   socket.terminate();
+   await pending;
+ }
+ expect((await pending).statusCode).toBe(202);
+ const resumed:any[]=[];
+ const rebound=await connect(resumed);
+ try {
+   await vi.waitFor(()=>expect(resumed.at(-1)).toMatchObject({stage:'switched',source_account:'原订阅账号',target_account:'备用账号'}));
+ } finally {rebound.terminate();}
 });
 
 it.each(['unfinished','failure details pending','status pending','has final','queued','newer turn','stale history'] as const)('resumes a quota-failed task only when safe (%s)',async condition=>{

@@ -49,7 +49,7 @@ Codex 压缩记录确认了先前输出属于内部摘要时，历史与实时�
 
 平台使用适配器的可选 `management.providerForSession` 从会话绑定解析已配置的 Provider，与 Agent ID 一起匹配规则范围。平台统一评估管理员配置的且／或规则，使用 `telemetry.read` 的最近原生用量、`runtime.read` 的可选 `last_turn_ended_at`，以及可选的 `quota.accountRemaining` 账号额度。适配器无法提供的指标保持未知。首条明确命中的自动规则可要求原生压缩、新开或简要压缩。发送保护启用时，`quota.accountRemaining` 确认当前账号剩余 0% 即触发平台默认换号，通过可选的 `quota.alternateAccount` 选择目标，并通过现有生命周期接口执行。额度大于 0% 或未知时，命中的操作使用当前账号。操作完成后复核目标会话，再提交原草稿。[发送保护](conversation-send-guard.md)
 
-原生适配器可通过 `quota.exhausted` 识别明确的订阅额度错误，并把失败类型映射到 `retry.inspect` 的 `quota_exhausted`。平台沿用现有失败监控、简要历史和生命周期接续，无需浏览器参与。Codex 实现区分订阅用尽、普通限流与临时过载。换号只在原生失败或明确未受理时启动，并重新校验原会话身份、账号、轮次及权限。[额度用尽接续](conversation-auto-retry.md#codex-订阅额度耗尽)
+原生适配器可通过 `quota.exhausted` 识别明确的订阅额度错误，并把失败类型映射到 `retry.inspect` 的 `quota_exhausted`。平台沿用现有失败监控、简要历史和生命周期接续，无需浏览器参与。Codex 实现区分订阅用尽、普通限流与临时过载。换号只在投递前已确认额度用尽、原生轮次因额度失败或原生明确拒绝提交时启动，并重新校验原会话身份、账号、轮次及权限。平台根据生命周期实际进展通过会话流的 `quota_handoff` 帧向会话所有者显示阶段和账号配置名，适配器无需自行生成界面提示。[额度用尽接续](conversation-auto-retry.md#codex-订阅额度耗尽)
 
 简要压缩复用 Agent 中立的分页历史和新会话能力，提取已展示的用户输入、助手结论和少量过程，与当前输入合并提交；不要求适配器伪造摘要或支持原生压缩。原生历史不可用时明确失败。整理内容及附件引用的上限、截取标记和恢复行为见 [发送保护](conversation-send-guard.md)。
 

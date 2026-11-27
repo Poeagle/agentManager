@@ -1,4 +1,5 @@
 import {useConversationSendGuard} from '../lib/use-conversation-send-guard';
+import type {QuotaHandoffProgress} from '../../../server/src/shared/quota-handoff-progress';
 import {useConversationNotificationVisibility} from '../lib/use-conversation-notification-visibility';
 import type {ConversationFocus} from '../lib/notifications';
 import {ConversationBatchCard} from './ConversationBatchCard';
@@ -18,6 +19,7 @@ import {
 } from "./ConversationStatisticsLabel";
 import {
   ConversationRetryStatus,
+  quotaHandoffLabel,
   type ConversationRetry,
 } from "./ConversationRetryStatus";
 import { ConversationPromptEnhancer } from "./ConversationPromptEnhancer";
@@ -245,6 +247,7 @@ const Bubble = memo(function Bubble({
   allowRaw = true,
   retrying = false,
   autoRetry,
+  quotaHandoff,
   onCancelRetry,
   onCancelQueued,
   compact = false,
@@ -268,6 +271,7 @@ const Bubble = memo(function Bubble({
   durationLabel?: string;
   retrying?: boolean;
   autoRetry?: ConversationRetry;
+  quotaHandoff?: QuotaHandoffProgress;
   onCancelRetry?: () => Promise<void>;
   onCancelQueued?: () => Promise<void>;
   onRaw: () => void;
@@ -516,7 +520,7 @@ const Bubble = memo(function Bubble({
         <div className="session-chat-error-heading">
           <AlertTriangle size={16} />
           {autoRetry ? (
-            <ConversationRetryStatus retry={autoRetry} onCancel={onCancelRetry} />
+            <ConversationRetryStatus retry={autoRetry} quotaHandoff={quotaHandoff} onCancel={onCancelRetry} />
           ) : (
             <strong title={reconnect ? message.text : undefined}>
               {reconnect
@@ -725,6 +729,13 @@ export function SessionConversation({
     Record<string, ConversationRetry>
   >({});
   useEffect(() => setAutoRetries({}), [session.id, agentNativeId(session)]);
+  const [quotaHandoff,setQuotaHandoff]=useState<QuotaHandoffProgress|null>(null);
+  useEffect(()=>setQuotaHandoff(null),[session.id]);
+  useEffect(()=>{
+    if(!quotaHandoff)return;
+    const timer=setTimeout(()=>setQuotaHandoff(current=>current===quotaHandoff?null:current),quotaHandoff.remaining_ms);
+    return ()=>clearTimeout(timer);
+  },[quotaHandoff]);
   const [statistics, setStatistics] = useState<ConversationStatistics[]>([]);
   const [metadata, setMetadata] = useState<CacheTimeline|null>(null);
   const acceptMetadata=useCallback((summary:SessionMetadata|null|undefined,drops:SessionCacheDrop[]=[])=>
@@ -1404,6 +1415,7 @@ export function SessionConversation({
           cache_drops?: SessionCacheDrop[];
           progress?: import('../lib/api').ConversationProgressStatistics|null;
           retry?: ConversationRetry;
+          quota_handoff?: QuotaHandoffProgress | null;
           observed_at?: string;
           messages?: ConversationMessage[];
           reset?: boolean;
@@ -1426,6 +1438,10 @@ export function SessionConversation({
         if (order === "resync") {
           setRefresh((value) => value + 1);
           ensureFresh(true);
+          return;
+        }
+        if(frame.type==='quota_handoff'){
+          setQuotaHandoff(frame.quota_handoff??null);
           return;
         }
         if (frame.type === "snapshot" || frame.type === "patch") failures = 0;
@@ -2460,6 +2476,8 @@ export function SessionConversation({
       assignedRetries.add(retry);
     }
   }
+  const quotaHandoffRetry=quotaHandoff?.failed_turn_id?autoRetries[quotaHandoff.failed_turn_id]:undefined;
+  const quotaHandoffInError=!!quotaHandoffRetry&&assignedRetries.has(quotaHandoffRetry);
   const bubble = (
     message: ConversationMessage,
     compact = false,
@@ -2491,6 +2509,7 @@ export function SessionConversation({
           !!message.error?.will_retry
         }
         autoRetry={retriesByMessage.get(message.id)}
+        quotaHandoff={quotaHandoffInError&&retriesByMessage.get(message.id)===quotaHandoffRetry?quotaHandoff??undefined:undefined}
         onCancelRetry={canWrite ? cancelRetry : undefined}
         onCancelQueued={
           canWrite &&
@@ -2958,6 +2977,10 @@ export function SessionConversation({
           )}
           {ignoreError && <p role="alert">{ignoreError}</p>}
           {sendGuard.notice}
+          {quotaHandoff&&!quotaHandoffInError&&<div className="session-chat-guard-status" role="status">
+            {['checking','preparing','switching'].includes(quotaHandoff.stage)&&<Loader2 size={14} className="session-chat-retry-spinner" aria-hidden="true" />}
+            <span>{quotaHandoffLabel(quotaHandoff)}</span>
+          </div>}
           {stopError&&<p role="alert" className="session-chat-error">{stopError}</p>}
           {composer.briefContext&&<div className="session-chat-guard-status" role="status"><span>简要历史已保留，将与原草稿一起发送。</span><button type="button" disabled={sending||sendGuard.blocking} onClick={()=>persistComposer({briefContext:undefined})}>移除简要历史</button></div>}
           {sendError && (

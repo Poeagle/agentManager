@@ -51,6 +51,7 @@ export function ConversationEnvironmentSelector({sessionId,busy,active=true,onTr
  if(!query.data)return null;
  const environments=query.data.environments.filter(environment=>environment.can_control);
  const destination=query.data.environments.find(environment=>environment.id===target);
+ const source=query.data.environments.find(environment=>environment.id===query.data?.current);
  return <><label className="conversation-control-select"><span>{isClaude?'Provider':'账号'}</span><select aria-label={isClaude?'选择 Claude Provider':'选择 Codex 账号环境'} disabled={busy||working||environments.length<2} value={query.data.current} onChange={e=>{setTarget(e.target.value);setModels([]);setSelection('');setChecks([]);setError('');}}>{environments.map(e=><option key={e.id} value={e.id} disabled={!e.enabled}>{e.name}</option>)}</select><ChevronDown size={12}/></label>
  {target&&<Dialog title={isClaude?'切换 Claude Provider':'保留上下文切换 Codex 环境'}
   busy={working} onClose={close} initialFocus={preflightButton}>
@@ -61,7 +62,7 @@ export function ConversationEnvironmentSelector({sessionId,busy,active=true,onTr
     {operation==='preflight'?<Loader2 size={15} className="motion-safe:animate-spin" aria-hidden/>:<ListChecks size={15} aria-hidden/>}
     <span>{operation==='preflight'?'正在预检…':isClaude?'读取 Provider 模型':'预检连接、登录、模型与项目权限'}</span>
    </button>
-   {operation==='transfer'&&<p role="status">正在切换{isClaude?' Provider…':'账号并恢复会话…'}</p>}
+   {operation==='transfer'&&<p role="status">正在从「{source?.name??'当前环境'}」切换到「{destination?.name??'所选环境'}」{isClaude?'…':'并恢复会话…'}</p>}
    {checks.length>0&&<EnvironmentChecks checks={checks}/>}
    {models.length>0&&<div className="conversation-environment-fields">
     <label htmlFor={`${fieldId}-model`}>目标模型</label>

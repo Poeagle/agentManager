@@ -51,10 +51,26 @@ test('native retries recover on live tool activity and terminal failures survive
   await page.screenshot({path:testInfo.outputPath('capacity-error.png')});
   await page.setViewportSize({width:390,height:844});await expect(alert).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   const quotaTurn='quota-turn';
+  const quotaProgress=(stage:string,failed_turn_id:string|null)=>push(JSON.stringify({type:'quota_handoff',quota_handoff:{
+    stage,source_account:'日常订阅',target_account:'备用订阅',failed_turn_id,remaining_ms:30_000,
+  }}));
+  quotaProgress('switching',null);
+  await expect(chat.getByRole('status').filter({hasText:'「日常订阅」额度已耗尽，正在切换到「备用订阅」'})).toBeVisible();
+  quotaProgress('switched',null);
+  await expect(chat.getByText('已从「日常订阅」切换到「备用订阅」',{exact:true})).toBeVisible();
+  push(JSON.stringify({type:'quota_handoff',quota_handoff:null}));
+  await expect(chat.getByText('已从「日常订阅」切换到「备用订阅」',{exact:true})).toHaveCount(0);
   push(JSON.stringify({type:'snapshot',messages:[{...failure,id:'quota-error',turn_id:quotaTurn,text:"You've hit your usage limit.",
     error:{code:'usage_limit_exceeded',will_retry:false}}],busy:false,stage:'idle',turn_id:quotaTurn}));
   push(JSON.stringify({type:'retry',retry:{session_id:session.id,native_id:native,root_turn_id:quotaTurn,failed_turn_ids:[quotaTurn],
     attempt:1,max_attempts:1,action:'quota_handoff',status:'submitting',next_retry_at:null}}));
-  await expect(chat.getByText('正在简要压缩并切换账号…')).toBeVisible();
+  await expect(chat.getByText('正在核对订阅额度错误和原会话状态…')).toBeVisible();
+  quotaProgress('preparing',quotaTurn);
+  const quotaError=chat.getByRole('alert').filter({hasText:"You've hit your usage limit."});
+  await expect(quotaError).toContainText('「日常订阅」额度已耗尽，正在整理简要历史，准备切换到「备用订阅」');
+  quotaProgress('switching',quotaTurn);
+  await expect(quotaError).toContainText('「日常订阅」额度已耗尽，正在切换到「备用订阅」');
+  await expect(chat.getByText('「日常订阅」额度已耗尽，正在切换到「备用订阅」…',{exact:true})).toHaveCount(1);
+  await expect(quotaError.getByRole('button',{name:'取消换号'})).toBeVisible();
   await page.request.delete(`/api/sessions/${session.id}`);
 });

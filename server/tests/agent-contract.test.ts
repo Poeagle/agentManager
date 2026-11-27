@@ -7,7 +7,7 @@ describe('Agent API contract', () => {
     const keys = contract.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`);
 
     expect(new Set(keys).size).toBe(keys.length);
-    expect(contract.version).toBe('3.49.0');
+    expect(contract.version).toBe('3.50.0');
     const closeChild = contract.endpoints.find(e=>e.path==='/api/agent-docs/tabs/:id/delete')?.description;
     expect(closeChild).toContain('reviewed_result_id');
     expect(closeChild).toContain('child_close_not_ready');
@@ -46,6 +46,7 @@ describe('Agent API contract', () => {
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/metadata')?.description).toContain('decreases in recorded cached input tokens');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/usage-intervals')?.description).toContain('kind=item with phase=final');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('last_request_at');
+    expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('quota_handoff');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('progress_statistics.step');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('cost estimate');
     expect(contract.endpoints.find(e=>e.path==='/api/sessions/:id/conversation/stream')?.description).toContain('cost.breakdown');

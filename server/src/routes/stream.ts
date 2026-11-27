@@ -8,6 +8,7 @@ import {getDb} from '../db/index.js';
 import {personalQuestionRuntime} from '../services/question-attention.js';
 import {registerUserConnection} from '../services/user-connections.js';
 import {userHasPermission} from '../services/rbac.js';
+import {quotaHandoffEvent} from '../services/conversation-quota-handoff.js';
 
 /**
  * WebSocket stream for real-time events to the dashboard.
@@ -20,7 +21,7 @@ export const streamRoutes: FastifyPluginAsync = async (app) => {
     // Subscribe to events
     const unsubscribe = subscribe((event: any) => {
       // Internal recovery observation; personalized notifications carry the UI update.
-      if(event.type==='session.retry')return;
+      if(event.type==='session.retry'||event.type===quotaHandoffEvent)return;
       if (event.type === 'session.record-deletion') {
         try { if (JSON.parse(event.data || '{}').user_id === userId) socket.send(JSON.stringify(event)); } catch { /* Closed socket or malformed event. */ }
         return;
