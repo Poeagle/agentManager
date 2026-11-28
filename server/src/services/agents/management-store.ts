@@ -1,5 +1,5 @@
 import { getDb } from '../../db/index.js';
-import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { config } from '../../config.js';
@@ -53,6 +53,11 @@ export function openAgentSecret(value: string, purpose: string): string {
   decipher.setAAD(Buffer.from(purpose));
   decipher.setAuthTag(data.subarray(12, 28));
   return Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]).toString('utf8');
+}
+
+/** Derive a stable opaque capability from the management secret without exposing the key. */
+export function deriveAgentSecret(scope: string): string {
+  return createHmac('sha256', secretKey()).update(scope).digest('base64url');
 }
 
 export function readAgentManagement(agentId: string): StoredAgentManagement {

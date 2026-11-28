@@ -15,3 +15,12 @@ it('does not run full Codex doctor after saving a Provider',async()=>{
  await management.updateProvider('fixture',{fields:{baseUrl:'https://example.invalid/v1'}});
  expect(vi.mocked(cli.runCli).mock.calls.some(([,args])=>args.includes('doctor'))).toBe(false);
 });
+it('configures API-key Providers for HTTP Responses gateways without OAuth or WebSockets',async()=>{
+ const management=codexManagement({id:'codex',label:'Codex'} as any);
+ const provider=await management.inspectProvider?.('fixture');
+ expect(provider?.launchArgs).toEqual(expect.arrayContaining([
+  '-c','model_providers.fixture.wire_api="responses"',
+  '-c','model_providers.fixture.requires_openai_auth=false',
+  '-c','model_providers.fixture.supports_websockets=false',
+ ]));
+});
