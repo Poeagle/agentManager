@@ -216,6 +216,21 @@ export interface AgentModelDetectionInput {
   providerId?: string;
   useEncrypted?: boolean;
 }
+export interface AgentProviderDetectionInput {
+  endpoint?: string;
+  apiKey?: string;
+  providerId?: string;
+}
+export interface AgentProviderDetection {
+  protocol: "responses" | "chat_completions";
+  models: Array<AgentModelMetadata & {
+    provider?: string;
+    model: string;
+    name: string;
+    description?: string;
+    efforts?: Array<{ value: string; description: string }>;
+  }>;
+}
 export interface AgentManagementPort {
   /** A Provider ID from this adapter's management catalog, resolved from the persisted session binding. */
   providerForSession?(session: AgentSession): string | null;
@@ -244,6 +259,8 @@ export interface AgentManagementPort {
       efforts?: Array<{ value: string; description: string }>;
     }>
   >;
+  /** Probe the actual generation protocol while also discovering models. */
+  detectProvider?(input?: AgentProviderDetectionInput): Promise<AgentProviderDetection>;
   refreshProviderBilling?(providerId?:string):Promise<void>;
   refreshProviderModels?(providerId?:string):Promise<Array<{providerId:string;models:Array<AgentModelMetadata&{model:string;name:string;description?:string;efforts?:Array<{value:string;description:string}>;defaultEffort?:string}>}>>;
   readModelConfigs?(): Promise<AgentModelConfig[]>;

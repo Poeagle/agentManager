@@ -278,6 +278,10 @@ export interface DetectedAgentModel extends AgentModelMetadata {
   default_service_tier?: string | null;
   service_tiers?: Array<{ id: string; name: string; description: string }>;
 }
+export interface DetectedAgentProvider {
+  protocol: 'responses' | 'chat_completions';
+  models: DetectedAgentModel[];
+}
 export interface AgentConfigFileContent { path: string; content: string; exists: boolean; format: string; restarted?: boolean; }
 export interface AgentModelPricing {
   currency:string;
@@ -811,6 +815,9 @@ export const api = {
       fetchJSON<{ provider: AgentProviderState }>(`/agent-management/${encodeURIComponent(agentId)}/providers/${encodeURIComponent(providerId)}`),
     detectModels: (agentId: string, options: { providerId?: string; endpoint?: string; apiKey?: string; all?: boolean } = {}) => fetchJSON<{ models: DetectedAgentModel[] }>(`/agent-management/${encodeURIComponent(agentId)}/detect-models`, {
       method: 'POST', body: JSON.stringify({ refresh: true, ...options }),
+    }),
+    detectProvider: (agentId: string, options: { providerId?: string; endpoint?: string; apiKey?: string } = {}) => fetchJSON<DetectedAgentProvider>(`/agent-management/${encodeURIComponent(agentId)}/detect-provider`, {
+      method: 'POST', body: JSON.stringify(options),
     }),
     updateDefaults: (agentId: string, defaults: Record<string, string | boolean | string[] | null>) =>
       fetchJSON<{ state: AgentManagementState }>(`/agent-management/${encodeURIComponent(agentId)}`, {

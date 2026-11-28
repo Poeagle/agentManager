@@ -359,6 +359,9 @@ export async function authHook(req: FastifyRequest, reply: FastifyReply) {
   if (!path.startsWith('/api/')) return; // static assets, SPA, etc.
   // The dedicated Agent Docs router authenticates a launch-issued tab capability.
   if (req.routeOptions.url?.startsWith('/api/agent-docs/')) return;
+  // Codex's local Chat Completions compatibility route validates its own
+  // per-Provider capability and loopback peer before forwarding any request.
+  if (req.routeOptions.url?.startsWith('/api/codex-providers/')) return;
 
   // Claude Code hooks POST events with no session cookie — allow ingest.
   // (Reads of /api/events still require login + owner filtering in the route.)

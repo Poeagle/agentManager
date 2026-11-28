@@ -36,6 +36,8 @@ import {
 import { nativeEngineConfig, updateNativeEngineConfig } from './native-engine-config.js';
 import { displayEngineCommand, normalizeEngineArgs, normalizeEngineCommand } from './engine-command.js';
 import { durableProcessCommand, resolveUnixSocketPath, terminateDetachedProcess, waitForSocketReady } from './process-lifecycle.js';
+import { detectProviderProtocol } from './provider-probe.js';
+import { deriveAgentSecret } from '../management-store.js';
 
 const processes = new Map<string, { pid: number; startedAt: string }>();
 const startupErrors = new Map<string, string>();
@@ -612,13 +614,19 @@ function providerLaunch(provider: StoredProvider): { command: string; args: stri
   const socket = managedCodexSocket(provider.id);
   const defaultModel = stringField(provider, 'defaultModel') || listField(provider, 'models')[0];
   const envKey = 'AGENTMANAGER_PROVIDER_API_KEY';
+  const chatBridge = provider.fields.protocol === 'chat_completions';
+  const baseUrl = chatBridge
+    ? `http://127.0.0.1:${config.port}/api/codex-providers/${encodeURIComponent(provider.id)}/v1`
+    : stringField(provider, 'baseUrl');
   const base = [
     'app-server', '--listen', `unix://${socket}`,
     '-c', `model_provider=${JSON.stringify(provider.id)}`,
     '-c', `model_providers.${provider.id}.name=${JSON.stringify(provider.name)}`,
-    '-c', `model_providers.${provider.id}.base_url=${JSON.stringify(stringField(provider, 'baseUrl'))}`,
+    '-c', `model_providers.${provider.id}.base_url=${JSON.stringify(baseUrl)}`,
     '-c', `model_providers.${provider.id}.wire_api="responses"`,
     '-c', `model_providers.${provider.id}.env_key=${JSON.stringify(envKey)}`,
+    '-c', `model_providers.${provider.id}.requires_openai_auth=false`,
+    '-c', `model_providers.${provider.id}.supports_websockets=false`,
     ...(defaultModel ? ['-c', `model=${JSON.stringify(defaultModel)}`] : []),
   ];
   return {
@@ -665,7 +673,10 @@ function managedProviderState(provider: StoredProvider): AgentProviderState {
       { path: join(codexHome, 'model-catalog.json'), exists: existsSync(join(codexHome, 'model-catalog.json')), format: 'JSON', description: '可选模型目录与能力声明', writable: true, purpose: '定义模型上下文长度、有效比例、图片输入等能力，并供模型选择使用。' },
     ],
     fields: [
-      { key: 'baseUrl', label: 'Responses API 地址', type: 'text', value: stringField(provider, 'baseUrl'), required: true },
+      { key: 'baseUrl', label: 'Provider API 地址', type: 'text', value: stringField(provider, 'baseUrl'), required: true },
+      { key: 'protocol', label: '上游协议', type: 'select', value: provider.fields.protocol === 'chat_completions' ? 'chat_completions' : 'responses', readOnly: true,
+        options: [{ value: 'responses', label: 'OpenAI Responses' }, { value: 'chat_completions', label: 'OpenAI Chat Completions' }],
+        description: provider.fields.protocol === 'chat_completions' ? 'Codex 通过 AgentManager 本机兼容桥接访问 Chat Completions 上游。' : '创建或重新探测时自动识别。' },
       { key: 'envKey', label: 'API Key', type: 'password', value: '', configured: !!effectiveApiKey,
         placeholder: effectiveApiKey ? '已安全保存；输入新值可替换' : '输入 API Key',
         description: storedApiKey ? '密钥加密保存在本机平台凭据。' : environmentApiKey ? '由独立 Engine 的启动环境提供。' : '密钥加密保存到本机平台凭据，仅用于启动该 Provider。' },
@@ -696,6 +707,7 @@ function validateProvider(input: AgentProviderInput, prior?: StoredProvider): St
   const id = (input.id || prior?.id || '').trim();
   if (!validId(id)) throw Object.assign(Error('Provider ID 必须以小写字母开头，只能包含字母、数字、点、横线和下划线'), { statusCode: 400 });
   const fields = { ...(prior?.fields || {}), ...(input.fields || {}) };
+  fields.protocol = fields.protocol === 'chat_completions' ? 'chat_completions' : 'responses';
   const baseUrl = typeof fields.baseUrl === 'string' ? fields.baseUrl.trim() : '';
   const models = Array.isArray(fields.models)
     ? fields.models.filter(value => typeof value === 'string' && value.trim()).slice(0, 100).map(value => String(value).trim())
@@ -745,6 +757,9 @@ async function startProvider(provider: StoredProvider, report?: AgentOperationRe
   const apiKey = providerApiKey(provider.id)
     || (credentialName && process.env[credentialName])
     || '';
+  const engineCredential = provider.fields.protocol === 'chat_completions'
+    ? deriveAgentSecret(`codex-responses-bridge:${provider.id}`)
+    : apiKey;
   const configFile = join(codexHome, 'config.toml');
   if (!existsSync(configFile)) {
     await writeFile(configFile, [
@@ -752,8 +767,12 @@ async function startProvider(provider: StoredProvider, report?: AgentOperationRe
       `model = ${JSON.stringify(defaultModel)}`,
       `[model_providers.${provider.id}]`,
       `name = ${JSON.stringify(provider.name)}`,
-      `base_url = ${JSON.stringify(stringField(provider, 'baseUrl'))}`,
+      `base_url = ${JSON.stringify(provider.fields.protocol === 'chat_completions'
+        ? `http://127.0.0.1:${config.port}/api/codex-providers/${encodeURIComponent(provider.id)}/v1`
+        : stringField(provider, 'baseUrl'))}`,
       'wire_api = "responses"',
+      'requires_openai_auth = false',
+      'supports_websockets = false',
       ...(envKey ? [`env_key = ${JSON.stringify(envKey)}`] : []),
       '',
     ].join('\n'), { encoding: 'utf8', mode: 0o600 });
@@ -763,7 +782,7 @@ async function startProvider(provider: StoredProvider, report?: AgentOperationRe
   report?.({ stage: 'spawn', message: '启动 Codex app-server', progress: 45 });
   const launchCommand = durableProcessCommand(executable, args);
   const child = spawn(launchCommand.command, launchCommand.args, {
-    env: { ...process.env, CODEX_HOME: codexHome, ...(apiKey ? { [envKey]: apiKey } : {}) },
+    env: { ...process.env, CODEX_HOME: codexHome, ...(engineCredential ? { [envKey]: engineCredential } : {}) },
     detached: true,
     stdio: 'ignore',
   });
@@ -866,6 +885,8 @@ async function writeProviderConfigFile(provider: StoredProvider, detected?:unkno
     `name = ${JSON.stringify(provider.name)}`,
     `base_url = ${JSON.stringify(stringField(provider, 'baseUrl'))}`,
     'wire_api = "responses"',
+    'requires_openai_auth = false',
+    'supports_websockets = false',
     'env_key = "AGENTMANAGER_PROVIDER_API_KEY"',
     '',
   ].join('\n'), { encoding: 'utf8', mode: 0o600 });
@@ -1379,6 +1400,27 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
       }
       const { readEngineModelsForProvider } = await import('./controls.js');
       return readEngineModelsForProvider(input?.providerId, true);
+    },
+    detectProvider: async input => {
+      const provider = input?.providerId && input.providerId !== 'native'
+        ? readAgentManagement('codex').providers.find(item => item.id === input.providerId)
+        : undefined;
+      const endpoint = input?.endpoint?.trim()
+        || (provider && stringField(provider, 'baseUrl'));
+      if (!endpoint) throw Object.assign(Error('请输入 Provider API 地址'), { statusCode: 400 });
+      let parsed: URL;
+      try { parsed = new URL(endpoint); } catch { throw Object.assign(Error('Provider API 地址无效'), { statusCode: 400 }); }
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+        throw Object.assign(Error('Provider API 地址无效'), { statusCode: 400 });
+      }
+      const apiKey = input?.apiKey?.trim() || (provider ? providerApiKey(provider.id) : '');
+      if (!apiKey) throw Object.assign(Error('请先输入 API Key'), { statusCode: 400 });
+      try {
+        return await detectProviderProtocol(parsed.toString(), apiKey);
+      } catch (error) {
+        if (error && typeof error === 'object' && 'statusCode' in error) throw error;
+        throw Object.assign(Error(`Provider 探测失败：${error instanceof Error ? error.message : String(error)}`), { statusCode: 502 });
+      }
     },
     refreshProviderBilling:async providerId=>refreshStoredProviderBilling('codex',provider=>providerApiKey(provider.id),{providerId}),
     readModelConfigs: async () => {

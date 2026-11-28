@@ -736,6 +736,14 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(409).send({error:'当前 Agent 不支持独立模型探测'});
     }catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'模型探测失败'});}
   });
+  app.post<{Params:{agentId:string};Body:{providerId?:string;endpoint?:string;apiKey?:string}}>('/agent-management/:agentId/detect-provider',async(req,reply)=>{
+    if(!requirePermission(req,reply,'settings','write'))return;
+    try{
+      const management=getAgent(req.params.agentId).management;
+      if(!management.detectProvider)return reply.code(409).send({error:'当前 Agent 不支持协议探测'});
+      return await management.detectProvider(req.body||{});
+    }catch(error){return reply.code((error as any)?.statusCode||400).send({error:error instanceof Error?error.message:'Provider 探测失败'});}
+  });
   app.get<{Params:{agentId:string}}>('/agent-management/:agentId/model-configs',async(req,reply)=>{
     if(!requirePermission(req,reply,'settings','read'))return;
     try{

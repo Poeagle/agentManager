@@ -586,6 +586,7 @@ function ProviderEditor({
   onFileDirtyChange,
   onBusyChange,
   onRemoved,
+  probeOnOpen = false,
   nativeApi = false,
   apiMode = false,
   accountMode = false,
@@ -598,6 +599,7 @@ function ProviderEditor({
   onFileDirtyChange: (dirty: boolean) => void;
   onBusyChange: (busy: boolean) => void;
   onRemoved: () => void;
+  probeOnOpen?: boolean;
   nativeApi?: boolean;
   apiMode?: boolean;
   accountMode?: boolean;
@@ -645,6 +647,7 @@ function ProviderEditor({
   const [selectedModels, setSelectedModels] = useState<string[]>(
     provider.models,
   );
+  const [detectedModelPatches,setDetectedModelPatches]=useState<Record<string,{contextWindow?:number|null;supportsImages?:boolean|null}>>({});
   const rateOnly = rateChanged && !saveApiKey && displayName.trim()===provider.name &&
     JSON.stringify(selectedModels)===JSON.stringify(provider.models) &&
     provider.fields.every(field=>field.key==='providerRateMultiplier'||fields[field.key]===initialFields[field.key]);
@@ -683,6 +686,7 @@ function ProviderEditor({
     setError("");
     setSaveApiKey(false);
     setSelectedModels(provider.models);
+    setDetectedModelPatches({});
     setEngineOperation({
       busy: false,
       message: "",
@@ -741,21 +745,26 @@ function ProviderEditor({
         return {provider:state.providers.find(item=>item.id===provider.id),state,nextModels:selectedModels,nextDefault:fields.defaultModel||''};
       }
       beginEngineOperation("正在校验 Provider 配置…");
-      const discovery=provider.id==='native'?{models:detected}:await api.agentManagement.detectModels(agentId,{
+      const discovery=provider.id==='native'&&!nativeApi?{models:detected}:agentId==='codex'?await api.agentManagement.detectProvider(agentId,{
+        providerId:provider.id,endpoint:fields.baseUrl,apiKey:saveApiKey?fields.envKey:undefined,
+      }):await api.agentManagement.detectModels(agentId,{
         providerId:provider.id,endpoint:fields.baseUrl,apiKey:saveApiKey?fields.envKey:undefined,
       });
       if(provider.id!=='native'&&!discovery.models.length)throw Error('Provider 未返回可用模型，当前配置未保存');
       const discoveredModels=discovery.models.map(model=>model.model);
       const retained=selectedModels.filter(model=>discoveredModels.includes(model));
-      const nextModels=provider.id==='native'?(discoveredModels.length?discoveredModels:availableModels):retained.length?retained:discoveredModels;
+      const nextModels=provider.id==='native'
+        ? (nativeApi&&availableModels.length ? availableModels : discoveredModels.length ? discoveredModels : availableModels)
+        : retained.length?retained:discoveredModels;
       const configuredDefault=fields.defaultModel||provider.defaultModel||'';
       const nextDefault=nextModels.includes(configuredDefault)?configuredDefault:nextModels[0]||'';
       const edited=new Map(patches?.map(patch=>[patch.model,patch]));
       const observations=discovery.models.map(model=>{
         const patch=edited.get(model.model);
-        return {...model,context_window:patch?.contextWindow===undefined?model.context_window:undefined,
-          input_modalities:patch?.supportsImages===undefined?model.input_modalities:undefined};
+        return {...model,context_window:patch?.contextWindow===undefined?model.context_window:patch.contextWindow,
+          input_modalities:patch?.supportsImages===undefined?model.input_modalities:patch.supportsImages===null?[]:patch.supportsImages?['image']:[]};
       });
+      const detectedProtocol=(discovery as {protocol?:'responses'|'chat_completions'}).protocol;
       const result=await api.agentManagement.updateProviderStream(agentId, provider.id, {
         ...(provider.id!=='native'&&displayName.trim()!==provider.name?{name:displayName.trim()} : {}),
         ...(provider.fields.some((field) => field.key === "envKey") &&
@@ -777,7 +786,7 @@ function ProviderEditor({
                     : splitLines(fields[field.key] || "")
                   : fields[field.key] || "",
           ]),
-        ),...modelCapabilitiesPayload(observations),...(rateChanged?{providerRateMultiplier:rate}:{})},
+        ),...modelCapabilitiesPayload(observations),...(detectedProtocol?{protocol:detectedProtocol}:{}),...(rateChanged?{providerRateMultiplier:rate}:{})},
       }, recordEngineProgress);
       return {provider:result.provider,state:undefined,nextModels,nextDefault};
     },
@@ -817,9 +826,9 @@ function ProviderEditor({
       }));
     },
   });
-  const saveProvider = async () => {
+  const saveProvider = async (patches?:Parameters<typeof api.agentManagement.updateModelConfigs>[1]) => {
     try {
-      await update.mutateAsync(undefined);
+      await update.mutateAsync(patches);
     } catch {
       // The mutation keeps the concrete error in OperationStatus.
     }
@@ -888,9 +897,10 @@ function ProviderEditor({
     onError: (failure: Error) => setError(failure.message),
   });
   const detect = useMutation({
+    onMutate:()=>setError(''),
     mutationFn: async () => {
       const endpoint=fields.baseUrl;
-      const result=await api.agentManagement.detectModels(agentId, {
+      const options={
         providerId: provider.id,
         ...((provider.id !== "native" && provider.managed) || (provider.id === "native" && provider.authentication.mode === 'uninitialized')
           ? {
@@ -898,7 +908,10 @@ function ProviderEditor({
               apiKey: fields.envKey || undefined,
             }
           : {}),
-      });
+      };
+      const result=agentId==='codex'&&(provider.id!=='native'||nativeApi)
+        ? await api.agentManagement.detectProvider(agentId,options)
+        : await api.agentManagement.detectModels(agentId,options);
       return {...result,endpoint};
     },
     onSuccess: (result) => {
@@ -906,7 +919,10 @@ function ProviderEditor({
       const overlap=provider.models.filter(model=>discovered.includes(model));
       const next=overlap.length?overlap:discovered;
       setSelectedModels(next);
+      setDetectedModelPatches({});
       setFields(current=>({...current,models:discovered.join('\n'),defaultModel:next.includes(current.defaultModel)?current.defaultModel:next[0]||''}));
+      const detectedProtocol=(result as {protocol?:'responses'|'chat_completions'}).protocol;
+      if (detectedProtocol) setFields(current=>({...current,protocol:detectedProtocol}));
       void queryClient.invalidateQueries({
         queryKey: ["agent-management", agentId],
       });
@@ -916,9 +932,17 @@ function ProviderEditor({
     },
     onError: (failure: Error) => setError(failure.message),
   });
+  const initialProbeRef=useRef(false);
+  useEffect(()=>{
+    if(!probeOnOpen||readOnly||initialProbeRef.current)return;
+    initialProbeRef.current=true;
+    detect.mutate();
+  },[probeOnOpen,readOnly]);
   const busy = engineOperation.busy || modelsSaving || update.isPending || detect.isPending || remove.isPending || rename.isPending;
   useEffect(() => { onBusyChange(busy); }, [busy, onBusyChange]);
   const detected = detect.data?.endpoint===fields.baseUrl?detect.data?.models??[]:[];
+  const displayedProtocol=(detect.data as {protocol?:'responses'|'chat_completions'}|undefined)?.protocol;
+  const detectedRows=detected.map(model=>({model:model.model,name:model.name,metadata:model,context:detectedModelPatches[model.model]?.contextWindow??model.context_window,images:detectedModelPatches[model.model]?.supportsImages??(model.input_modalities?.length?model.input_modalities.includes('image'):null)}));
   const files = (liveProvider.configFiles||[]).filter(file=>file.exists&&file.writable!==false&&!file.sensitive);
   return (
     <div className="agent-management-provider-detail provider-editor">
@@ -1104,8 +1128,24 @@ function ProviderEditor({
               if(field==='name'){setDisplayName(value);return;}
               if(field==='apiKey')setSaveApiKey(true);
               detect.reset();
+              setDetectedModelPatches({});
               setFields(current=>({...current,[field==='endpoint'?'baseUrl':'envKey']:value}));
             }}/>}
+          {provider.id!=='native'&&<section className="provider-models" aria-label="Provider 模型配置">
+            <ProviderModelActions selected={selectedModels.length} total={detected.length} detecting={detect.isPending} disabled={readOnly||busy||!fields.baseUrl}
+              onDetect={()=>detect.mutate()}>
+              {detected.length>0&&!readOnly&&<button type="button" className="agent-management-button" disabled={busy||!usage.verified} onClick={()=>void saveProvider(detected.map(model=>({provider:provider.id,model:model.model,...detectedModelPatches[model.model]})))}><Save size={13}/>保存模型参数</button>}
+            </ProviderModelActions>
+            {displayedProtocol&&<p role="status">已识别为 {displayedProtocol==='chat_completions'?'OpenAI Chat Completions，将通过兼容桥接接入 Codex':'OpenAI Responses'}。</p>}
+            {detected.length>0&&<ModelCatalogTable
+              rows={detectedRows}
+              selected={selectedModels}
+              locked={readOnly||busy}
+              onSelectedChange={setSelectedModels}
+              renderContext={row=><input type="number" min={1} aria-label={`${row.model} 上下文长度`} disabled={readOnly||busy} placeholder={row.context?.toLocaleString()??'未提供'} value={detectedModelPatches[row.model]?.contextWindow??''} onChange={event=>setDetectedModelPatches(current=>({...current,[row.model]:{...current[row.model],contextWindow:event.target.value?Number(event.target.value):null}}))}/>}
+              renderImages={row=><input type="checkbox" aria-label={`${row.model} 图片输入`} disabled={readOnly||busy} checked={detectedModelPatches[row.model]?.supportsImages??row.images===true} onChange={event=>setDetectedModelPatches(current=>({...current,[row.model]:{...current[row.model],supportsImages:event.target.checked}}))}/>}
+            />}
+          </section>}
           {nativeApi&&<div className="agent-management-form agent-management-engine-form">
             <label className="agent-management-field agent-management-field-baseUrl"><span>Responses API 地址<b aria-label="必填">*</b><InfoTip text="保存到 Codex config.toml 当前 Provider；重启 Engine 后生效。" /></span><input aria-label="Responses API 地址" inputMode="url" value={fields.baseUrl||''} disabled={readOnly||busy} placeholder="https://api.example.com/v1" onChange={event=>setFields(current=>({...current,baseUrl:event.target.value}))}/></label>
             <label className="agent-management-field"><span>API Key{nativeBalance.data?.error!=='missing_key'&&<small className="agent-management-configured">已配置</small>}<InfoTip text="平台加密保存，不写入 config.toml 或前端回显；重启 Engine 后生效。" /></span><input aria-label="API Key" type="password" autoComplete="new-password" value={fields.envKey||''} disabled={readOnly||busy} placeholder={nativeBalance.data?.error==='missing_key'?'输入 API Key':'留空保持当前凭据'} onChange={event=>{setSaveApiKey(!!event.target.value);setFields(current=>({...current,envKey:event.target.value}));}}/></label>
@@ -1197,11 +1237,12 @@ function AddCodexProvider({
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [models, setModels] = useState<DetectedAgentModel[]>([]);
+  const [protocol, setProtocol] = useState<'responses'|'chat_completions'|null>(null);
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
   const probeVersion=useRef(0);
   const probeRequestVersion=useRef(0);
-  const clearProbe=()=>{probeVersion.current++;setModels([]);setSelectedModels([]);setDefaultModel('');};
+  const clearProbe=()=>{probeVersion.current++;setModels([]);setProtocol(null);setSelectedModels([]);setDefaultModel('');};
   useEffect(() => {
     onEditingChange(
       !!(
@@ -1225,12 +1266,13 @@ function AddCodexProvider({
   const detect = useMutation({
     mutationFn: async () => {
       const version=probeRequestVersion.current;
-      const result=await api.agentManagement.detectModels(agentId, { endpoint: baseUrl, apiKey });
+      const result=await api.agentManagement.detectProvider(agentId, { endpoint: baseUrl, apiKey });
       return {...result,version};
     },
     onSuccess: (result) => {
       if(result.version!==probeVersion.current)return;
       setModels(result.models);
+      setProtocol(result.protocol);
       setSelectedModels(result.models.map((item) => item.model));
       setDefaultModel(result.models[0]?.model || "");
     },
@@ -1248,6 +1290,7 @@ function AddCodexProvider({
           envKey: "AGENTMANAGER_PROVIDER_API_KEY",
           models: selectedModels,
           defaultModel,
+          protocol: protocol || 'responses',
           ...modelCapabilitiesPayload(models),
           codexHome: `~/.codex-agentmanager/${id}`,
         },
@@ -1281,9 +1324,13 @@ function AddCodexProvider({
       <section className="provider-models" aria-label="Provider 模型配置">
         <ProviderModelActions selected={selectedModels.length} total={models.length} detecting={detect.isPending} disabled={readOnly||create.isPending||!baseUrl||!apiKey}
           onDetect={()=>{probeRequestVersion.current=probeVersion.current;detect.mutate();}}/>
-        <ModelCatalogTable rows={models.map(model=>({model:model.model,name:model.name,metadata:model,context:model.context_window}))}
+        <ModelCatalogTable rows={models.map(model=>({model:model.model,name:model.name,metadata:model,context:model.context_window,images:model.input_modalities?.length?model.input_modalities.includes('image'):null}))}
           selected={selectedModels} locked={readOnly||busy} loading={detect.isPending}
-          onSelectedChange={models=>{setSelectedModels(models);setDefaultModel(current=>models.includes(current)?current:models[0]||'');}}/>
+          onSelectedChange={selected=>{setSelectedModels(selected);setDefaultModel(current=>selected.includes(current)?current:selected[0]||'');}}
+          renderContext={row=><input type="number" min={1} aria-label={`${row.model} 上下文长度`} disabled={readOnly||busy} value={row.metadata?.context_window??''} placeholder="未提供" onChange={event=>setModels(current=>current.map(model=>model.model===row.model?{...model,context_window:event.target.value?Number(event.target.value):null}:model))}/>}
+          renderImages={row=><input type="checkbox" aria-label={`${row.model} 图片输入`} disabled={readOnly||busy} checked={row.images===true} onChange={event=>setModels(current=>current.map(model=>model.model===row.model?{...model,input_modalities:event.target.checked?['image']:[]}:model))}/>}
+        />
+        {protocol&&<p role="status">已识别为 {protocol==='chat_completions'?'OpenAI Chat Completions，将通过兼容桥接接入 Codex':'OpenAI Responses'}。</p>}
         {detect.isError&&probeRequestVersion.current===probeVersion.current&&<OperationStatus busy={false} message="正在探测 Provider 模型…" error={detect.error}/>}
       </section>
       <OperationStatus
@@ -1362,54 +1409,18 @@ function CodexQuotaSummary({id}:{id:string}) {
   </span>;
 }
 
-function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, onChanged, modelExpansion}: {
+function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onChanged, modelExpansion}: {
   row: ProviderRow;
   readOnly: boolean;
   expanded:boolean;
   onToggle:()=>void;
-  onOpen: () => void;
-  onError: (message: string) => void;
+  onOpen: (probe?: boolean) => void;
   onChanged:(state:AgentManagementState)=>void;
   modelExpansion?: React.ReactNode;
 }) {
-  const client = useQueryClient();
   const provider = row.provider;
   const agent = row.state?.agent ?? harnessAgent;
   const agentId = agent.id;
-  const [detected,setDetected] = useState<DetectedAgentModel[]>([]);
-  const detect = useMutation({
-    mutationFn: async () => {
-      if (!provider) throw Error('当前 Provider 不支持模型探测');
-      const result = await api.agentManagement.detectModels(agentId, { providerId: provider.id });
-      if (!result.models.length) throw Error('Provider 未返回可用模型');
-      const saved = await api.agentManagement.updateProvider(agentId, provider.id, {
-        fields: { models: [...new Set(provider.models)], defaultModel: provider.defaultModel || provider.models[0] || '', ...modelCapabilitiesPayload(result.models) },
-      });
-      return { result, saved };
-    },
-    onSuccess: ({ result, saved }) => {
-      setDetected(result.models);
-      client.setQueryData(['agent-management', agentId], saved);
-      onChanged(saved.state);
-    },
-    onError: (error: Error) => onError(`${row.name} · ${error.message}`),
-  });
-  const save = useMutation({
-    mutationFn: (fields:Record<string,string>)=>api.agentManagement.updateProvider(agentId,provider!.id,{fields}),
-    onMutate: ()=>onError(''),
-    onSuccess: async (result)=>{
-      client.setQueryData(['agent-management',agentId],result);
-      const updated = result.state.providers.find(item=>item.id===provider?.id);
-      if(updated)client.setQueryData(['agent-provider',agentId,updated.id],updated);
-      await Promise.all([
-        client.invalidateQueries({queryKey:['agent-management-list']}),
-        client.invalidateQueries({queryKey:['agent-model-configs',agentId]}),
-        client.invalidateQueries({queryKey:['conversation-controls']}),
-        client.invalidateQueries({queryKey:['session-environments']}),
-      ]);
-    },
-    onError: (error:Error)=>onError(`${row.name} · ${error.message}`),
-  });
   const enabled = provider?.enabled ?? row.environment?.enabled;
   const status = rowStatus(row, provider);
   const rate = providerRate(row);
@@ -1428,20 +1439,20 @@ function ProviderTableRow({row, readOnly, expanded, onToggle, onOpen, onError, o
     <td className="agent-provider-balance">{enabled && quotaId ? <CodexQuotaSummary id={quotaId}/>
       : !readOnly && enabled && row.balanceId ? <BalanceSummary id={row.balanceId}/> : '—'}</td>
     <td className="agent-provider-actions"><TableActions>
-      {provider&&!codexEnvironmentCatalog&&<TableActionButton onClick={()=>detect.mutate()} disabled={readOnly||detect.isPending||save.isPending} aria-label={`探测 ${provider.name} 模型`}><RefreshCw size={12} className={detect.isPending?'animate-spin':undefined}/>探测模型</TableActionButton>}
-      <TableActionButton onClick={onOpen} disabled={save.isPending||detect.isPending} aria-label={`${readOnly || row.harnessProvider?.editable === false ? '查看' : '编辑'} ${provider?.name ?? row.name}${row.state?.agent.label ? ` · ${row.state.agent.label}` : ''}`}>
+      {provider&&!codexEnvironmentCatalog&&<TableActionButton onClick={()=>onOpen(true)} disabled={readOnly} aria-label={`探测 ${provider.name} 模型`}><RefreshCw size={12}/>探测模型</TableActionButton>}
+      <TableActionButton onClick={()=>onOpen(false)} aria-label={`${readOnly || row.harnessProvider?.editable === false ? '查看' : '编辑'} ${provider?.name ?? row.name}${row.state?.agent.label ? ` · ${row.state.agent.label}` : ''}`}>
         {readOnly || row.harnessProvider?.editable === false ? '查看' : <><Pencil size={12}/>编辑</>}
       </TableActionButton>
     </TableActions></td>
   </tr>
   {expanded&&<TableDetailRow columnCount={providerColumns.length+2}>
     {modelExpansion ?? (codexEnvironmentCatalog?<CodexAccountModelExpansion id={row.environment?.id??'native'} enabled={!!enabled}/>
-      :provider?<ProviderModelsExpansion agentId={agentId} provider={provider} detected={detected} readOnly={readOnly} onChanged={onChanged}/>:null)}
+      :provider?<ProviderModelsExpansion agentId={agentId} provider={provider} detected={[]} readOnly={readOnly} onChanged={onChanged}/>:null)}
   </TableDetailRow>}</Fragment>;
 }
 
 type ProviderDialog = {type:'add'; agentId:string; kind:'api'|'account'} |
-  {type:'edit'; row:ProviderRow; accountDetails:boolean};
+  {type:'edit'; row:ProviderRow; accountDetails:boolean; probeOnOpen?:boolean};
 
 export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
   const client = useQueryClient();
@@ -1456,7 +1467,6 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
   const [dirty, setDirty] = useState(false);
   const [fileDirty, setFileDirty] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [rowError, setRowError] = useState('');
   const dialogStart = useRef<HTMLDivElement>(null);
   const catalog = useQuery({queryKey:['agent-management-list'],queryFn:api.agentManagement.list});
   const agents = catalog.data?.agents ?? [];
@@ -1600,15 +1610,14 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
       {!readOnly && <TableActionButton onClick={() => setHarnessModel.mutate(null)} disabled={setHarnessModel.isPending}>清除 Harness 默认模型</TableActionButton>}
     </div>}
     {setHarnessModel.isError && <div className="agent-management-error-box" role="alert">{setHarnessModel.error.message}</div>}
-    {rowError&&<div className="agent-management-error-box" role="alert"><CircleAlert size={14}/>{rowError}</div>}
     <DataTable label="Agent Provider" model={table} actions actionsWidth={168} expandable minWidth={900} className="agent-provider-table"
       loading={catalog.isPending} error={catalog.isError ? catalog.error.message : undefined} onRetry={refresh}
       empty={!table.rows.length} emptyMessage={rows.length ? '没有符合筛选条件的 Provider' : '暂无 Provider'}>
       {table.rows.map(row=><ProviderTableRow key={row.key} row={row} readOnly={readOnly} expanded={expandedProviders.has(row.key)}
         onToggle={()=>setExpandedProviders(current=>{const next=new Set(current);if(next.has(row.key))next.delete(row.key);else next.add(row.key);return next;})}
-        onChanged={state=>client.setQueryData(['agent-management',state.agent.id],{state})} onError={setRowError}
+        onChanged={state=>client.setQueryData(['agent-management',state.agent.id],{state})}
         modelExpansion={row.harnessProvider && <HarnessModels provider={row.harnessProvider} selection={harnessModel} readOnly={readOnly} setDefault={setHarnessModel}/>}
-        onOpen={()=>setDialog({type:'edit',row,accountDetails:readOnly||row.authMode==='account'||row.environment?.kind==='account'})}/>)}
+        onOpen={probeOnOpen=>setDialog({type:'edit',row,accountDetails:readOnly||row.authMode==='account'||row.environment?.kind==='account',probeOnOpen})}/>)}
     </DataTable>
     {dialog && <Dialog appearance="manager" className="agent-provider-dialog" title={title} size="image" width={1160}
       maxWidth="calc(100vw - 32px)" busy={busy} onClose={close} initialFocus={dialogStart}
@@ -1646,7 +1655,7 @@ export function AgentManagementPanel({readOnly = false}: {readOnly?:boolean}) {
           : editEnvironment?.kind==='account' ?
             <CodexAccountProviderEditor key={editRow.key} environment={editEnvironment} readOnly={readOnly} inDialog onSaved={finish} onRemoved={finish} onDirtyChange={setDirty} onBusyChange={setBusy}/>
           : editProvider && <ProviderEditor key={editRow.key} agentId={editRow.state.agent.id} provider={editProvider}
-            defaults={editRow.state.defaults ?? []} nativeApi={editNativeApi} apiMode={editRow.authMode==='api'} accountMode={editRow.authMode==='account'} readOnly={readOnly}
+            defaults={editRow.state.defaults ?? []} nativeApi={editNativeApi} apiMode={editRow.authMode==='api'} accountMode={editRow.authMode==='account'} readOnly={readOnly} probeOnOpen={dialog.probeOnOpen}
             onDirtyChange={setDirty} onFileDirtyChange={setFileDirty} onBusyChange={setBusy} onRemoved={finish}/>}
       </> : editRow.harnessProvider ? (editRow.harnessProvider.editable && !readOnly
         ? <HarnessProviderEditor key={editRow.key} provider={editRow.harnessProvider} connection={harness}
