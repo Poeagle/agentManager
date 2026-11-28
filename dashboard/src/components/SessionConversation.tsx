@@ -31,7 +31,7 @@ import {
 } from "../lib/use-conversation-compaction";
 import { ConversationCompactionStatus } from "./ConversationCompactionStatus";
 import { ConversationControls } from "./ConversationControls";
-import { ConversationCacheDrop, MetadataTime } from "./ConversationCacheDrop";
+import { ConversationCacheDropGroup, MetadataTime } from "./ConversationCacheDrop";
 import {mergeCacheTimeline,unassignedUsageDescription,unassignedUsageLabel,type CacheTimeline,type SessionCacheDrop,type SessionMetadata} from '../lib/session-metadata';
 import { ConversationAutomaticContext, ConversationSessionContext } from "./ConversationAutomaticContext";
 import { ConversationBriefContext } from "./ConversationBriefContext";
@@ -2565,9 +2565,10 @@ export function SessionConversation({
     list.push(drop);
     dropsByMessage.set(anchor, list);
   }
-  const cacheNotices = (ids: string[]) => ids.flatMap(id => dropsByMessage.get(id) ?? [])
-    .sort((left, right) => left.at.localeCompare(right.at))
-    .map(drop => <ConversationCacheDrop key={drop.id} drop={drop}/>);
+  const cacheNotices = (ids: string[]) => {
+    const drops=ids.flatMap(id => dropsByMessage.get(id) ?? []).sort((left, right) => left.at.localeCompare(right.at));
+    return drops.length?[<ConversationCacheDropGroup key={drops[0].id} drops={drops}/>]:[];
+  };
   return (
     <ConversationImagePreviewRoot active={active} onOpen={navigate}>
       <div className="session-chat-container" onKeyDownCapture={event=>{

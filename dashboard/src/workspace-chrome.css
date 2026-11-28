@@ -288,7 +288,7 @@
   .workspace-brand { font-size: 12px; }
 }
 @media (max-width: 767px) {
-  .workspace-header:has(.workspace-header-project-tools:not(:empty)) .workspace-header-tools { max-width: 28%; }
+  .workspace-header:has(.workspace-header-project-tools:not(:empty)) .workspace-header-tools { max-width: 58vw; }
   .workspace-app-layout { flex-direction: column; }
   .workspace-navigation {
     display: none;

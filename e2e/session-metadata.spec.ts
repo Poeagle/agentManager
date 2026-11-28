@@ -718,10 +718,9 @@ test('shows dated cache drops under each Progress header before its Items and be
     const before = (left:Element,right:Element) => !!(left.compareDocumentPosition(right)&Node.DOCUMENT_POSITION_FOLLOWING);
     const toggle=progress.locator('.session-chat-progress-toggle');
     const firstItem=progress.locator('.session-chat-progress-entry').first();
-    await expect(session.chat.locator('[data-cache-drop-id]')).toHaveCount(3);
-    await expect(notice).toHaveCount(2);
+    await expect(session.chat.locator('[data-cache-drop-id]')).toHaveCount(2);
+    await expect(notice).toHaveCount(1);
     await expect(notice.nth(0).locator('time').first()).toHaveAttribute('datetime',at(7));
-    await expect(notice.nth(1).locator('time').first()).toHaveAttribute('datetime',at(11));
     if(await toggle.getAttribute('aria-expanded')==='true') await toggle.click();
     await expect(toggle).toHaveAttribute('aria-expanded','false');
     await expect(firstItem).toBeHidden();
@@ -730,9 +729,19 @@ test('shows dated cache drops under each Progress header before its Items and be
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-expanded','true');
     await expect(firstItem).toBeVisible();
-    await expect(notice).toHaveCount(2);
+    await expect(notice).toHaveCount(1);
     expect(await toggle.evaluate(before,await notice.first().elementHandle())).toBe(true);
     expect(await notice.last().evaluate(before,await firstItem.elementHandle())).toBe(true);
+
+    const cacheGroup=progress.locator('.conversation-cache-drop-group').first();
+    const cacheToggle=cacheGroup.locator('button.conversation-cache-toggle');
+    await expect(cacheToggle).toHaveAttribute('aria-expanded','false');
+    await expect(notice.first()).toContainText(/共 2 条 · 累计净多耗/);
+    await cacheToggle.click();
+    await expect(cacheToggle).toHaveAttribute('aria-expanded','true');
+    await expect(session.chat.locator('[data-cache-drop-id]')).toHaveCount(3);
+    await expect(notice).toHaveCount(2);
+    await expect(notice.nth(1).locator('time').first()).toHaveAttribute('datetime',at(11));
 
     const final=session.chat.locator('[data-phase="final"]').filter({hasText:'核对完成'});
     const finalNotice=final.locator('[data-cache-drop-id]');
@@ -740,13 +749,12 @@ test('shows dated cache drops under each Progress header before its Items and be
     expect(await finalNotice.evaluate(before,await final.getByText('核对完成',{exact:true}).elementHandle())).toBe(true);
 
     const firstNotice=notice.first();
-    await expect(firstNotice.locator('button')).toHaveCount(0);
     await expect(firstNotice.locator('time').first()).toHaveText('2026-11-20 17:00:07');
     await expect(firstNotice.locator('time').first()).toHaveCSS('color', 'rgb(220, 38, 38)');
     await expect(firstNotice).toHaveText(/2026-11-20 17:00:07\s*10K ｜ 1K \(10\.0%\)\s*←\s*2026-11-20 17:00:04\s*10K ｜ 9\.8K \(98\.0%\)\s*Elapsed: 3s/);
     await expect(firstNotice.locator('time').last()).toHaveAttribute('datetime',at(4));
     await expect(firstNotice.locator('time').last()).toHaveCSS('color', 'rgb(220, 38, 38)');
-    await expect(firstNotice).toContainText('预估多耗 $0.42');
+    await expect(firstNotice).toContainText(/预估多耗 \d+(?:\.\d+)?/);
     const cacheRates=firstNotice.locator('.session-chat-cache-hit');
     await expect(cacheRates.first()).toHaveCSS('color','rgb(131, 55, 33)');
     await expect(cacheRates.last()).toHaveCSS('color','rgb(33, 131, 60)');

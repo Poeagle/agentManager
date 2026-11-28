@@ -736,7 +736,7 @@ function ProviderEditor({
   };
   const update = useMutation({
     mutationFn: async (patches?:Parameters<typeof api.agentManagement.updateModelConfigs>[1]) => {
-      if (rateOnly) {
+      if (rateOnly && !patches?.length) {
         setError("");
         setSaved(false);
         const {state} = await api.agentManagement.updateProvider(agentId, provider.id, {

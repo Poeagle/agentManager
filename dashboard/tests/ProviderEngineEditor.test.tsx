@@ -210,6 +210,20 @@ it('shows the rate read-only and saves a rate-only edit while the Engine is busy
  expect(await screen.findByRole('cell',{name:'2.5×'})).toBeVisible();
  expect(invalidate).toHaveBeenCalledWith({queryKey:['conversation-usage-intervals']});
 });
+it('saves model parameter edits together with a changed provider rate',async()=>{
+ provider={...provider,fields:[...provider.fields,{key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text',value:'1.2'}]};state={...state,providers:[provider]};
+ const dialog=await open();
+ fireEvent.click(within(dialog).getByRole('button',{name:'探测模型'}));
+ const table=await within(dialog).findByRole('table',{name:'Provider 模型'});
+ fireEvent.change(within(table).getByRole('spinbutton',{name:'model-a 上下文长度'}),{target:{value:'300000'}});
+ fireEvent.change(within(dialog).getByRole('textbox',{name:'Provider 计费倍率'}),{target:{value:'1.5'}});
+ fireEvent.click(within(dialog).getByRole('button',{name:'保存模型参数'}));
+ await waitFor(()=>expect(api.agentManagement.updateProviderStream).toHaveBeenCalledWith('codex','fixture',expect.objectContaining({
+  fields:expect.objectContaining({providerRateMultiplier:'1.5'}),
+ }),expect.any(Function)));
+ expect(api.agentManagement.updateProvider).not.toHaveBeenCalled();
+ expect(JSON.parse(String(vi.mocked(api.agentManagement.updateProviderStream).mock.lastCall?.[2].fields?.modelCapabilities))).toMatchObject({'model-a':{context_window:300000}});
+});
 it('shows errors from a rejected rate-only save without updating the table',async()=>{
  provider={...provider,fields:[...provider.fields,{key:'providerRateMultiplier',label:'Provider 计费倍率',type:'text',value:'1.2'}]};state={...state,providers:[provider]};
  vi.mocked(api.agentManagement.updateProvider).mockRejectedValueOnce(Error('Provider 计费倍率必须为正数'));

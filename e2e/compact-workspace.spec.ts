@@ -265,6 +265,7 @@ test('compact workspace preserves readable labels, activity details and keyboard
   await page.setViewportSize({width:390,height:844});
   await expect(sidebar).toBeHidden();
   await expect(projectTabs).toBeHidden();
+  expect((await page.locator('.workspace-header-tools').boundingBox())!.width).toBeGreaterThan(390*.4);
   const mobileProjects = page.getByRole('button', { name: '项目导航', exact: true });
   await mobileProjects.click();
   await expect(projectTabs.getByRole('button', { name: 'dolphindb_manager', exact: true })).toBeVisible();

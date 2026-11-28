@@ -41,7 +41,7 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
   const models=[...new Set(result.models.map(item=>item.model))];
   setDetected(models);
   setProbed(result.models);
-  setEditingModels(false);
+  setEditingModels(!provider);
   setDraft(previous=>{
     const selected=previous.models.filter(model=>models.includes(model));
     const next=selected.length?selected:models;
@@ -119,14 +119,14 @@ export function ClaudeProviderEditor({provider,readOnly,onSaved,onCancel,onDirty
  {(!provider||editingModels||!!modelRows.length)&&<section className="provider-models" aria-label="Provider 模型配置">
    <ProviderModelActions selected={draft.models.length} total={modelRows.length} detecting={detect.isPending}
     disabled={detectDisabled} onDetect={()=>{setError('');detect.mutate();}}>
-    {!readOnly&&!editingModels&&!!modelRows.length&&<button type="button" className="agent-management-button" onClick={()=>setEditingModels(true)}>编辑模型</button>}
+    {!readOnly&&!!modelRows.length&&<button type="button" className="agent-management-button" aria-pressed={editingModels} onClick={()=>setEditingModels(value=>!value)}>{editingModels?'完成编辑':'编辑模型'}</button>}
     {!readOnly&&!editingModels&&!modelRows.length&&<button type="button" className="agent-management-button" onClick={()=>{setEditingModels(true);setProbed([]);}}>填写模型</button>}
     {editingModels&&<button type="button" className="agent-management-button" onClick={()=>{setEditingModels(false);setProbed([]);}}>取消</button>}
    </ProviderModelActions>
    <ModelCatalogTable rows={modelRows} selected={draft.models} locked={displayLocked}
     loading={!!provider&&configs.isPending&&!modelRows.length} error={!modelRows.length&&configs.isError?configs.error.message:undefined} onRetry={()=>void configs.refetch()}
     onSelectedChange={models=>change({models,defaultModel:models.includes(draft.defaultModel)?draft.defaultModel:models[0]||''})}/>
-   {editingModels&&<p className="provider-models-note">上下文和图片能力来自探测结果，或在重新探测后自动更新。默认模型随所选模型自动维护。</p>}
+   {editingModels&&<p className="provider-models-note" role="status">模型编辑已开启。勾选模型后点击底部保存按钮应用修改。</p>}
    {editingModels&&!readOnly&&<div className="provider-model-settings">
     <ProviderAdvancedSettings label="手工添加模型"><div className="provider-manual-model">
      <input aria-label="手工添加 Claude 模型" value={manualModel} placeholder="模型 ID" disabled={busy} onChange={event=>setManualModel(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();addManualModel();}}}/>

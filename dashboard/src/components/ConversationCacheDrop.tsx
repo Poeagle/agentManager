@@ -1,3 +1,5 @@
+import {useState} from 'react';
+import {ChevronRight} from 'lucide-react';
 import { cacheHitColor, type CacheDropFactor, type SessionCacheDrop, type SessionCacheSample } from '../lib/session-metadata';
 import { formatElapsed } from '../lib/conversation-timing';
 import { TableFrame, TableStateRow } from './table/DataTable';
@@ -65,7 +67,7 @@ export function CacheDropTable({drops, loading, error, onRetry}: {
   </TableFrame>;
 }
 
-export function ConversationCacheDrop({drop}: {drop: SessionCacheDrop}) {
+export function ConversationCacheDrop({drop, summaryLabel}: {drop: SessionCacheDrop; summaryLabel?: string}) {
   const elapsed = drop.elapsed_ms === null ? '—' : `${drop.elapsed_ms / 1000}s`;
   const extra = drop.extra_cost;
   const extraAmount = extra ? formatEstimatedTokenCost(Math.abs(extra.amount),extra.unit,false) : null;
@@ -80,6 +82,33 @@ export function ConversationCacheDrop({drop}: {drop: SessionCacheDrop}) {
     <MetadataTime at={drop.previous.request_at} />
     <SampleTokens sample={drop.previous} inline />
     <span title={dropInterval(drop)}>Elapsed: {elapsed}</span>
-    <span title={extraTitle}>{extraLabel}</span>
+    <span title={summaryLabel ? '本组记录的预估多耗与节省净合计，按各次请求费率计算' : extraTitle}>{summaryLabel ?? extraLabel}</span>
+  </div>;
+}
+
+function combinedExtraLabel(drops: SessionCacheDrop[]) {
+  const extras = drops.map(drop => drop.extra_cost);
+  if (extras.some(extra => !extra) || new Set(extras.map(extra => extra?.unit)).size !== 1) {
+    return '累计净多耗未知';
+  }
+  const first = extras[0]!;
+  const total = extras.reduce((sum, extra) => sum + extra!.amount, 0);
+  const amount = formatEstimatedTokenCost(Math.abs(total), first.unit, false);
+  return `${total < 0 ? '累计净节省' : '累计净多耗'} ${amount}`;
+}
+
+export function ConversationCacheDropGroup({drops}: {drops: SessionCacheDrop[]}) {
+  const [expanded, setExpanded] = useState(false);
+  if (drops.length < 2) return drops.map(drop => <ConversationCacheDrop key={drop.id} drop={drop}/>);
+  const count = drops.length;
+  return <div className="conversation-cache-drop-group">
+    <div className="conversation-cache-drop-row">
+      <button type="button" className="conversation-cache-toggle" aria-label={`${expanded ? '收起' : '展开'} ${count} 条缓存记录`}
+        aria-expanded={expanded} title={expanded ? '收起缓存记录' : '展开缓存记录'} onClick={()=>setExpanded(value=>!value)}>
+        <ChevronRight size={13} aria-hidden="true"/>
+      </button>
+      <ConversationCacheDrop drop={drops[0]} summaryLabel={expanded ? undefined : `共 ${count} 条 · ${combinedExtraLabel(drops)}`}/>
+    </div>
+    {expanded&&drops.slice(1).map(drop=><ConversationCacheDrop key={drop.id} drop={drop}/>)}
   </div>;
 }
