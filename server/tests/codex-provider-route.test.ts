@@ -48,6 +48,15 @@ it('requires the local capability and bridges a Chat Completions response', asyn
       headers: expect.objectContaining({ authorization: `Bearer ${apiKey}` }),
       body: JSON.stringify({ model: 'fixture-model', messages: [{ role: 'user', content: 'hello' }] }),
     }));
+
+    fetchMock.mockResolvedValueOnce(Response.json({
+      error: { code: 'qq_bind_required', message: 'private upstream details' },
+    }, { status: 403 }));
+    const rejected = await app.inject({ method: 'POST', url, headers: {
+      authorization: `Bearer ${deriveAgentSecret(`codex-responses-bridge:${providerId}`)}`,
+    }, payload: { model: 'fixture-model', input: 'hello' } });
+    expect(rejected.statusCode).toBe(403);
+    expect(rejected.json().error.message).toBe('上游 Chat Completions 请求失败 (403: qq_bind_required)');
   } finally {
     await app.close();
     database.cleanup();

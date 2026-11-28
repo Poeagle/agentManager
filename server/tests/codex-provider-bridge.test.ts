@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { detectProviderProtocol, providerApiUrl } from '../src/services/agents/codex/provider-probe.js';
+import { detectProviderProtocol, probeProviderModels, providerApiUrl } from '../src/services/agents/codex/provider-probe.js';
 import {
   chatCompletionToResponse,
   forwardStream,
@@ -8,13 +8,13 @@ import {
 
 afterEach(() => vi.unstubAllGlobals());
 
-it('normalizes provider URLs and detects a Chat Completions-only gateway', async () => {
+it('normalizes provider URLs and detects a Chat Completions-only gateway without generating output', async () => {
   expect(providerApiUrl('https://gateway.example/v1/chat/completions', 'models'))
     .toBe('https://gateway.example/v1/models');
   const fetchMock = vi.fn()
     .mockResolvedValueOnce(Response.json({ data: [{ id: 'deepseek-v4.1-flash' }] }))
     .mockResolvedValueOnce(new Response('not found', { status: 404 }))
-    .mockResolvedValueOnce(new Response('model is required', { status: 400 }));
+    .mockResolvedValueOnce(new Response(null, { status: 405 }));
   vi.stubGlobal('fetch', fetchMock);
 
   const result = await detectProviderProtocol('https://gateway.example/v1', 'fixture-key');
@@ -26,6 +26,30 @@ it('normalizes provider URLs and detects a Chat Completions-only gateway', async
     'https://gateway.example/v1/responses',
     'https://gateway.example/v1/chat/completions',
   ]);
+  expect(fetchMock.mock.calls.slice(1).map(([, options]) => options?.method)).toEqual(['OPTIONS', 'OPTIONS']);
+  expect(fetchMock.mock.calls.slice(1).every(([, options]) => !options?.body)).toBe(true);
+});
+
+it('reports a bounded upstream authentication code when model discovery is rejected', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+    error: { code: 'qq_bind_required', message: 'private upstream details' },
+  }, { status: 403 })));
+
+  await expect(probeProviderModels('https://gateway.example/v1', 'fixture-key'))
+    .rejects.toThrow('模型探测失败 (403: qq_bind_required)');
+});
+
+it('preserves a Chat Completions authentication error when the other protocol is absent', async () => {
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(Response.json({ data: [{ id: 'model-a' }] }))
+    .mockResolvedValueOnce(new Response('not found', { status: 404 }))
+    .mockResolvedValueOnce(Response.json({
+      error: { code: 'qq_bind_required', message: 'private upstream details' },
+    }, { status: 403 }));
+  vi.stubGlobal('fetch', fetchMock);
+
+  await expect(detectProviderProtocol('https://gateway.example/v1', 'fixture-key'))
+    .rejects.toThrow('上游认证失败 (403: qq_bind_required)');
 });
 
 it('lowers Responses instructions, messages, tools and generation settings to Chat Completions', () => {

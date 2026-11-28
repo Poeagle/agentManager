@@ -6,7 +6,7 @@ import {api,type AgentManagementState,type AgentProviderState,type AgentModelCon
 vi.mock('../src/lib/api',async original=>{const actual=await original<typeof import('../src/lib/api')>();return {...actual,api:{...actual.api,agentManagement:{...actual.api.agentManagement,list:vi.fn(),get:vi.fn(),provider:vi.fn(),modelCatalog:vi.fn(),modelConfigs:vi.fn(),updateModelConfigs:vi.fn(),updateProvider:vi.fn(),updateProviderStream:vi.fn(),detectModels:vi.fn(),detectProvider:vi.fn()},codexEnvironments:{...actual.api.codexEnvironments,management:vi.fn(),usage:vi.fn(),details:vi.fn(),configFiles:vi.fn(async()=>({files:[]})),quota:vi.fn(async()=>({quota:null,reason:'not_applicable'}))}}};});
 let client:QueryClient,provider:AgentProviderState,state:AgentManagementState,configs:AgentModelConfig[];
 const createFixture=()=>({
- provider:{id:'fixture',name:'Fixture API',kind:'responses',enabled:true,managed:true,status:'ready',statusText:'Engine 运行中 · PID 123',authentication:{status:'authenticated',method:'加密 API Key'},models:['model-a','model-b'],defaultModel:'model-a',codexHome:'/fixture/codex',pid:123,launchCommand:'codex app-server --fixture',configFiles:[{path:'/fixture/config.toml',exists:true,format:'TOML',writable:true}],fields:[{key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},{key:'envKey',label:'API Key',type:'password',value:'',configured:true,description:'密钥安全保存'},{key:'codexHome',label:'独立 CODEX_HOME',type:'text',value:'/fixture/codex'},{key:'command',label:'启动命令',type:'text',value:'codex'},{key:'launchArgs',label:'附加启动参数',type:'string-list',value:[]},{key:'models',label:'模型',type:'string-list',value:['model-a','model-b']},{key:'defaultModel',label:'默认模型',type:'text',value:'model-a'}]} as AgentProviderState,
+ provider:{id:'fixture',name:'Fixture API',kind:'responses',enabled:true,managed:true,status:'ready',statusText:'Engine 运行中 · PID 123',authentication:{status:'authenticated',method:'加密 API Key'},models:['model-a','model-b'],defaultModel:'model-a',codexHome:'/fixture/codex',pid:123,launchCommand:'codex app-server --fixture',configFiles:[{path:'/fixture/config.toml',exists:true,format:'TOML',writable:true}],fields:[{key:'baseUrl',label:'OpenAI 兼容 API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},{key:'envKey',label:'API Key',type:'password',value:'',configured:true,description:'密钥安全保存'},{key:'codexHome',label:'独立 CODEX_HOME',type:'text',value:'/fixture/codex'},{key:'command',label:'启动命令',type:'text',value:'codex'},{key:'launchArgs',label:'附加启动参数',type:'string-list',value:[]},{key:'models',label:'模型',type:'string-list',value:['model-a','model-b']},{key:'defaultModel',label:'默认模型',type:'text',value:'model-a'}]} as AgentProviderState,
  configs:['model-a','model-b'].map((model,i)=>({provider:'fixture',model,name:`Model ${i+1}`,contextWindow:200000,maxContextWindow:200000,effectiveContextWindowPercent:95,inputModalities:['text'],supportsImages:false,sourceFile:'/fixture/models.json'})) as AgentModelConfig[],
 });
 beforeEach(()=>{
@@ -31,7 +31,7 @@ const open=async (name='Fixture API',readOnly=false)=>{
 };
 it('shows the native API engine in the Provider layout using runtime settings',async()=>{
  provider={...provider,id:'native',name:'Native API',kind:'native',fields:[
-  {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1'},
+  {key:'baseUrl',label:'OpenAI 兼容 API 地址',type:'text',value:'https://fixture.invalid/v1'},
   {key:'envKey',label:'API Key',type:'password',value:'',configured:true},
   {key:'codexHome',label:'CODEX_HOME',type:'text',value:'/fixture/.codex',readOnly:true},
   {key:'models',label:'模型',type:'string-list',value:['model-a']},
@@ -41,12 +41,12 @@ it('shows the native API engine in the Provider layout using runtime settings',a
  vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[{id:'native',name:'Native API',kind:'native',enabled:true,auth_mode:'api',allowed_user_ids:null}],users:[]});
  vi.mocked(api.codexEnvironments.details).mockResolvedValue({details:{id:'native',checked_at:'',home:'/fixture/.codex',executable:'codex',version:null,engine:{state:'connected',pid:1},authentication:{status:'authenticated',type:'apiKey',email:null,plan:null},config:{path:null,exists:true,notice:null},settings:{model:'model-a',base_url:'https://fixture.invalid/v1'},models:[{model:'model-a',name:'Model A'}]}});
  vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({auth_mode:'api',status:'available',amount:5,currency:'USD'}))));
- await open('Native API');expect(await screen.findByRole('textbox',{name:'Responses API 地址'})).toHaveValue('https://fixture.invalid/v1');
+ await open('Native API');expect(await screen.findByRole('textbox',{name:'OpenAI 兼容 API 地址'})).toHaveValue('https://fixture.invalid/v1');
  expect(screen.queryByRole('table',{name:'Provider 模型'})).not.toBeInTheDocument();expect(screen.queryByText('CODEX 登录账号')).not.toBeInTheDocument();vi.unstubAllGlobals();
 });
 it('opens native API settings even while environment authentication is pending',async()=>{
  provider={...provider,id:'native',name:'Native Pending',kind:'native',authentication:{status:'authenticated',method:'API Key',mode:'api'},models:['model-a'],defaultModel:'model-a',codexHome:'/fixture/.codex',fields:[
-  {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},
+  {key:'baseUrl',label:'OpenAI 兼容 API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},
   {key:'envKey',label:'API Key',type:'password',value:'',configured:true},
   {key:'codexHome',label:'CODEX_HOME',type:'text',value:'/fixture/.codex',readOnly:true},
   {key:'models',label:'模型',type:'string-list',value:['model-a'],required:true},
@@ -56,13 +56,13 @@ it('opens native API settings even while environment authentication is pending',
  vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[{id:'native',name:'Native Pending',kind:'native',enabled:true,auth_mode:null,allowed_user_ids:null}],users:[]});
  vi.mocked(api.codexEnvironments.details).mockResolvedValue({details:{id:'native',checked_at:'',home:'/fixture/.codex',executable:'codex',version:null,engine:{state:'connected',pid:1},authentication:{status:'authenticated',type:'apiKey',email:null,plan:null},config:{path:null,exists:true,notice:null},settings:{model:'model-a',base_url:'https://fixture.invalid/v1'},models:[{model:'model-a',name:'Model A'}]}});
  const dialog=await open('Native Pending');
- expect(within(dialog).getByRole('textbox',{name:'Responses API 地址'})).toHaveValue('https://fixture.invalid/v1');
+ expect(within(dialog).getByRole('textbox',{name:'OpenAI 兼容 API 地址'})).toHaveValue('https://fixture.invalid/v1');
  expect(within(dialog).getByLabelText('API Key')).toBeVisible();
  expect(within(dialog).queryByText('账号与运行状态')).not.toBeInTheDocument();
 });
 it('keeps a native Codex account in the account details instead of the API form',async()=>{
  provider={...provider,id:'native',name:'Native Account',kind:'native',models:['model-a'],defaultModel:'model-a',codexHome:'/fixture/.codex',fields:[
-  {key:'baseUrl',label:'Responses API 地址',type:'text',value:'',required:true},
+  {key:'baseUrl',label:'OpenAI 兼容 API 地址',type:'text',value:'',required:true},
   {key:'envKey',label:'API Key',type:'password',value:'',configured:false},
  ]};state={...state,providers:[provider]};
  vi.mocked(api.codexEnvironments.management).mockResolvedValue({environments:[{id:'native',name:'Native Account',kind:'native',enabled:true,auth_mode:'account',allowed_user_ids:null}],users:[]});
@@ -70,7 +70,7 @@ it('keeps a native Codex account in the account details instead of the API form'
  const dialog=await open('Native Account');
  expect(await within(dialog).findByRole('heading',{name:'账号与运行状态'})).toBeInTheDocument();
  expect(within(dialog).queryByRole('button',{name:'保存连接配置并重启 Engine'})).not.toBeInTheDocument();
- expect(within(dialog).queryByRole('textbox',{name:'Responses API 地址'})).not.toBeInTheDocument();
+ expect(within(dialog).queryByRole('textbox',{name:'OpenAI 兼容 API 地址'})).not.toBeInTheDocument();
  fireEvent.click(within(dialog).getByRole('button',{name:'编辑配置'}));
  expect(within(dialog).getByRole('button',{name:'重命名'})).toBeInTheDocument();
  expect(within(dialog).queryByRole('button',{name:/探测模型/})).not.toBeInTheDocument();
@@ -118,7 +118,7 @@ it.each(['native','account'] as const)('uses the Provider model table for the %s
 });
 it('opens native Provider editing and shows the detected model catalog there',async()=>{
  provider={...provider,id:'native',name:'Fixture API',kind:'native',models:['stale-model'],defaultModel:'stale-model',fields:[
-  {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1'},
+  {key:'baseUrl',label:'OpenAI 兼容 API 地址',type:'text',value:'https://fixture.invalid/v1'},
   {key:'envKey',label:'API Key',type:'password',value:'',configured:true},
   {key:'models',label:'模型',type:'string-list',value:['stale-model']},
   {key:'defaultModel',label:'默认模型',type:'text',value:'stale-model'},
@@ -134,7 +134,7 @@ it('opens native Provider editing and shows the detected model catalog there',as
 });
 it('edits native Codex connection settings without exposing the stored API key',async()=>{
  provider={...createFixture().provider,id:'native',name:'Native API',kind:'native',models:['model-a'],defaultModel:'model-a',codexHome:'/fixture/.codex',fields:[
-  {key:'baseUrl',label:'Responses API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},
+  {key:'baseUrl',label:'OpenAI 兼容 API 地址',type:'text',value:'https://fixture.invalid/v1',required:true},
   {key:'envKey',label:'API Key',type:'password',value:'',configured:true},
   {key:'codexHome',label:'CODEX_HOME',type:'text',value:'/fixture/.codex',readOnly:true},
   {key:'models',label:'模型',type:'string-list',value:['model-a'],required:true},
@@ -145,7 +145,7 @@ it('edits native Codex connection settings without exposing the stored API key',
  vi.mocked(api.codexEnvironments.details).mockResolvedValue({details:{id:'native',checked_at:'',home:'/fixture/.codex',executable:'codex',version:null,engine:{state:'connected',pid:1},authentication:{status:'authenticated',type:'apiKey',email:null,plan:null},config:{path:null,exists:true,notice:null},settings:{model:'model-a',base_url:'https://fixture.invalid/v1'},models:[{model:'model-a',name:'Model A'}]}});
  vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({auth_mode:'api',status:'available',amount:5,currency:'USD'}))));
  const dialog=await open('Native API');
- const endpoint=within(dialog).getByRole('textbox',{name:'Responses API 地址'});
+ const endpoint=within(dialog).getByRole('textbox',{name:'OpenAI 兼容 API 地址'});
  const key=within(dialog).getByLabelText('API Key');
  expect(endpoint).not.toHaveAttribute('readonly');expect(key).toHaveValue('');
  fireEvent.change(endpoint,{target:{value:'https://replacement.invalid/v1'}});
@@ -161,12 +161,12 @@ it('edits native Codex connection settings without exposing the stored API key',
  vi.unstubAllGlobals();
 });
 it('keeps model rows out of Provider editing and places them under the Provider parent row',async()=>{
- const dialog=await open();expect(within(dialog).queryByRole('table',{name:'Provider 模型'})).not.toBeInTheDocument();expect(within(dialog).getByRole('textbox',{name:'Responses API 地址'})).toHaveValue('https://fixture.invalid/v1');
+ const dialog=await open();expect(within(dialog).queryByRole('table',{name:'Provider 模型'})).not.toBeInTheDocument();expect(within(dialog).getByRole('textbox',{name:'OpenAI 兼容 API 地址'})).toHaveValue('https://fixture.invalid/v1');
  expect(within(dialog).getByRole('button',{name:'保存并探测模型'})).toBeVisible();
  fireEvent.click(within(dialog).getByRole('button',{name:'运行信息'}));expect(screen.getByRole('dialog',{name:'Engine 运行信息'})).toHaveTextContent('codex app-server --fixture');
 });
 it('saves connection edits only after a successful probe and updates the model list',async()=>{
- const dialog=await open();fireEvent.change(within(dialog).getByRole('textbox',{name:'Responses API 地址'}),{target:{value:'https://new.invalid/v1'}});
+ const dialog=await open();fireEvent.change(within(dialog).getByRole('textbox',{name:'OpenAI 兼容 API 地址'}),{target:{value:'https://new.invalid/v1'}});
  vi.mocked(api.agentManagement.detectProvider).mockResolvedValueOnce({protocol:'chat_completions',models:[{model:'new-model',name:'New',description:'',efforts:[],defaultEffort:'',context_window:500000,input_modalities:['text','image']}]});
  fireEvent.click(within(dialog).getByRole('button',{name:'保存并探测模型'}));await waitFor(()=>expect(api.agentManagement.updateProviderStream).toHaveBeenCalledTimes(1));
  expect(api.agentManagement.detectProvider).toHaveBeenCalledWith('codex',{providerId:'fixture',endpoint:'https://new.invalid/v1',apiKey:undefined});
@@ -174,7 +174,7 @@ it('saves connection edits only after a successful probe and updates the model l
  expect(JSON.parse(String(vi.mocked(api.agentManagement.updateProviderStream).mock.lastCall?.[2].fields?.modelCapabilities))).toEqual({'new-model':{context_window:500000,input_modalities:['text','image']}});
 });
 it('does not save changed connection details if model detection fails',async()=>{
- const dialog=await open();fireEvent.change(within(dialog).getByRole('textbox',{name:'Responses API 地址'}),{target:{value:'https://invalid.invalid/v1'}});
+ const dialog=await open();fireEvent.change(within(dialog).getByRole('textbox',{name:'OpenAI 兼容 API 地址'}),{target:{value:'https://invalid.invalid/v1'}});
  vi.mocked(api.agentManagement.detectProvider).mockRejectedValueOnce(Error('Provider 探测失败'));fireEvent.click(within(dialog).getByRole('button',{name:'保存并探测模型'}));
  expect(await within(dialog).findByRole('alert')).toHaveTextContent('Provider 探测失败');expect(api.agentManagement.updateProviderStream).not.toHaveBeenCalled();
 });
@@ -267,9 +267,9 @@ it('shows official image support even when stored model capability metadata is i
 it('discards detected models whenever the endpoint or key changes, including late responses',async()=>{
  mount();fireEvent.click(await screen.findByRole('button',{name:'新增 Provider'}));
  const dialog=within(screen.getByRole('dialog',{name:'新增 Provider'}));
- fireEvent.change(screen.getByLabelText('Provider ID'),{target:{value:'new'}});fireEvent.change(screen.getByLabelText('Responses API 地址'),{target:{value:'https://first.invalid/v1'}});fireEvent.change(screen.getByLabelText('API Key'),{target:{value:'fixture'}});
+ fireEvent.change(screen.getByLabelText('Provider ID'),{target:{value:'new'}});fireEvent.change(screen.getByLabelText('OpenAI 兼容 API 地址'),{target:{value:'https://first.invalid/v1'}});fireEvent.change(screen.getByLabelText('API Key'),{target:{value:'fixture'}});
  let finish!:(value:any)=>void;vi.mocked(api.agentManagement.detectProvider).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));fireEvent.click(dialog.getByRole('button',{name:/探测.*模型/}));await waitFor(()=>expect(api.agentManagement.detectProvider).toHaveBeenCalled());
- fireEvent.change(screen.getByLabelText('Responses API 地址'),{target:{value:'https://second.invalid/v1'}});await act(async()=>finish({protocol:'responses',models:[{model:'stale',name:'Stale',description:'',efforts:[],defaultEffort:''}]}));expect(screen.queryByText('Stale')).toBeNull();expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeDisabled();
+ fireEvent.change(screen.getByLabelText('OpenAI 兼容 API 地址'),{target:{value:'https://second.invalid/v1'}});await act(async()=>finish({protocol:'responses',models:[{model:'stale',name:'Stale',description:'',efforts:[],defaultEffort:''}]}));expect(screen.queryByText('Stale')).toBeNull();expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeDisabled();
  vi.mocked(api.agentManagement.detectProvider).mockResolvedValueOnce({protocol:'responses',models:[{model:'fresh',name:'Fresh',description:'',efforts:[],defaultEffort:''}]});await waitFor(()=>expect(dialog.getByRole('button',{name:/探测.*模型/})).toBeEnabled());fireEvent.click(dialog.getByRole('button',{name:/探测.*模型/}));expect((await screen.findAllByText('Fresh')).length).toBeGreaterThan(0);expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeEnabled();
  fireEvent.change(screen.getByLabelText('API Key'),{target:{value:'another-fixture'}});expect(screen.queryByText('Fresh')).toBeNull();expect(screen.getAllByRole('button',{name:'添加 Provider'}).at(-1)).toBeDisabled();
 });

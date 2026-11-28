@@ -1123,7 +1123,7 @@ function ProviderEditor({
         )}
 
           {provider.id!=='native'&&<ProviderConnectionFields name={displayName} endpoint={fields.baseUrl||''} apiKey={fields.envKey||''}
-            endpointLabel="Responses API 地址" configured={provider.fields.some(field=>field.key==='envKey'&&field.configured)} disabled={readOnly||busy}
+            endpointLabel="OpenAI 兼容 API 地址" configured={provider.fields.some(field=>field.key==='envKey'&&field.configured)} disabled={readOnly||busy}
             onChange={(field,value)=>{
               if(field==='name'){setDisplayName(value);return;}
               if(field==='apiKey')setSaveApiKey(true);
@@ -1147,14 +1147,14 @@ function ProviderEditor({
             />}
           </section>}
           {nativeApi&&<div className="agent-management-form agent-management-engine-form">
-            <label className="agent-management-field agent-management-field-baseUrl"><span>Responses API 地址<b aria-label="必填">*</b><InfoTip text="保存到 Codex config.toml 当前 Provider；重启 Engine 后生效。" /></span><input aria-label="Responses API 地址" inputMode="url" value={fields.baseUrl||''} disabled={readOnly||busy} placeholder="https://api.example.com/v1" onChange={event=>setFields(current=>({...current,baseUrl:event.target.value}))}/></label>
+            <label className="agent-management-field agent-management-field-baseUrl"><span>OpenAI 兼容 API 地址<b aria-label="必填">*</b><InfoTip text="保存到 Codex config.toml 当前 Provider；重启 Engine 后生效。" /></span><input aria-label="OpenAI 兼容 API 地址" inputMode="url" value={fields.baseUrl||''} disabled={readOnly||busy} placeholder="https://api.example.com/v1" onChange={event=>setFields(current=>({...current,baseUrl:event.target.value}))}/></label>
             <label className="agent-management-field"><span>API Key{nativeBalance.data?.error!=='missing_key'&&<small className="agent-management-configured">已配置</small>}<InfoTip text="平台加密保存，不写入 config.toml 或前端回显；重启 Engine 后生效。" /></span><input aria-label="API Key" type="password" autoComplete="new-password" value={fields.envKey||''} disabled={readOnly||busy} placeholder={nativeBalance.data?.error==='missing_key'?'输入 API Key':'留空保持当前凭据'} onChange={event=>{setSaveApiKey(!!event.target.value);setFields(current=>({...current,envKey:event.target.value}));}}/></label>
             <label className="agent-management-field"><span>CODEX_HOME<InfoTip text="原生 Provider 共用当前进程的 Codex 目录；切换目录请新建独立 API Provider。" /></span><input aria-label="CODEX_HOME" value={nativeDetails.data?.details.home||provider.codexHome||''} readOnly /></label>
             <label className="agent-management-field"><span>模型<b aria-label="必填">*</b><InfoTip text="每行一个模型 ID；保存时同步 Codex 模型目录。" /></span><textarea aria-label="模型" rows={3} value={fields.models||''} disabled={readOnly||busy} onChange={event=>setFields(current=>({...current,models:event.target.value}))}/></label>
             <label className="agent-management-field"><span>默认模型<InfoTip text="新会话默认模型；必须来自上方模型列表。" /></span><input aria-label="默认模型" value={fields.defaultModel||''} disabled={readOnly||busy} onChange={event=>setFields(current=>({...current,defaultModel:event.target.value}))}/></label>
           </div>}
           {!accountMode&&provider.id==='native'&&provider.authentication.mode==='uninitialized'&&!readOnly&&saveApiKey&&<div className="agent-management-form agent-management-engine-form">
-            <label className="agent-management-field agent-management-field-baseUrl"><span>Responses API 地址<b aria-label="必填">*</b><InfoTip text="保存到 Codex config.toml 当前 Provider；重启 Engine 后生效。" /></span><input aria-label="Responses API 地址" inputMode="url" value={fields.baseUrl||''} disabled={readOnly||busy} placeholder="https://api.example.com/v1" onChange={event=>setFields(current=>({...current,baseUrl:event.target.value}))}/></label>
+            <label className="agent-management-field agent-management-field-baseUrl"><span>OpenAI 兼容 API 地址<b aria-label="必填">*</b><InfoTip text="保存到 Codex config.toml 当前 Provider；重启 Engine 后生效。" /></span><input aria-label="OpenAI 兼容 API 地址" inputMode="url" value={fields.baseUrl||''} disabled={readOnly||busy} placeholder="https://api.example.com/v1" onChange={event=>setFields(current=>({...current,baseUrl:event.target.value}))}/></label>
             <label className="agent-management-field"><span>API Key<b aria-label="必填">*</b><InfoTip text="平台加密保存，不写入 config.toml 或前端回显；重启 Engine 后生效。" /></span><input aria-label="API Key" type="password" autoComplete="new-password" value={fields.envKey||''} disabled={readOnly||busy} placeholder="输入 API Key" onChange={event=>{setFields(current=>({...current,envKey:event.target.value}));}}/></label>
             <label className="agent-management-field"><span>模型<b aria-label="必填">*</b><InfoTip text="每行一个模型 ID；探测完成后自动填充。" /></span><textarea aria-label="模型" rows={3} value={fields.models||''} disabled={readOnly||busy||detect.isPending} placeholder="探测完成后显示" onChange={event=>setFields(current=>({...current,models:event.target.value}))}/></label>
             <label className="agent-management-field"><span>默认模型<InfoTip text="新会话默认模型；必须来自上方模型列表。" /></span><input aria-label="默认模型" value={fields.defaultModel||''} disabled={readOnly||busy||detect.isPending} placeholder="探测完成后显示" onChange={event=>setFields(current=>({...current,defaultModel:event.target.value}))}/></label>
@@ -1314,7 +1314,7 @@ function AddCodexProvider({
       event.preventDefault();
       if (canCreate) create.mutate();
     }}>
-      <ProviderConnectionFields id={id} name={name} endpoint={baseUrl} apiKey={apiKey} endpointLabel="Responses API 地址" disabled={readOnly||create.isPending}
+      <ProviderConnectionFields id={id} name={name} endpoint={baseUrl} apiKey={apiKey} endpointLabel="OpenAI 兼容 API 地址" disabled={readOnly||create.isPending}
         onChange={(field,value)=>{
           if(field==='id')setId(value);
           if(field==='name')setName(value);

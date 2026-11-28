@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { deriveAgentSecret, readAgentManagement } from '../management-store.js';
 import { providerApiKey } from './management.js';
-import { providerApiUrl } from './provider-probe.js';
+import { providerApiUrl, providerErrorCode } from './provider-probe.js';
 
 type JsonObject = Record<string, any>;
 
@@ -241,8 +241,13 @@ export const codexProviderProxyPlugin: FastifyPluginAsync = async app => {
         signal: controller.signal,
       });
       if (!upstream.ok) {
-        const text = (await upstream.text()).slice(0, 2048);
-        return reply.code(upstream.status).send({ error: { message: text || `上游请求失败 (${upstream.status})`, type: 'upstream_error' } });
+        const code = upstream.status === 401 || upstream.status === 403
+          ? await providerErrorCode(upstream)
+          : null;
+        return reply.code(upstream.status).send({ error: {
+          message: `上游 Chat Completions 请求失败 (${upstream.status}${code ? `: ${code}` : ''})`,
+          type: 'upstream_error',
+        } });
       }
       if (request.body.stream) {
         reply.hijack();

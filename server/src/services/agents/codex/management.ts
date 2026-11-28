@@ -552,7 +552,7 @@ function nativeProviders(): AgentProviderState[] {
     fields: [
       {
         key: 'baseUrl',
-        label: 'Responses API 地址',
+        label: 'OpenAI 兼容 API 地址',
         type: 'text',
         value: nativeSettings.baseUrl,
         required: true,
@@ -1195,7 +1195,7 @@ export function codexManagement(descriptor: AgentDescriptor): AgentManagementPor
         delete: true,
         actions: ['start', 'stop', 'restart', 'test'],
         fields: [
-          { key: 'baseUrl', label: 'Responses API 地址', type: 'text', required: true, placeholder: 'https://api.example.com/v1' },
+          { key: 'baseUrl', label: 'OpenAI 兼容 API 地址', type: 'text', required: true, placeholder: 'https://api.example.com/v1' },
           { key: 'envKey', label: 'API Key 环境变量', type: 'text', description: '只保存环境变量名，不保存密钥内容。' },
           { key: 'codexHome', label: '独立 CODEX_HOME', type: 'text', placeholder: '~/.codex-agentmanager/provider-id' },
           { key: 'models', label: '模型', type: 'string-list', required: true, placeholder: '每行一个模型 ID' },
